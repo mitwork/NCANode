@@ -28,6 +28,7 @@ public class XMLVerify extends ApiMethod {
 
     @Override
     public JSONObject handle() throws ApiErrorException {
+
         Document xml = (Document)args.get(0).get();
 
         Element sigElement;
@@ -44,16 +45,28 @@ public class XMLVerify extends ApiMethod {
         try {
             for (int i = 0; i < length; i++) {
                 Node sigNode = list.item(length - 1);
+
                 sigElement = (Element) sigNode;
+
                 if (sigElement == null) {
                     throw new ApiErrorException("Bad signature: Element 'ds:Reference' is not found in XML document");
                 }
-                XMLSignature signature = new XMLSignature(sigElement, "");
-                KeyInfo ki = signature.getKeyInfo();
-                X509Certificate cert = ki.getX509Certificate();
-                if (cert != null) {
-                    result = signature.checkSignatureValue(cert);
-                    rootEl.removeChild(sigElement);
+
+                try {
+
+                    XMLSignature signature = new XMLSignature(sigElement, "");
+
+                    KeyInfo ki = signature.getKeyInfo();
+
+                    X509Certificate cert = ki.getX509Certificate();
+
+                    if (cert != null) {
+                        result = signature.checkSignatureValue(cert);
+                        rootEl.removeChild(sigElement);
+                    }
+
+                } catch (Exception exception) {
+                    throw new ApiErrorException(exception.getMessage());
                 }
             }
         } catch (Exception e) {
@@ -61,7 +74,6 @@ public class XMLVerify extends ApiMethod {
         }
 
         JSONObject resp = new JSONObject();
-
 
         if (certEl != null) {
             X509Certificate cert;
@@ -72,10 +84,10 @@ public class XMLVerify extends ApiMethod {
                 throw new ApiErrorException(e.getMessage());
             }
 
-
             // Chain information
             ArrayList<X509Certificate> chain;
             ArrayList<JSONObject> chainInf;
+
             try {
                 chain = man.ca.chain(cert);
 
@@ -106,10 +118,6 @@ public class XMLVerify extends ApiMethod {
                 throw new ApiErrorException(e.getMessage());
             }
         }
-
-
-
-
 
         resp.put("valid", result);
 

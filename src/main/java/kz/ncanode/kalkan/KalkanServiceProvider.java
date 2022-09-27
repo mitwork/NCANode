@@ -33,7 +33,7 @@ public class KalkanServiceProvider implements ServiceProvider {
         Security.addProvider(provider);
         BasicConfigurator.configure(new NullAppender());
         KncaXS.loadXMLSecurity();
-        out.write("Kalkan crypto initialized. Version: " + getVersion());
+        out.write("Kalkan crypto initialized. Version: " + provider.getVersion());
     }
 
     public String getVersion() {
