@@ -15,6 +15,7 @@ import kz.ncanode.configuration.TspConfiguration;
 import kz.ncanode.exception.TspException;
 import kz.ncanode.util.KalkanUtil;
 import kz.ncanode.util.Util;
+import kz.ncanode.wrapper.CertificateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.http.HttpStatus;
@@ -32,16 +33,25 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.cert.*;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Date;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Optional;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TspService {
+    /**
+     * OID id-kp-timeStamping (RFC 3161): сертификат TSA должен содержать его в EKU.
+     */
+    private static final String EKU_TIME_STAMPING_OID = "1.3.6.1.5.5.7.3.8";
+
     private final CloseableHttpClient client;
     private final TspConfiguration tspConfiguration;
+    private final CertificateService certificateService;
 
     public TimeStampToken create(byte[] data, String hashAlg, String reqPolicy) {
         try {
@@ -77,6 +87,93 @@ public class TspService {
         } catch (GeneralSecurityException|IOException|TSPException e) {
             log.error("TSP creation failure.", e);
             throw new TspException("TSP creation failure", e);
+        }
+    }
+
+    /**
+     * Полная криптографическая проверка TSP-токена в режиме CAdES-T:
+     *  1) подпись TSA на токене валидна;
+     *  2) messageImprint токена совпадает с хэшем подписи внешнего подписанта
+     *     (т.е. метка действительно проставлена для этой подписи, а не подложена);
+     *  3) сертификат TSA содержит EKU id-kp-timeStamping (RFC 3161);
+     *  4) сертификат TSA и его эмитент валидны на момент genTime метки
+     *     (а не на текущую дату — иначе протухший TSA сломал бы все архивные подписи).
+     *
+     * Возвращает {@link TimeStampTokenInfo}, только если ВСЕ проверки прошли —
+     * иначе пустой Optional (с предупреждением в логе). Никаких исключений
+     * наружу не пробрасывает: некорректный TSP не должен валить верификацию
+     * внешней подписи, он лишь не даёт права использовать genTime как
+     * "момент истины".
+     */
+    public Optional<TimeStampTokenInfo> verify(
+        CMSSignedData tspCms,
+        byte[] outerSignerSignature,
+        boolean checkOcsp,
+        boolean checkCrl
+    ) {
+        try {
+            Collection<?> tspSignersCol = tspCms.getSignerInfos().getSigners();
+            if (tspSignersCol.isEmpty()) {
+                log.warn("TSP token has no signers");
+                return Optional.empty();
+            }
+            SignerInformation tspSigner = (SignerInformation) tspSignersCol.iterator().next();
+
+            CertStore tsaCertStore = tspCms.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME);
+            Collection<?> tsaCerts = tsaCertStore.getCertificates(tspSigner.getSID());
+            if (tsaCerts.isEmpty()) {
+                log.warn("TSP token does not embed TSA certificate");
+                return Optional.empty();
+            }
+            CertificateWrapper tsaCert = new CertificateWrapper((X509Certificate) tsaCerts.iterator().next());
+
+            // 1) Подпись TSA на токене. Используем ручную верификацию вместо
+            // TimeStampToken.validate(...) — последний жёстко проверяет срок
+            // действия TSA на текущий момент, что ломает архивные метки.
+            if (!tspSigner.verify(tsaCert.getPublicKey(), KalkanProvider.PROVIDER_NAME)) {
+                log.warn("TSP token signature verification failed");
+                return Optional.empty();
+            }
+
+            TimeStampTokenInfo tspi = new TimeStampToken(tspCms).getTimeStampInfo();
+
+            // 2) Имрпринт должен быть хэшем именно подписи внешнего подписанта.
+            String imprintAlgName = KalkanUtil.getHashingAlgorithmByOID(tspi.getMessageImprintAlgOID());
+            if (imprintAlgName == null) {
+                log.warn("Unsupported TSP imprint algorithm OID: {}", tspi.getMessageImprintAlgOID());
+                return Optional.empty();
+            }
+            MessageDigest md = MessageDigest.getInstance(imprintAlgName, KalkanProvider.PROVIDER_NAME);
+            byte[] expectedImprint = md.digest(outerSignerSignature);
+            if (!Arrays.equals(expectedImprint, tspi.getMessageImprintDigest())) {
+                log.warn("TSP messageImprint does not match outer signer signature");
+                return Optional.empty();
+            }
+
+            // 3) EKU id-kp-timeStamping — обязателен для TSA по RFC 3161.
+            List<String> eku = tsaCert.getExtendedKeyUsage();
+            if (eku == null || !eku.contains(EKU_TIME_STAMPING_OID)) {
+                log.warn("TSA certificate does not declare id-kp-timeStamping EKU");
+                return Optional.empty();
+            }
+
+            // 4) TSA-цепочка валидна на genTime.
+            Date genTime = tspi.getGenTime();
+            if (genTime == null) {
+                log.warn("TSP token has no genTime");
+                return Optional.empty();
+            }
+
+            certificateService.attachValidationData(tsaCert, checkOcsp, checkCrl);
+            if (!tsaCert.isValid(genTime, checkOcsp, checkCrl)) {
+                log.warn("TSA certificate is not valid at TSP genTime {}", genTime);
+                return Optional.empty();
+            }
+
+            return Optional.of(tspi);
+        } catch (Exception e) {
+            log.warn("TSP verification error: {}", e.getMessage(), e);
+            return Optional.empty();
         }
     }
 

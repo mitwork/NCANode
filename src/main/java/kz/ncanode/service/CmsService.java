@@ -228,29 +228,18 @@ public class CmsService {
                 var signerInfoBuilder = CmsSignerInfo.builder();
 
                 var signer = (SignerInformation) signerIt.next();
-                X509CertSelector signerConstraints = signer.getSID();
-                var certCollection = certStore.getCertificates(signerConstraints);
 
-                var certIt = certCollection.iterator();
+                // Время, на которое проверяется срок действия сертификата подписанта.
+                // При наличии валидной TSP-метки используем её genTime (CAdES-T):
+                // подпись считается валидной, если сертификат был валиден в момент
+                // постановки метки, даже если к моменту верификации он истёк.
+                Date validationDate = currentDate;
 
-                while (certIt.hasNext()) {
-                    CertificateWrapper cert = new CertificateWrapper((X509Certificate) certIt.next());
-
-                    certificateService.attachValidationData(cert, checkOcsp, checkCrl);
-
-                    if (!signer.verify(cert.getPublicKey(), KalkanProvider.PROVIDER_NAME) || !cert.isValid(currentDate, checkOcsp, checkCrl)) {
-                        valid = false;
-                    }
-
-                    signerInfoBuilder.certificate(cert.toCertificateInfo(currentDate, checkOcsp, checkCrl));
-                }
-
-                // TSP Checking
                 if (signer.getUnsignedAttributes() != null) {
                     var attrs = signer.getUnsignedAttributes().toHashtable();
 
                     if (attrs.containsKey(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken)) {
-                        Attribute attr = null;
+                        Attribute attr;
                         Object obj = attrs.get(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken);
                         if(obj instanceof Vector) {
                             attr = (Attribute)( ((Vector)obj).get(0) );
@@ -264,24 +253,60 @@ public class CmsService {
                         }
 
                         CMSSignedData tspCms = new CMSSignedData(attr.getAttrValues().getObjectAt(0).getDERObject().getEncoded());
-                        TimeStampTokenInfo tspi = tspService.info(tspCms).orElseThrow();
 
-                        try {
-                            TspInfo tspInfo = TspInfo.builder()
-                                .serialNumber(new String(Hex.encode(tspi.getSerialNumber().toByteArray())))
-                                .genTime(tspi.getGenTime())
-                                .policy(tspi.getPolicy())
-                                .tsa(Optional.ofNullable(tspi.getTsa()).map(Object::toString).orElse(null))
-                                .tspHashAlgorithm(KalkanUtil.getHashingAlgorithmByOID(tspi.getMessageImprintAlgOID()))
-                                .hash(new String(Hex.encode(tspi.getMessageImprintDigest())))
-                                .build();
+                        // Строгая проверка TSP (подпись TSA, messageImprint, EKU,
+                        // валидность цепочки TSA на genTime). Подписант явно добавил
+                        // TSP-метку — это его заявление "верьте этому времени"; если
+                        // метка не проходит проверку, мы не имеем права молча
+                        // откатиться на currentDate: либо метка подделана, либо TSA
+                        // не доверенна — в обоих случаях вся подпись считается
+                        // невалидной (CAdES-T strict).
+                        Optional<TimeStampTokenInfo> verifiedTsp =
+                            tspService.verify(tspCms, signer.getSignature(), checkOcsp, checkCrl);
 
-                            signerInfoBuilder.tsp(tspInfo);
-                        } catch (Exception e) {
-                            log.warn(e.getMessage(), e);
+                        if (verifiedTsp.isPresent()) {
+                            TimeStampTokenInfo tspi = verifiedTsp.get();
+
+                            try {
+                                TspInfo tspInfo = TspInfo.builder()
+                                    .serialNumber(new String(Hex.encode(tspi.getSerialNumber().toByteArray())))
+                                    .genTime(tspi.getGenTime())
+                                    .policy(tspi.getPolicy())
+                                    .tsa(Optional.ofNullable(tspi.getTsa()).map(Object::toString).orElse(null))
+                                    .tspHashAlgorithm(KalkanUtil.getHashingAlgorithmByOID(tspi.getMessageImprintAlgOID()))
+                                    .hash(new String(Hex.encode(tspi.getMessageImprintDigest())))
+                                    .build();
+
+                                signerInfoBuilder.tsp(tspInfo);
+
+                                if (tspi.getGenTime() != null) {
+                                    validationDate = tspi.getGenTime();
+                                }
+                            } catch (Exception e) {
+                                log.warn(e.getMessage(), e);
+                            }
+                        } else {
+                            log.warn("Signer has TSP timestamp attribute but TSP verification failed — marking CMS as invalid");
+                            valid = false;
                         }
-
                     }
+                }
+
+                X509CertSelector signerConstraints = signer.getSID();
+                var certCollection = certStore.getCertificates(signerConstraints);
+
+                var certIt = certCollection.iterator();
+
+                while (certIt.hasNext()) {
+                    CertificateWrapper cert = new CertificateWrapper((X509Certificate) certIt.next());
+
+                    certificateService.attachValidationData(cert, checkOcsp, checkCrl);
+
+                    if (!signer.verify(cert.getPublicKey(), KalkanProvider.PROVIDER_NAME) || !cert.isValid(validationDate, checkOcsp, checkCrl)) {
+                        valid = false;
+                    }
+
+                    signerInfoBuilder.certificate(cert.toCertificateInfo(validationDate, checkOcsp, checkCrl));
                 }
 
                 signers.add(signerInfoBuilder.build());
