@@ -137,16 +137,23 @@ public class TspService {
 
             TimeStampTokenInfo tspi = new TimeStampToken(tspCms).getTimeStampInfo();
 
-            // 2) Имрпринт должен быть хэшем именно подписи внешнего подписанта.
-            String imprintAlgName = KalkanUtil.getHashingAlgorithmByOID(tspi.getMessageImprintAlgOID());
-            if (imprintAlgName == null) {
-                log.warn("Unsupported TSP imprint algorithm OID: {}", tspi.getMessageImprintAlgOID());
+            // 2) Импринт TSP-токена должен быть хэшем именно подписи внешнего
+            // подписанта (RFC 3161, CAdES-T). Алгоритм берём ровно тот, что
+            // объявлен в самой метке — OID отдаём провайдеру напрямую, чтобы
+            // не зависеть от неполных маппингов OID→имя в KalkanUtil
+            // (там, например, getTspHashAlgorithmByOid возвращает старый
+            // GOST 34.311 для любого не-RSA, что ломает GOST 2015-метки).
+            String imprintAlgOid = tspi.getMessageImprintAlgOID();
+            MessageDigest md;
+            try {
+                md = MessageDigest.getInstance(imprintAlgOid, KalkanProvider.PROVIDER_NAME);
+            } catch (NoSuchAlgorithmException e) {
+                log.warn("Unsupported TSP imprint algorithm OID: {}", imprintAlgOid);
                 return Optional.empty();
             }
-            MessageDigest md = MessageDigest.getInstance(imprintAlgName, KalkanProvider.PROVIDER_NAME);
             byte[] expectedImprint = md.digest(outerSignerSignature);
             if (!Arrays.equals(expectedImprint, tspi.getMessageImprintDigest())) {
-                log.warn("TSP messageImprint does not match outer signer signature");
+                log.warn("TSP messageImprint does not match outer signer signature (alg OID {})", imprintAlgOid);
                 return Optional.empty();
             }
 
