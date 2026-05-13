@@ -95,6 +95,8 @@ public class KalkanUtil {
         algos.put(TSPAlgorithms.RIPEMD256,"RIPEMD256");
         algos.put(TSPAlgorithms.GOST34311GT,"GOST34311GT");
         algos.put(TSPAlgorithms.GOST34311,"GOST34311");
+        algos.put(CMSSignedDataGenerator.DIGEST_GOST3411_2015_256,"GOST3411-2015-256");
+        algos.put(CMSSignedDataGenerator.DIGEST_GOST3411_2015_512,"GOST3411-2015-512");
 
         return algos.get(oid);
     }
