@@ -335,13 +335,16 @@ KR8n3tylbHk=
     }
 
     private Date buildValidDate() {
+        // Inclusive CertificateWrapper.isDateValid: оба false = валидно
+        // (не раньше notBefore и не позже notAfter).
         def date = mock(Date)
-        when(date.after(any())).thenReturn(true)
-        when(date.before(any())).thenReturn(true)
+        when(date.after(any())).thenReturn(false)
+        when(date.before(any())).thenReturn(false)
         return date
     }
 
     private Date buildInvalidDate() {
+        // "Expired" — после notAfter: after=true, before=false → невалидно.
         def date = mock(Date)
         when(date.after(any())).thenReturn(true)
         when(date.before(any())).thenReturn(false)

@@ -165,9 +165,10 @@ ngGRfppW9X6JHGjv5s7WO7Y+YPB9gqeN71+Huw==
     }
 
     private Date buildValidDate() {
+        // Inclusive CertificateWrapper.isDateValid: оба false = валидно.
         def date = mock(Date)
-        when(date.after(any())).thenReturn(true)
-        when(date.before(any())).thenReturn(true)
+        when(date.after(any())).thenReturn(false)
+        when(date.before(any())).thenReturn(false)
         return date
     }
 

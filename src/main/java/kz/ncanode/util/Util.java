@@ -5,6 +5,7 @@ import kz.gov.pki.kalkan.asn1.DERObject;
 import kz.gov.pki.kalkan.asn1.pkcs.PKCSObjectIdentifiers;
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator;
 import lombok.experimental.UtilityClass;
+import lombok.extern.slf4j.Slf4j;
 import lombok.val;
 import org.slf4j.Logger;
 
@@ -19,6 +20,7 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+@Slf4j
 @UtilityClass
 public class Util {
 
@@ -34,7 +36,8 @@ public class Util {
         }
         catch(NoSuchAlgorithmException e)
         {
-            e.printStackTrace();
+            // SHA-1 в JDK всегда доступен; этот блок реально не должен срабатывать.
+            log.error("SHA-1 algorithm is not available in JDK", e);
         }
 
         return sha1;

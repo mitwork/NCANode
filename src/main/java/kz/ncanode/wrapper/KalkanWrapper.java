@@ -73,10 +73,13 @@ public class KalkanWrapper {
             throw new KeyException(MessageConstants.KEY_ALIASES_NOT_FOUND);
         }
 
-        if (keyAlias != null && !aliases.contains(keyAlias)) {
-            final String err = String.format(MessageConstants.KEY_ALIAS_NOT_FOUND, keyAlias);
-            log.error(err);
-            throw new KeyException(err);
+        if (keyAlias != null) {
+            if (!aliases.contains(keyAlias)) {
+                final String err = String.format(MessageConstants.KEY_ALIAS_NOT_FOUND, keyAlias);
+                log.error(err);
+                throw new KeyException(err);
+            }
+            // явный alias валидный — используем именно его, а не первый из списка
         } else {
             keyAlias = aliases.get(0);
         }

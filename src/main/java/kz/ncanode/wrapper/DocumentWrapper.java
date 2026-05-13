@@ -41,6 +41,13 @@ public class DocumentWrapper {
             documentBuilderFactory.setExpandEntityReferences(false);
             documentBuilderFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
 
+            // Замечание: OWASP рекомендует "disallow-doctype-decl=true" как
+            // первичную защиту от XXE, но это ломает легитимный XMLDSIG-кейс
+            // с внутренним DTD для объявления ID-атрибутов (<!ATTLIST x id ID>).
+            // Поэтому DOCTYPE разрешаем, но обезвреживаем все векторы:
+            // external entities, external parameter entities, external DTD —
+            // запрещены ниже. Плюс FEATURE_SECURE_PROCESSING (выше)
+            // ограничивает entity-expansion (billion-laughs).
             String[] featuresToDisable = {
                 "http://xml.org/sax/features/external-general-entities",
                 "http://xml.org/sax/features/external-parameter-entities",
@@ -96,7 +103,11 @@ public class DocumentWrapper {
     @Override
     public String toString() {
         try (StringWriter stringWriter = new StringWriter()) {
-            Transformer transformer = TransformerFactory.newInstance().newTransformer();
+            TransformerFactory tf = TransformerFactory.newInstance();
+            // Hardening: блокирует доступ к внешним сущностям/DTD при
+            // сериализации, даже если бы они проникли в DOM.
+            tf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            Transformer transformer = tf.newTransformer();
             transformer.transform(new DOMSource(getDocument()), new StreamResult(stringWriter));
             return stringWriter.toString();
         } catch (IOException | TransformerException e) {

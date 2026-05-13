@@ -48,37 +48,32 @@ public class KalkanUtil {
     }
 
     /**
-     * Возвращает алгоритм хэширования по алгоритму подписи.
+     * Возвращает OID хэш-алгоритма, который нужно использовать для TSP-импринта
+     * подписи, сделанной ключом с указанным алгоритмом подписи.
      *
-     * @param signOid sign OID
-     * @return digest algorithm OID
-     */
-    public static String getDigestAlgorithmOidBYSignAlgorithmOid(String signOid) {
-        if (signOid.equals(PKCSObjectIdentifiers.sha1WithRSAEncryption.getId())) {
-            return CMSSignedDataGenerator.DIGEST_SHA1;
-        } else if (signOid.equals(PKCSObjectIdentifiers.sha256WithRSAEncryption.getId())) {
-            return CMSSignedDataGenerator.DIGEST_SHA256;
-        } else {
-            return CMSSignedDataGenerator.DIGEST_GOST34311_95;
-        }
-    }
-
-    /**
-     * Возвращает алгоритм подписи по OID.
+     * Для каждого поколения ключей хэш TSP-метки должен соответствовать хэшу
+     * самой подписи (мешать GOST 2015-cert + GOST 95-imprint — это
+     * mixed-generation, странно и небезопасно). NCALayer (де-факто стандарт
+     * клиентских подписей) использует именно эту схему: для GOST 2015-512
+     * ключа TSP-импринт идёт по GOST 3411-2015-512 хэшу.
      *
-     * @param signOid ObjectID
-     * @return Algorithm name
+     * @param signOid OID алгоритма подписи (например, cert.getSigAlgOID())
+     * @return OID хэш-алгоритма для использования в TSP messageImprint
      */
     public static String getTspHashAlgorithmByOid(String signOid) {
         if (signOid.equals(PKCSObjectIdentifiers.sha1WithRSAEncryption.getId())) {
             return TSPAlgorithms.SHA1;
         }
-        else if (signOid.equals(PKCSObjectIdentifiers.sha256WithRSAEncryption.getId())) {
+        if (signOid.equals(PKCSObjectIdentifiers.sha256WithRSAEncryption.getId())) {
             return TSPAlgorithms.SHA256;
         }
-        else {
-            return TSPAlgorithms.GOST34311;
+        if (signOid.equals(GOST3410_256_2015)) {
+            return CMSSignedDataGenerator.DIGEST_GOST3411_2015_256;
         }
+        if (signOid.equals(GOST3410_512_2015)) {
+            return CMSSignedDataGenerator.DIGEST_GOST3411_2015_512;
+        }
+        return TSPAlgorithms.GOST34311;
     }
 
     public static String getHashingAlgorithmByOID(String oid) {

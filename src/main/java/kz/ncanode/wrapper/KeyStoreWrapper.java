@@ -4,7 +4,6 @@ import kz.ncanode.constants.MessageConstants;
 import kz.ncanode.exception.ServerException;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.security.*;
@@ -13,7 +12,6 @@ import java.util.List;
 
 @Slf4j
 @Getter
-@Setter
 @RequiredArgsConstructor
 public class KeyStoreWrapper {
     private final KeyStore keyStore;

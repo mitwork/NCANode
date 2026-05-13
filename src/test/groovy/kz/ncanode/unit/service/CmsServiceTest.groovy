@@ -167,9 +167,12 @@ class CmsServiceTest extends Specification implements WithTestData {
     }
 
     private Date buildValidDate() {
+        // Inclusive семантика CertificateWrapper.isDateValid:
+        // !date.before(notBefore) && !date.after(notAfter) — для "валидной" даты
+        // оба before/after возвращают false (мы не до notBefore и не после notAfter).
         def date = mock(Date)
-        when(date.after(any())).thenReturn(true)
-        when(date.before(any())).thenReturn(true)
+        when(date.after(any())).thenReturn(false)
+        when(date.before(any())).thenReturn(false)
         return date
     }
 

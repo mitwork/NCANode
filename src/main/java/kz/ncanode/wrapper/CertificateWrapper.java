@@ -169,7 +169,10 @@ public class CertificateWrapper {
     }
 
     public boolean isDateValid(Date date) {
-        return date.after(x509Certificate.getNotBefore()) && date.before(x509Certificate.getNotAfter());
+        // RFC 5280: период валидности — закрытый интервал [notBefore, notAfter].
+        // notBefore == date и date == notAfter тоже считаются валидными.
+        return !date.before(x509Certificate.getNotBefore())
+            && !date.after(x509Certificate.getNotAfter());
     }
 
     public X500Principal getIssuerX500Principal() {

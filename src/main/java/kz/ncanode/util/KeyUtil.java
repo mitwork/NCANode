@@ -1,12 +1,14 @@
 package kz.ncanode.util;
 
 import lombok.experimental.UtilityClass;
+import lombok.extern.slf4j.Slf4j;
 
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.util.ArrayList;
 import java.util.List;
 
+@Slf4j
 @UtilityClass
 public class KeyUtil {
 
@@ -24,8 +26,8 @@ public class KeyUtil {
             while (aliases.hasMoreElements()) {
                 list.add(aliases.nextElement());
             }
-        } catch (KeyStoreException ignored) {
-
+        } catch (KeyStoreException e) {
+            log.warn("Could not enumerate keystore aliases", e);
         }
 
         return list;
