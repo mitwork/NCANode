@@ -1,7 +1,10 @@
 package kz.ncanode.service;
 
+import kz.gov.pki.kalkan.asn1.cms.Attribute;
+import kz.gov.pki.kalkan.asn1.pkcs.PKCSObjectIdentifiers;
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider;
 import kz.gov.pki.kalkan.jce.provider.cms.*;
+import kz.gov.pki.kalkan.tsp.TimeStampTokenInfo;
 import kz.ncanode.dto.pdf.PdfSignerInfo;
 import kz.ncanode.dto.request.PdfSignRequest;
 import kz.ncanode.dto.request.PdfVerifyRequest;
@@ -170,9 +173,15 @@ public class PdfService {
 			CertificateWrapper certificateWrapper = null;
 			String digestAlgReported = null;
 
+			final CertStore certStore = signedData.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME);
+			final boolean withOcsp = pdfVerifyRequest.getRevocationCheck()
+					.contains(kz.ncanode.dto.certificate.CertificateRevocation.OCSP);
+			final boolean withCrl = pdfVerifyRequest.getRevocationCheck()
+					.contains(kz.ncanode.dto.certificate.CertificateRevocation.CRL);
+			final Date now = new Date();
+			Date validationDate = now;
+
 			for (SignerInformation si : signers) {
-				// Load signer certificate from CMS bag
-				CertStore certStore = signedData.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME);
 				Collection<? extends Certificate> certCollection = certStore.getCertificates(si.getSID());
 
 				if (certCollection == null || certCollection.isEmpty()) {
@@ -187,16 +196,26 @@ public class PdfService {
 					continue;
 				}
 
-				// 4) Trust + revocation validation via your CertificateService
-				certificateWrapper = new CertificateWrapper(x509);
-				boolean withOcsp = pdfVerifyRequest.getRevocationCheck()
-						.contains(kz.ncanode.dto.certificate.CertificateRevocation.OCSP);
-				boolean withCrl = pdfVerifyRequest.getRevocationCheck()
-						.contains(kz.ncanode.dto.certificate.CertificateRevocation.CRL);
+				// 3a) CAdES-T: если у подписанта есть signature-timestamp, проверяем его
+				// и используем genTime метки как "момент истины" для проверки срока
+				// действия сертификата (RFC 5126). Иначе подпись с истёкшим cert'ом
+				// и валидной TSP-меткой считалась бы невалидной — что неверно.
+				validationDate = now;
+				java.util.Optional<TimeStampTokenInfo> verifiedTsp = extractAndVerifyTsp(si, withOcsp, withCrl);
+				if (verifiedTsp.isPresent() && verifiedTsp.get().getGenTime() != null) {
+					validationDate = verifiedTsp.get().getGenTime();
+				} else if (hasTspAttribute(si)) {
+					// TSP заявлен подписантом, но не прошёл строгую проверку —
+					// в CAdES-T это делает всю подпись невалидной.
+					log.warn("PDF signer has TSP attribute but verification failed");
+					continue;
+				}
 
+				// 4) Trust + revocation validation via CertificateService
+				certificateWrapper = new CertificateWrapper(x509);
 				certificateService.attachValidationData(certificateWrapper, withOcsp, withCrl);
 
-				boolean chainAndRevoOk = certificateWrapper.isValid(new Date(), withOcsp, withCrl);
+				boolean chainAndRevoOk = certificateWrapper.isValid(validationDate, withOcsp, withCrl);
 				if (!chainAndRevoOk) {
 					// Keep looping if multiple signer infos exist; otherwise report invalid
 					continue;
@@ -221,12 +240,7 @@ public class PdfService {
 					.contactInfo(signature.getContactInfo())
 					.signDate(signature.getSignDate() != null ? signature.getSignDate().getTime() : null)
 					.certificate(certificateWrapper != null
-							? certificateWrapper.toCertificateInfo(
-									new Date(),
-									pdfVerifyRequest.getRevocationCheck().contains(
-											kz.ncanode.dto.certificate.CertificateRevocation.OCSP),
-									pdfVerifyRequest.getRevocationCheck().contains(
-											kz.ncanode.dto.certificate.CertificateRevocation.CRL))
+							? certificateWrapper.toCertificateInfo(validationDate, withOcsp, withCrl)
 							: null)
 					// Keep your current semantics:
 					// - signatureAlgorithm shows PDF SubFilter (structure-level)
@@ -241,6 +255,52 @@ public class PdfService {
 					.valid(false)
 					.reason("Verification error: " + e.getMessage())
 					.build();
+		}
+	}
+
+	/**
+	 * Проверяет, есть ли у подписанта прицепленная TSP-метка времени.
+	 * Используется чтобы отличить "TSP не было" (валидная BES-подпись)
+	 * от "TSP был, но не прошёл проверку" (невалидная T-подпись).
+	 */
+	private boolean hasTspAttribute(SignerInformation si) {
+		if (si.getUnsignedAttributes() == null) {
+			return false;
+		}
+		return si.getUnsignedAttributes().toHashtable()
+				.containsKey(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken);
+	}
+
+	/**
+	 * Извлекает TSP-токен из unsigned attributes подписанта и прогоняет
+	 * через {@link TspService#verify}. Возвращает информацию о метке, только
+	 * если все проверки прошли (подпись TSA, messageImprint, EKU, валидность
+	 * цепочки TSA на genTime).
+	 */
+	private java.util.Optional<TimeStampTokenInfo> extractAndVerifyTsp(SignerInformation si,
+			boolean checkOcsp, boolean checkCrl) {
+		if (!hasTspAttribute(si)) {
+			return java.util.Optional.empty();
+		}
+		try {
+			Object obj = si.getUnsignedAttributes().toHashtable()
+					.get(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken);
+			Attribute attr;
+			if (obj instanceof Vector) {
+				attr = (Attribute) ((Vector) obj).get(0);
+			} else {
+				attr = (Attribute) obj;
+			}
+			if (attr.getAttrValues().size() != 1) {
+				log.warn("PDF signer has multiple TSP tokens, rejecting");
+				return java.util.Optional.empty();
+			}
+			CMSSignedData tspCms = new CMSSignedData(
+					attr.getAttrValues().getObjectAt(0).getDERObject().getEncoded());
+			return tspService.verify(tspCms, si.getSignature(), checkOcsp, checkCrl);
+		} catch (Exception e) {
+			log.warn("Failed to extract TSP from PDF signer: {}", e.getMessage());
+			return java.util.Optional.empty();
 		}
 	}
 

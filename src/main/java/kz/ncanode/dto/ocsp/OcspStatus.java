@@ -8,7 +8,7 @@ import lombok.Data;
 import java.util.Date;
 
 @Data
-@Builder
+@Builder(toBuilder = true)
 public class OcspStatus {
     private OcspResult result;
     private Date revocationTime;

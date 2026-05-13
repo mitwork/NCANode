@@ -1,7 +1,7 @@
 package kz.ncanode.dto.ocsp;
 
 public enum OcspResult {
-    UNKOWN,
+    UNKNOWN,
     ACTIVE,
     REVOKED
 }

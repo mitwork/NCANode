@@ -24,10 +24,10 @@ import java.util.*;
 @Service
 @RequiredArgsConstructor
 public class CertificateService {
-    public final CrlService crlService;
-    public final OcspService ocspService;
-    public final CaService caService;
-    public final KalkanWrapper kalkanWrapper;
+    private final CrlService crlService;
+    private final OcspService ocspService;
+    private final CaService caService;
+    private final KalkanWrapper kalkanWrapper;
 
     public void attachValidationData(final CertificateWrapper cert, boolean checkOcsp, boolean checkCrl) {
         cert.setIssuerCertificate(caService.getRootCertificateFor(cert).orElse(null));
@@ -138,21 +138,10 @@ public class CertificateService {
 
             PublicKey publicKey = x509.getPublicKey();
 
-            //System.out.println("Signature Algorithm: " + x509.getSigAlgName());
-
-            //Signature sig = Signature.getInstance("ECGOST3410-2015-512");
-            //Signature sig = Signature.getInstance("SHA256withRSA");
             Signature sig = Signature.getInstance(x509.getSigAlgName());
-
-            //System.out.println("Алгоритм: " + sig.getAlgorithm());
             sig.initVerify(publicKey);
-
-            //System.out.println("Ключ инициализирован");
-
             sig.update(dataBytes);
-
             valid = sig.verify(signatureBytes);
-            //System.out.println("Подпись корректна? " + valid);
 
             val cert = new CertificateWrapper(x509);
 

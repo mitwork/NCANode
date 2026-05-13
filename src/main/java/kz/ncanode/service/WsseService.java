@@ -87,7 +87,6 @@ public class WsseService {
             XMLSignatureWrapper signature = new XMLSignatureWrapper(doc, cert.getSignAlgorithmId(), Canonicalizer.ALGO_ID_C14N_EXCL_OMIT_COMMENTS);
 
             signature.getXmlSignature().addDocument("#" + bodyId, transforms, cert.getHashAlgorithmId());
-            signature.getXmlSignature().getSignedInfo().getSignatureMethodElement().setNodeValue(Transforms.TRANSFORM_C14N_EXCL_OMIT_COMMENTS);
 
             WSSecHeader secHeader = new WSSecHeader(doc);
             secHeader.setMustUnderstand(true);
@@ -100,8 +99,6 @@ public class WsseService {
 
             signature.getXmlSignature().getKeyInfo().addUnknownElement(reference.getElement());
             signature.getXmlSignature().sign(keystore.getPrivateKey());
-
-
 
             try (StringWriter os = new StringWriter()) {
                 TransformerFactory tf = TransformerFactory.newInstance();
@@ -137,8 +134,9 @@ public class WsseService {
 
             Element root = (Element) doc.getFirstChild();
             NodeList signatures = root.getElementsByTagName("ds:Signature");
+            final int signaturesLength = signatures.getLength();
 
-            if (signatures.getLength() < 1) {
+            if (signaturesLength < 1) {
                 return VerificationResponse.builder()
                     .valid(false)
                     .signers(Collections.emptyList())
@@ -146,22 +144,41 @@ public class WsseService {
             }
 
             boolean valid = true;
-
             final ArrayList<CertificateWrapper> certs = new ArrayList<>();
-
             final Date currentDate = certificateService.getCurrentDate();
 
-            Node sigNode = signatures.item(0);
-            XMLSignature signature = new XMLSignature((Element) sigNode, "");
-            NodeList securityRef = root.getElementsByTagName("wsse:SecurityTokenReference");
-            SecurityTokenReference ref = new SecurityTokenReference((Element) securityRef.item(0));
-            CertificateWrapper cert = new CertificateWrapper(ref.getKeyIdentifier(new CertificateStore(new X509Certificate[]{}))[0]);
+            // Каждая ds:Signature проверяется независимо. Сертификат берётся
+            // из её собственного wsse:SecurityTokenReference (KeyInfo внутри
+            // подписи), а не из первого попавшегося STR во всём конверте —
+            // иначе можно было бы перепутать подпись Alice'а с cert'ом Bob'а.
+            for (int i = 0; i < signaturesLength; ++i) {
+                Element sigElement = (Element) signatures.item(i);
+                XMLSignature signature = new XMLSignature(sigElement, "");
 
-            certificateService.attachValidationData(cert, checkOcsp, checkCrl);
+                NodeList strInSignature = sigElement.getElementsByTagName("wsse:SecurityTokenReference");
+                if (strInSignature.getLength() < 1) {
+                    log.warn("WSSE signature #{} has no SecurityTokenReference", i);
+                    valid = false;
+                    continue;
+                }
+                SecurityTokenReference ref = new SecurityTokenReference((Element) strInSignature.item(0));
+                X509Certificate[] resolved = ref.getKeyIdentifier(new CertificateStore(new X509Certificate[]{}));
+                if (resolved == null || resolved.length == 0) {
+                    log.warn("WSSE signature #{} could not resolve a certificate from STR", i);
+                    valid = false;
+                    continue;
+                }
 
-            valid = signature.checkSignatureValue(cert.getPublicKey()) && cert.isValid(currentDate, checkOcsp, checkCrl);
+                CertificateWrapper cert = new CertificateWrapper(resolved[0]);
+                certificateService.attachValidationData(cert, checkOcsp, checkCrl);
 
-            certs.add(cert);
+                boolean thisOk = signature.checkSignatureValue(cert.getPublicKey())
+                    && cert.isValid(currentDate, checkOcsp, checkCrl);
+                if (!thisOk) {
+                    valid = false;
+                }
+                certs.add(cert);
+            }
 
             return VerificationResponse.builder()
                 .valid(valid)

@@ -93,26 +93,28 @@ public class XmlService {
         final NodeList signatures = root.getElementsByTagName("ds:Signature");
         final int signaturesLength = signatures.getLength();
 
-        boolean valid = true;
+        boolean valid = signaturesLength > 0;
 
         final ArrayList<CertificateWrapper> certs = new ArrayList<>();
-
         final Date currentDate = certificateService.getCurrentDate();
 
-        for (int i = 0; i<signaturesLength; ++i) {
-            final Element signature = (Element)signatures.item(signatures.getLength() - 1);
+        // NodeList "живой": removeChild уменьшает длину, поэтому всегда берём
+        // последний элемент. Так каждый ds:Signature обрабатывается ровно раз.
+        while (root.getElementsByTagName("ds:Signature").getLength() > 0) {
+            NodeList live = root.getElementsByTagName("ds:Signature");
+            final Element signature = (Element) live.item(live.getLength() - 1);
 
             if (Objects.isNull(signature)) {
                 throw new ClientException("Bad signature: Element 'ds:Reference' is not found in XML document");
             }
 
             final XMLSignatureWrapper xmlSignature = new XMLSignatureWrapper(signature);
-
             val cert = xmlSignature.getCertificate().orElse(null);
 
             if (cert == null) {
                 valid = false;
                 certs.add(null);
+                root.removeChild(signature);
                 continue;
             }
 
@@ -126,13 +128,11 @@ public class XmlService {
             certs.add(cert);
         }
 
-        if (signaturesLength < 1) {
-            valid = false;
-        }
-
         return VerificationResponse.builder()
             .valid(valid)
-            .signers(certs.stream().map(c -> c.toCertificateInfo(currentDate, checkOcsp, checkCrl)).toList())
+            .signers(certs.stream()
+                .map(c -> c != null ? c.toCertificateInfo(currentDate, checkOcsp, checkCrl) : null)
+                .toList())
             .build();
     }
 

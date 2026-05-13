@@ -71,7 +71,7 @@ class OcspServiceTest extends Specification implements WithTestData {
         'ceo 2015 cert revoked' | KEY_CEO_REVOKED_2015           | KEY_INDIVIDUAL_VALID_2015_PASSWORD      | NCA_2015_CERT      | OCSP_RESPONSE_CEO_2015_REVOKED      | OCSP_RESPONSE_CEO_2015_REVOKED_NONCE      || OcspResult.REVOKED
         'ceo 2004 cert revoked' | KEY_CEO_SIGN_REVOKED_2004      | KEY_INDIVIDUAL_VALID_SIGN_2004_PASSWORD | NCA_2004_GOST_CERT | OCSP_RESPONSE_CEO_SIGN_2004_REVOKED | OCSP_RESPONSE_CEO_SIGN_2004_REVOKED_NONCE || OcspResult.REVOKED
         'individual 2004 sign'  | KEY_INDIVIDUAL_VALID_SIGN_2004 | KEY_INDIVIDUAL_VALID_SIGN_2004_PASSWORD | NCA_2004_RSA_CERT  | OCSP_RESPONSE_INDIVIDUAL_SIGN_2004  | OCSP_RESPONSE_INDIVIDUAL_SIGN_2004_NONCE  || OcspResult.ACTIVE
-        'invalid nonce'         | KEY_INDIVIDUAL_VALID_2015      | KEY_INDIVIDUAL_VALID_2015_PASSWORD      | NCA_2015_CERT      | OCSP_RESPONSE_INDIVIDUAL_2015       | OCSP_INVALID_NONCE                        || OcspResult.UNKOWN
+        'invalid nonce'         | KEY_INDIVIDUAL_VALID_2015      | KEY_INDIVIDUAL_VALID_2015_PASSWORD      | NCA_2015_CERT      | OCSP_RESPONSE_INDIVIDUAL_2015       | OCSP_INVALID_NONCE                        || OcspResult.UNKNOWN
     }
 
     def "generateOcspNonce test"() {
@@ -81,6 +81,7 @@ class OcspServiceTest extends Specification implements WithTestData {
         then:
         noExceptionThrown()
         nonce != null
-        nonce.size() == OCSP_RESPONSE_CEO_2015_REVOKED_NONCE.size()
+        // RFC 8954: nonce ≥ 16 байт
+        nonce.size() == 16
     }
 }

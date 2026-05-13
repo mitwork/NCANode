@@ -143,30 +143,58 @@ public class JwtService {
 
     private Algorithm resolveAlgorithm(String alg, PublicKey publicKey, PrivateKey privateKey) {
         return switch (alg) {
-            case "GG2015" -> Algorithm.GG2015((ECPublicKey) publicKey, (ECPrivateKey) privateKey);
-            case "GG2004" -> Algorithm.GG2004((ECPublicKey) publicKey, (ECPrivateKey) privateKey);
-            case "ES256" -> Algorithm.ECDSA256((ECPublicKey) publicKey, (ECPrivateKey) privateKey);
-            case "ES384" -> Algorithm.ECDSA384((ECPublicKey) publicKey, (ECPrivateKey) privateKey);
-            case "ES512" -> Algorithm.ECDSA512((ECPublicKey) publicKey, (ECPrivateKey) privateKey);
-            case "RS256" -> Algorithm.RSA256((RSAPublicKey) publicKey, (RSAPrivateKey) privateKey);
-            case "RS384" -> Algorithm.RSA384((RSAPublicKey) publicKey, (RSAPrivateKey) privateKey);
-            case "RS512" -> Algorithm.RSA512((RSAPublicKey) publicKey, (RSAPrivateKey) privateKey);
+            case "GG2015" -> Algorithm.GG2015(ecPub(alg, publicKey), ecPriv(alg, privateKey));
+            case "GG2004" -> Algorithm.GG2004(ecPub(alg, publicKey), ecPriv(alg, privateKey));
+            case "ES256" -> Algorithm.ECDSA256(ecPub(alg, publicKey), ecPriv(alg, privateKey));
+            case "ES384" -> Algorithm.ECDSA384(ecPub(alg, publicKey), ecPriv(alg, privateKey));
+            case "ES512" -> Algorithm.ECDSA512(ecPub(alg, publicKey), ecPriv(alg, privateKey));
+            case "RS256" -> Algorithm.RSA256(rsaPub(alg, publicKey), rsaPriv(alg, privateKey));
+            case "RS384" -> Algorithm.RSA384(rsaPub(alg, publicKey), rsaPriv(alg, privateKey));
+            case "RS512" -> Algorithm.RSA512(rsaPub(alg, publicKey), rsaPriv(alg, privateKey));
             default -> throw new ClientException("Unsupported algorithm: " + alg);
         };
     }
 
     private Algorithm resolveAlgorithm(String alg, PublicKey publicKey) {
         return switch (alg) {
-            case "GG2015" -> Algorithm.GG2015((ECPublicKey) publicKey);
-            case "GG2004" -> Algorithm.GG2004((ECPublicKey) publicKey);
-            case "ES256" -> Algorithm.ECDSA256((ECPublicKey) publicKey);
-            case "ES384" -> Algorithm.ECDSA384((ECPublicKey) publicKey);
-            case "ES512" -> Algorithm.ECDSA512((ECPublicKey) publicKey);
-            case "RS256" -> Algorithm.RSA256((RSAPublicKey) publicKey);
-            case "RS384" -> Algorithm.RSA384((RSAPublicKey) publicKey);
-            case "RS512" -> Algorithm.RSA512((RSAPublicKey) publicKey);
+            case "GG2015" -> Algorithm.GG2015(ecPub(alg, publicKey));
+            case "GG2004" -> Algorithm.GG2004(ecPub(alg, publicKey));
+            case "ES256" -> Algorithm.ECDSA256(ecPub(alg, publicKey));
+            case "ES384" -> Algorithm.ECDSA384(ecPub(alg, publicKey));
+            case "ES512" -> Algorithm.ECDSA512(ecPub(alg, publicKey));
+            case "RS256" -> Algorithm.RSA256(rsaPub(alg, publicKey));
+            case "RS384" -> Algorithm.RSA384(rsaPub(alg, publicKey));
+            case "RS512" -> Algorithm.RSA512(rsaPub(alg, publicKey));
             default -> throw new ClientException("Unsupported algorithm: " + alg);
         };
+    }
+
+    private static ECPublicKey ecPub(String alg, PublicKey key) {
+        if (!(key instanceof ECPublicKey ec)) {
+            throw new ClientException("Algorithm " + alg + " requires an EC public key, got " + key.getClass().getSimpleName());
+        }
+        return ec;
+    }
+
+    private static ECPrivateKey ecPriv(String alg, PrivateKey key) {
+        if (!(key instanceof ECPrivateKey ec)) {
+            throw new ClientException("Algorithm " + alg + " requires an EC private key, got " + key.getClass().getSimpleName());
+        }
+        return ec;
+    }
+
+    private static RSAPublicKey rsaPub(String alg, PublicKey key) {
+        if (!(key instanceof RSAPublicKey rsa)) {
+            throw new ClientException("Algorithm " + alg + " requires an RSA public key, got " + key.getClass().getSimpleName());
+        }
+        return rsa;
+    }
+
+    private static RSAPrivateKey rsaPriv(String alg, PrivateKey key) {
+        if (!(key instanceof RSAPrivateKey rsa)) {
+            throw new ClientException("Algorithm " + alg + " requires an RSA private key, got " + key.getClass().getSimpleName());
+        }
+        return rsa;
     }
 
     private void addClaim(JWTCreator.Builder builder, String key, Object value) {
