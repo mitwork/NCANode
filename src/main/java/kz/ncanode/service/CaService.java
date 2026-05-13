@@ -14,7 +14,6 @@ import org.apache.http.impl.client.CloseableHttpClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.SpringApplication;
 import org.springframework.context.ApplicationContext;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -46,7 +45,6 @@ public class CaService {
 
     private final List<CertificateWrapper> certificates = new ArrayList<>();
 
-    @Retryable(value = CaException.class)
     @Scheduled(fixedRateString = "${ncanode.ca.ttl}", initialDelay = 0, timeUnit = TimeUnit.MINUTES)
     public void updateCache() {
         if (!caConfiguration.isEnabled()) {
@@ -59,8 +57,6 @@ public class CaService {
     public void updateCache(boolean force) {
         synchronized (directoryService) {
             synchronized (certificates) {
-                certificates.clear();
-
                 var urls = caConfiguration.getUrlList();
 
                 if (urls.isEmpty()) {
@@ -70,24 +66,99 @@ public class CaService {
 
                 log.info("Updating CA certificates cache...");
 
-                for (var urlEntry : urls.entrySet()) {
-                    File caFile = new File(directoryService.getCachePathFor(CA_CACHE_DIR_NAME).orElseThrow(), urlEntry.getKey() + CA_FILE_EXTENSION);
-                    CertificateWrapper cert;
+                final long ttlMillis = (long) caConfiguration.getTtl() * 60_000L;
+                final long now = System.currentTimeMillis();
 
-                    if (force || !caFile.exists() || !caFile.canRead()) {
+                // Pass 1: загружаем актуальные файлы (скачиваем, если протух TTL
+                // или нет на диске) и складываем распарсенные сертификаты
+                // в in-memory список. Делаем это до проверок ниже, чтобы цепочка
+                // issuer-ов была доступна целиком, независимо от порядка URL.
+                final List<CertificateWrapper> loaded = new ArrayList<>(urls.size());
+                final List<File> loadedFiles = new ArrayList<>(urls.size());
+                final List<URL> loadedUrls = new ArrayList<>(urls.size());
+
+                for (var urlEntry : urls.entrySet()) {
+                    File caFile = new File(
+                        directoryService.getCachePathFor(CA_CACHE_DIR_NAME).orElseThrow(),
+                        urlEntry.getKey() + CA_FILE_EXTENSION
+                    );
+                    boolean stale = caFile.exists() && (now - caFile.lastModified()) > ttlMillis;
+
+                    CertificateWrapper cert;
+                    if (force || !caFile.exists() || !caFile.canRead() || stale) {
                         cert = downloadCert(urlEntry.getValue(), caFile);
                     } else {
-                        cert = CertificateWrapper.fromFile(caFile).orElseThrow();
+                        cert = CertificateWrapper.fromFile(caFile).orElse(null);
                     }
 
                     checkCertForNull(urlEntry, cert, caFile);
+                    loaded.add(cert);
+                    loadedFiles.add(caFile);
+                    loadedUrls.add(urlEntry.getValue());
+                }
 
-                    if (!cert.isDateValid() || caCrlService.verify(cert).getResult() == CrlResult.REVOKED) {
-                        downloadCert(urlEntry.getValue(), caFile);
-                        cert = downloadCert(urlEntry.getValue(), caFile);
+                // Атомарно подменяем список: с этого момента getRootCertificates()
+                // и getRootCertificateFor() видят актуальный набор.
+                certificates.clear();
+                certificates.addAll(loaded);
+
+                // Pass 2: для каждого сертификата выставляем issuer (теперь
+                // доступен по всему списку) и проверяем срок + CA-CRL.
+                // Отозванный → WARN, перекачиваем (может быть свежая замена).
+                // Протухший по notAfter → INFO, перекачиваем (NCA мог обновить
+                // cert по тому же URL). Если на сервере лежит тот же
+                // протухший legacy-корень — следующий проход просто примет
+                // его как есть; повторная перекачка раз в TTL допустима.
+                for (int i = 0; i < loaded.size(); i++) {
+                    CertificateWrapper cert = loaded.get(i);
+                    cert.setIssuerCertificate(getRootCertificateFor(cert).orElse(null));
+
+                    final boolean dateInvalid = !cert.isDateValid();
+                    final boolean revoked = caCrlService.verify(cert).getResult() == CrlResult.REVOKED;
+
+                    if (revoked) {
+                        log.warn("CA certificate from {} is revoked, re-downloading", loadedUrls.get(i));
+                    } else if (dateInvalid) {
+                        log.info("CA certificate from {} is expired (notAfter={}), trying to refresh from server",
+                            loadedUrls.get(i), cert.getX509Certificate().getNotAfter());
                     }
 
-                    checkCertForNull(urlEntry, cert, caFile);
+                    if (dateInvalid || revoked) {
+                        CertificateWrapper refreshed = downloadCert(loadedUrls.get(i), loadedFiles.get(i));
+                        if (refreshed != null) {
+                            certificates.set(i, refreshed);
+                        }
+                    }
+                }
+
+                // Чистим orphan-файлы: записи прошлых конфигов, не привязанные
+                // ни к одному из текущих URL.
+                deleteOrphanCacheFiles(urls.keySet());
+
+                log.info("CA certificates cache updated: {} entries", certificates.size());
+            }
+        }
+    }
+
+    private void deleteOrphanCacheFiles(Set<String> validKeys) {
+        File cacheDir = directoryService.getCachePathFor(CA_CACHE_DIR_NAME).orElse(null);
+        if (cacheDir == null) {
+            return;
+        }
+        File[] files = cacheDir.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File f : files) {
+            if (!f.isFile() || !f.getName().endsWith(CA_FILE_EXTENSION)) {
+                continue;
+            }
+            String stem = f.getName().substring(0, f.getName().length() - CA_FILE_EXTENSION.length());
+            if (!validKeys.contains(stem)) {
+                if (f.delete()) {
+                    log.info("Deleted orphan CA cache file: {}", f.getName());
+                } else {
+                    log.warn("Could not delete orphan CA cache file: {}", f);
                 }
             }
         }

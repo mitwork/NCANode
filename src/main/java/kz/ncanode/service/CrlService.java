@@ -21,13 +21,19 @@ import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.support.PeriodicTrigger;
 
 import javax.annotation.PostConstruct;
+import javax.security.auth.x500.X500Principal;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.GeneralSecurityException;
+import java.security.PublicKey;
 import java.security.cert.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -78,10 +84,19 @@ public class CrlService {
     }
 
     /**
-     * Проверка сертификата в CRL
+     * Проверка сертификата в CRL.
      *
-     * @param cert Сертификат
-     * @return Статус проверки
+     * Применяются только CRL'и, выпущенные тем же CA, что и проверяемый
+     * сертификат, не истёкшие по {@code nextUpdate} и с валидной подписью
+     * издателя (если у нас есть его публичный ключ). Без этих фильтров серийник
+     * сертификата мог бы случайно совпасть с серийником из CRL другого CA, или
+     * злонамеренно подложенный CRL ложно отозвал бы валидный сертификат.
+     *
+     * @param cert Сертификат с заполненным {@code issuerCertificate} (через
+     *             {@code CertificateService.attachValidationData}). Если issuer
+     *             не задан, проверка подписи CRL пропускается с WARN'ом —
+     *             совпадение серийников всё равно покажет отзыв, но без
+     *             криптографической гарантии аутентичности CRL.
      */
     public CrlStatus verify(CertificateWrapper cert) {
         if (!crlConfiguration.isEnabled()) {
@@ -90,10 +105,64 @@ public class CrlService {
                 .build();
         }
 
+        final X500Principal certIssuer = cert.getIssuerX500Principal();
+        final Date now = new Date();
+        // Для self-signed корневых CA issuer и subject совпадают, и подпись
+        // на CRL стоит ключом этого же корня — используем его собственный
+        // публичный ключ, а не ждём отдельного "issuerCertificate" в trust store.
+        final boolean selfSigned = certIssuer.equals(cert.getSubjectX500Principal());
+        final PublicKey issuerKey = Optional.ofNullable(cert.getIssuerCertificate())
+            .map(CertificateWrapper::getPublicKey)
+            .orElseGet(() -> selfSigned ? cert.getPublicKey() : null);
+
         for (final String cacheDirectory : List.of(CRL_CACHE_DELTA_DIR_NAME, CRL_CACHE_FULL_DIR_NAME)) {
-            // Проверяем в CRL
             for (File crlFile : getCrlFiles(cacheDirectory)) {
-                X509CRL crl = loadCrl(crlFile);
+                final X509CRL crl;
+                try {
+                    crl = loadCrl(crlFile);
+                } catch (ServerException e) {
+                    log.warn("Skipping unreadable CRL file: {}", crlFile.getName());
+                    continue;
+                }
+
+                // CRL должен быть выпущен тем же CA, что и проверяемый сертификат.
+                if (!crl.getIssuerX500Principal().equals(certIssuer)) {
+                    continue;
+                }
+
+                // RFC 5280 §5.1.2.5: после nextUpdate CRL формально считается
+                // устаревшим. Мы не блокируем его использование (для отозванных
+                // сертификатов хуже false negative, чем false positive — отзывы
+                // не отменяются). DEBUG, а не WARN: либо CA сам перестал
+                // публиковать новые CRL (легаси-инфраструктура), либо у нас
+                // отстаёт TTL — оба случая операционно нормальные, не повод
+                // спамить WARN'ом в каждый цикл обновления.
+                if (crl.getNextUpdate() != null && crl.getNextUpdate().before(now)) {
+                    log.debug("CRL {} is past its nextUpdate={}, still using for revocation check",
+                        crlFile.getName(), crl.getNextUpdate());
+                }
+
+                // Подпись CRL должна быть подтверждена ключом издателя.
+                if (issuerKey != null) {
+                    try {
+                        crl.verify(issuerKey);
+                    } catch (GeneralSecurityException e) {
+                        // Это уже реальная проблема — подпись CRL не сходится,
+                        // либо ключ от другого CA. Такой CRL пропускаем.
+                        log.warn("CRL {} signature does not verify against issuer key: {}",
+                            crlFile.getName(), e.getMessage());
+                        continue;
+                    }
+                } else {
+                    // Issuer'а нет в trust store (типично для легаси-CA,
+                    // чьи корни выведены из активного обслуживания и в
+                    // NCANODE_CA_URL не лежат). Криптопроверку CRL пропускаем,
+                    // но сам CRL используем для проверки серийных номеров.
+                    // DEBUG, потому что состояние стабильное и регулярного
+                    // внимания оператора не требует.
+                    log.debug("Issuer certificate not available for {}, using CRL {} without signature verification",
+                        cert.getSubjectX500Principal(), crlFile.getName());
+                }
 
                 if (crl.isRevoked(cert.getX509Certificate())) {
                     return Optional.ofNullable(crl.getRevokedCertificate(cert.getX509Certificate()))
@@ -117,7 +186,21 @@ public class CrlService {
     }
 
     /**
-     * Обновляет кэш CRL
+     * Обновляет кэш CRL.
+     *
+     * Алгоритм: для каждого настроенного URL считаем, протух ли кэш-файл
+     * по TTL; если протух или отсутствует — пробуем скачать новый. Скачивание
+     * атомарное (через .tmp + rename), поэтому при сетевой ошибке старый файл
+     * остаётся на месте и продолжает использоваться для проверок — окно
+     * "нет CRL вообще" не возникает. После загрузки удаляем orphan-файлы
+     * (от URL'ов, которых больше нет в конфигурации).
+     *
+     * Примечание про delta-CRL: здесь delta обрабатывается как ещё один
+     * отдельный CRL-эндпоинт с более частым обновлением, а не как RFC 5280
+     * §5.2.4 delta CRL поверх base (с CRLNumber / BaseCRLNumber). Это работает
+     * для NCA, который по delta-URL отдаёт полноценный CRL; для строго
+     * совместимой реализации потребовалось бы объединять записи delta + base
+     * по их номерам.
      *
      * @param force Если true, то кэш будет обновлен в любом случае
      */
@@ -127,28 +210,25 @@ public class CrlService {
                 return;
             }
 
-            log.info("Updating CRL cache...");
-            long currentTime = System.currentTimeMillis();
-
-            // Удаляем старые файлы CRL
-            for (var crlFile : getCrlFiles(cacheDirectory)) {
-                if (!force && crlFile.exists() && crlFile.isFile() && crlFile.canRead() && (currentTime - crlFile.lastModified()) <= (long) crlConfiguration.getTtl() * 60000L) {
-                    log.debug("CRL file {} is actual. This file will not be removed", crlFile);
-                    continue;
-                }
-
-                if (!crlFile.delete()) {
-                    log.error("Cannot delete CRL cache file: {}", crlFile);
-                }
-            }
+            log.info("Updating CRL cache for '{}'...", cacheDirectory);
+            final long currentTime = System.currentTimeMillis();
+            final long ttlMillis = (long) crlConfiguration.getTtl() * 60_000L;
 
             int updatedCount = 0;
 
-            // Скачиваем новые CRL файлы
             for (var crlEntry : crlConfiguration.getUrlList().entrySet()) {
-                var crlFile = new File(directoryService.getCachePathFor(cacheDirectory).orElseThrow(), crlEntry.getKey() + CRL_FILE_EXTENSION);
+                File crlFile = new File(
+                    directoryService.getCachePathFor(cacheDirectory).orElseThrow(),
+                    crlEntry.getKey() + CRL_FILE_EXTENSION
+                );
 
-                if (crlFile.exists()) {
+                boolean stale = !crlFile.exists()
+                    || !crlFile.isFile()
+                    || !crlFile.canRead()
+                    || (currentTime - crlFile.lastModified()) > ttlMillis;
+
+                if (!force && !stale) {
+                    log.debug("CRL file {} is fresh, keeping", crlFile.getName());
                     continue;
                 }
 
@@ -156,10 +236,38 @@ public class CrlService {
                 updatedCount++;
             }
 
+            // Удаляем orphan-файлы: записи прошлых конфигов, которых больше нет
+            // в списке URL'ов.
+            deleteOrphanCrlFiles(crlConfiguration.getUrlList().keySet(), cacheDirectory);
+
             if (updatedCount == 0) {
-                log.info("Nothing to update in CRL cache.");
+                log.info("Nothing to update in CRL cache for '{}'", cacheDirectory);
             } else {
-                log.info("{} files updated in CRL cache", updatedCount);
+                log.info("{} files updated in CRL cache for '{}'", updatedCount, cacheDirectory);
+            }
+        }
+    }
+
+    private void deleteOrphanCrlFiles(Set<String> validKeys, String cacheDirName) {
+        File cacheDir = directoryService.getCachePathFor(cacheDirName).orElse(null);
+        if (cacheDir == null) {
+            return;
+        }
+        File[] files = cacheDir.listFiles();
+        if (files == null) {
+            return;
+        }
+        for (File f : files) {
+            if (!f.isFile() || !f.getName().endsWith(CRL_FILE_EXTENSION)) {
+                continue;
+            }
+            String stem = f.getName().substring(0, f.getName().length() - CRL_FILE_EXTENSION.length());
+            if (!validKeys.contains(stem)) {
+                if (f.delete()) {
+                    log.info("Deleted orphan CRL cache file: {}", f.getName());
+                } else {
+                    log.warn("Could not delete orphan CRL cache file: {}", f);
+                }
             }
         }
     }
@@ -212,6 +320,10 @@ public class CrlService {
     }
 
     private File download(String url, Path path) throws CrlException {
+        // Качаем во временный файл и атомарно подменяем. Если запрос упал
+        // или провайдер вернул ошибку — старый CRL на диске остаётся целым,
+        // и проверки revocation продолжают работать на нём до следующего цикла.
+        final Path tmpPath = path.resolveSibling(path.getFileName().toString() + ".tmp");
         try(CloseableHttpResponse response = client.execute(new HttpGet(url))) {
             int status = response.getStatusLine().getStatusCode();
 
@@ -225,15 +337,26 @@ public class CrlService {
                 throw new CrlException(String.format("Got empty request from: %s", url));
             }
 
-            var file = path.toFile();
-
-            try(FileOutputStream out = new FileOutputStream(file)) {
+            try(FileOutputStream out = new FileOutputStream(tmpPath.toFile())) {
                 entity.writeTo(out);
             }
 
-            return file;
+            try {
+                Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException amns) {
+                Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            return path.toFile();
         } catch (IOException e) {
             throw new CrlException(e.getMessage(), e);
+        } finally {
+            // На случай если rename не успел выполниться — чистим хвост.
+            try {
+                Files.deleteIfExists(tmpPath);
+            } catch (IOException ignored) {
+                // best-effort: оставить файл лучше, чем падать в finally
+            }
         }
     }
 
