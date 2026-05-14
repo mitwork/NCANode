@@ -47,8 +47,6 @@ import java.util.stream.Collectors;
 public class CrlService {
     public final static String CRL_DEFAULT = "default";
     public final static String CRL_CA      = "ca-crl";
-    private final static String CRL_CACHE_FULL_DIR_NAME = "crl/full";
-    private final static String CRL_CACHE_DELTA_DIR_NAME = "crl/delta";
     private final static String CRL_FILE_EXTENSION = ".crl";
 
     private final DirectoryService directoryService;
@@ -56,6 +54,19 @@ public class CrlService {
     private final CloseableHttpClient client;
     private final TaskScheduler taskScheduler;
     private final String crlServiceType;
+
+    /**
+     * Каждый CRL-сервис (default vs ca-crl) живёт в собственной поддиректории
+     * кэша. Без namespacing'а оба инстанса делят `crl/full` и `crl/delta`,
+     * и orphan-cleanup одного удаляет файлы другого как чужие.
+     */
+    private String cacheFullDir() {
+        return "crl/" + crlServiceType + "/full";
+    }
+
+    private String cacheDeltaDir() {
+        return "crl/" + crlServiceType + "/delta";
+    }
 
     @PostConstruct
     private void initializeScheduler() {
@@ -67,7 +78,7 @@ public class CrlService {
         val periodicTrigger = new PeriodicTrigger(crlConfiguration.getTtl(), TimeUnit.MINUTES);
         periodicTrigger.setInitialDelay(0);
         periodicTrigger.setFixedRate(true);
-        taskScheduler.schedule(() -> updateCache(false, crlConfiguration, CRL_CACHE_FULL_DIR_NAME), periodicTrigger);
+        taskScheduler.schedule(() -> updateCache(false, crlConfiguration, cacheFullDir()), periodicTrigger);
     }
 
     @PostConstruct
@@ -80,7 +91,7 @@ public class CrlService {
         val periodicTrigger = new PeriodicTrigger(crlConfiguration.getDelta().getTtl(), TimeUnit.MINUTES);
         periodicTrigger.setInitialDelay(0);
         periodicTrigger.setFixedRate(true);
-        taskScheduler.schedule(() -> updateCache(false, crlConfiguration.getDelta(), CRL_CACHE_DELTA_DIR_NAME), periodicTrigger);
+        taskScheduler.schedule(() -> updateCache(false, crlConfiguration.getDelta(), cacheDeltaDir()), periodicTrigger);
     }
 
     /**
@@ -115,7 +126,7 @@ public class CrlService {
             .map(CertificateWrapper::getPublicKey)
             .orElseGet(() -> selfSigned ? cert.getPublicKey() : null);
 
-        for (final String cacheDirectory : List.of(CRL_CACHE_DELTA_DIR_NAME, CRL_CACHE_FULL_DIR_NAME)) {
+        for (final String cacheDirectory : List.of(cacheDeltaDir(), cacheFullDir())) {
             for (File crlFile : getCrlFiles(cacheDirectory)) {
                 final X509CRL crl;
                 try {
