@@ -102,8 +102,14 @@ public class CertificateWrapper {
             .keyUser(getKeyUser())
             .publicKey(new String(Base64.getEncoder().encode(cert.getPublicKey().getEncoded())))
             .signature(new String(Base64.getEncoder().encode(cert.getSignature())))
-            .subject(createCertificateSubjectFromDn(cert.getSubjectX500Principal().toString()).orElse(null))
-            .issuer(createCertificateSubjectFromDn(cert.getIssuerX500Principal().toString()).orElse(null))
+            .subject(createCertificateSubjectFromDn(
+                cert.getSubjectX500Principal().toString(),
+                extractSanEmail(cert)
+            ).orElse(null))
+            .issuer(createCertificateSubjectFromDn(
+                cert.getIssuerX500Principal().toString(),
+                null
+            ).orElse(null))
             .build();
 
     }
@@ -241,10 +247,11 @@ public class CertificateWrapper {
         }
     }
 
-    private static Optional<CertificateSubject> createCertificateSubjectFromDn(String dn) {
+    private static Optional<CertificateSubject> createCertificateSubjectFromDn(String dn, String fallbackEmail) {
         try {
             final LdapName ldapName = new LdapName(dn);
             var subjectBuilder = CertificateSubject.builder();
+            String email = null;
 
             for (Rdn rdn : ldapName.getRdns()) {
                 if (rdn.getType().equalsIgnoreCase("CN")) {
@@ -267,7 +274,7 @@ public class CertificateWrapper {
                 } else if (rdn.getType().equalsIgnoreCase("S")) {
                     subjectBuilder.state((String)rdn.getValue());
                 } else if ((rdn.getType().equalsIgnoreCase("E")) || (rdn.getType().equalsIgnoreCase("EMAILADDRESS"))) {
-                    subjectBuilder.email((String)rdn.getValue());
+                    email = (String)rdn.getValue();
                 } else if (rdn.getType().equalsIgnoreCase("O")) {
                     subjectBuilder.organization((String)rdn.getValue());
                 } else if (rdn.getType().equalsIgnoreCase("OU")) {
@@ -279,6 +286,16 @@ public class CertificateWrapper {
 
             }
 
+            // Современные NCA-сертификаты кладут email в SubjectAlternativeName
+            // (rfc822Name), а не в Subject DN. Если в DN email не нашли,
+            // подставляем из SAN, который пришёл сверху.
+            if (email == null) {
+                email = fallbackEmail;
+            }
+            if (email != null) {
+                subjectBuilder.email(email);
+            }
+
             subjectBuilder.dn(dn);
 
             return Optional.of(subjectBuilder.build());
@@ -286,5 +303,34 @@ public class CertificateWrapper {
             log.warn("Distinguished name parsing error", e);
             return Optional.empty();
         }
+    }
+
+    /**
+     * Извлекает email из SubjectAlternativeName extension'а (RFC 5280 §4.2.1.6,
+     * GeneralName type 1 = rfc822Name). Современные NCA-сертификаты публикуют
+     * email именно здесь, а не в Subject DN.
+     *
+     * @return первый rfc822Name из SAN или null
+     */
+    private static String extractSanEmail(X509Certificate cert) {
+        try {
+            Collection<List<?>> sans = cert.getSubjectAlternativeNames();
+            if (sans == null) {
+                return null;
+            }
+            for (List<?> san : sans) {
+                if (san.size() < 2) {
+                    continue;
+                }
+                Object type = san.get(0);
+                Object value = san.get(1);
+                if (type instanceof Integer && ((Integer) type) == 1 && value instanceof String) {
+                    return (String) value;
+                }
+            }
+        } catch (CertificateParsingException e) {
+            log.warn("Failed to parse SubjectAlternativeName extension", e);
+        }
+        return null;
     }
 }
