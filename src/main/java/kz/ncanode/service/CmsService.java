@@ -287,11 +287,10 @@ public class CmsService {
                         // откатиться на currentDate: либо метка подделана, либо TSA
                         // не доверенна — в обоих случаях вся подпись считается
                         // невалидной (CAdES-T strict).
-                        Optional<TimeStampTokenInfo> verifiedTsp =
+                        TimeStampTokenInfo tspi =
                             tspService.verify(tspCms, signer.getSignature(), checkOcsp, checkCrl);
 
-                        if (verifiedTsp.isPresent()) {
-                            TimeStampTokenInfo tspi = verifiedTsp.get();
+                        if (tspi != null) {
 
                             try {
                                 TspInfo tspInfo = TspInfo.builder()

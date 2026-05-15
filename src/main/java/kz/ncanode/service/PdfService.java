@@ -202,9 +202,9 @@ public class PdfService {
 				// действия сертификата (RFC 5126). Иначе подпись с истёкшим cert'ом
 				// и валидной TSP-меткой считалась бы невалидной — что неверно.
 				validationDate = now;
-				java.util.Optional<TimeStampTokenInfo> verifiedTsp = extractAndVerifyTsp(si, withOcsp, withCrl);
-				if (verifiedTsp.isPresent() && verifiedTsp.get().getGenTime() != null) {
-					validationDate = verifiedTsp.get().getGenTime();
+				TimeStampTokenInfo verifiedTsp = extractAndVerifyTsp(si, withOcsp, withCrl);
+				if (verifiedTsp != null && verifiedTsp.getGenTime() != null) {
+					validationDate = verifiedTsp.getGenTime();
 				} else if (hasTspAttribute(si)) {
 					// TSP заявлен подписантом, но не прошёл строгую проверку —
 					// в CAdES-T это делает всю подпись невалидной.
@@ -278,10 +278,10 @@ public class PdfService {
 	 * если все проверки прошли (подпись TSA, messageImprint, EKU, валидность
 	 * цепочки TSA на genTime).
 	 */
-	private java.util.Optional<TimeStampTokenInfo> extractAndVerifyTsp(SignerInformation si,
+	private TimeStampTokenInfo extractAndVerifyTsp(SignerInformation si,
 			boolean checkOcsp, boolean checkCrl) {
 		if (!hasTspAttribute(si)) {
-			return java.util.Optional.empty();
+			return null;
 		}
 		try {
 			Object obj = si.getUnsignedAttributes().toHashtable()
@@ -294,14 +294,14 @@ public class PdfService {
 			}
 			if (attr.getAttrValues().size() != 1) {
 				log.warn("PDF signer has multiple TSP tokens, rejecting");
-				return java.util.Optional.empty();
+				return null;
 			}
 			CMSSignedData tspCms = new CMSSignedData(
 					attr.getAttrValues().getObjectAt(0).getDERObject().getEncoded());
 			return tspService.verify(tspCms, si.getSignature(), checkOcsp, checkCrl);
 		} catch (Exception e) {
 			log.warn("Failed to extract TSP from PDF signer: {}", e.getMessage());
-			return java.util.Optional.empty();
+			return null;
 		}
 	}
 
