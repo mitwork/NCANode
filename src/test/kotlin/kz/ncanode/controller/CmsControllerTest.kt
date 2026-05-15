@@ -8,11 +8,13 @@ import io.mockk.verify
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
+import kz.ncanode.dto.request.CmsExtractBatchRequest
 import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.CmsVerifyRequest
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.dto.response.CmsBatchResponse
 import kz.ncanode.dto.response.CmsDataResponse
+import kz.ncanode.dto.response.CmsExtractBatchResponse
 import kz.ncanode.dto.response.CmsResponse
 import kz.ncanode.dto.response.CmsVerificationBatchResponse
 import kz.ncanode.dto.response.CmsVerificationResponse
@@ -121,6 +123,26 @@ class CmsControllerTest : FunSpec({
         response.statusCode.value() shouldBe 200
         response.body!!.results.size shouldBe 2
         verify(exactly = 1) { service.verifyBatch(request) }
+    }
+
+    test("POST /cms/extract/batch delegates to CmsService.extractBatch") {
+        val service = mockk<CmsService>()
+        val batchResp = CmsExtractBatchResponse(
+            results = listOf(
+                CmsExtractBatchResponse.Item(data = "DATA-1"),
+                CmsExtractBatchResponse.Item(data = "DATA-2"),
+            )
+        )
+        every { service.extractBatch(any()) } returns batchResp
+
+        val request = CmsExtractBatchRequest().apply {
+            cms = listOf("CMS-1", "CMS-2")
+        }
+        val response = CmsController(service).extractBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        response.body!!.results.size shouldBe 2
+        verify(exactly = 1) { service.extractBatch(request) }
     }
 
     test("POST /cms/extract delegates to CmsService.extract") {

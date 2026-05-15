@@ -5,10 +5,12 @@ import jakarta.validation.Valid
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
+import kz.ncanode.dto.request.CmsExtractBatchRequest
 import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.CmsVerifyRequest
 import kz.ncanode.dto.response.CmsBatchResponse
 import kz.ncanode.dto.response.CmsDataResponse
+import kz.ncanode.dto.response.CmsExtractBatchResponse
 import kz.ncanode.dto.response.CmsResponse
 import kz.ncanode.dto.response.CmsVerificationBatchResponse
 import kz.ncanode.dto.response.CmsVerificationResponse
@@ -54,4 +56,8 @@ class CmsController(private val cmsService: CmsService) {
     @PostMapping("/extract")
     fun extract(@Valid @RequestBody request: CmsVerifyRequest): ResponseEntity<CmsDataResponse> =
         ResponseEntity.ok(cmsService.extract(request.cms))
+
+    @PostMapping("/extract/batch")
+    fun extractBatch(@Valid @RequestBody request: CmsExtractBatchRequest): ResponseEntity<CmsExtractBatchResponse> =
+        ResponseEntity.ok(cmsService.extractBatch(request))
 }

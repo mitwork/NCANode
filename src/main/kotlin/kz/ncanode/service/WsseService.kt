@@ -1,13 +1,20 @@
 package kz.ncanode.service
 
 import jakarta.xml.soap.MessageFactory
-import kz.ncanode.dto.request.WsseSignRequest
 import kz.ncanode.dto.certificate.CertificateInfo
+import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.WsseSignBatchRequest
+import kz.ncanode.dto.request.WsseSignRequest
+import kz.ncanode.dto.request.XmlVerifyBatchRequest
 import kz.ncanode.dto.response.VerificationResponse
+import kz.ncanode.dto.response.WsseSignBatchResponse
 import kz.ncanode.dto.response.XmlSignResponse
+import kz.ncanode.dto.response.XmlVerifyBatchResponse
+import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
+import org.springframework.http.HttpStatus
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.XMLSignatureWrapper
@@ -105,6 +112,34 @@ class WsseService(
     }
 
     /**
+     * Batch-подпись: каждый envelope в [WsseSignBatchRequest.xmls] подписывается
+     * общим ключом. Partial-response: ошибка на N-м item'е не валит остальные.
+     */
+    fun signBatch(request: WsseSignBatchRequest): WsseSignBatchResponse {
+        val items = request.xmls.map { xml ->
+            try {
+                val itemRequest = WsseSignRequest().apply {
+                    this.xml = xml
+                    this.key = request.key
+                    this.password = request.password
+                    this.keyAlias = request.keyAlias
+                    this.isTrimXml = request.isTrimXml
+                }
+                val response = sign(itemRequest)
+                WsseSignBatchResponse.Item(xml = response.xml)
+            } catch (e: ApplicationException) {
+                WsseSignBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                WsseSignBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return WsseSignBatchResponse(results = items)
+    }
+
+    /**
      * Проверяет подписанный SOAP-конверт.
      */
     fun verify(xml: String, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
@@ -164,6 +199,34 @@ class WsseService(
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
+    }
+
+    /**
+     * Batch-верификация SOAP envelope'ов. Каждый item проверяется
+     * независимо с общими revocation-флагами; на исключение item
+     * получает `valid=false` со status/message.
+     *
+     * Переиспользует [XmlVerifyBatchRequest] / [XmlVerifyBatchResponse] —
+     * формат запроса/ответа симметричен с XML batch verify
+     * (как и одиночные /wsse/verify и /xml/verify оба берут [kz.ncanode.dto.request.XmlVerifyRequest]).
+     */
+    fun verifyBatch(request: XmlVerifyBatchRequest): XmlVerifyBatchResponse {
+        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
+        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
+        val items = request.xmls.map { xml ->
+            try {
+                verify(xml, checkOcsp, checkCrl)
+            } catch (e: ApplicationException) {
+                VerificationResponse(valid = false, status = e.status, message = e.message)
+            } catch (e: Exception) {
+                VerificationResponse(
+                    valid = false,
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return XmlVerifyBatchResponse(results = items)
     }
 
     companion object {

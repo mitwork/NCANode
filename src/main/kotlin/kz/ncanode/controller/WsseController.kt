@@ -3,10 +3,14 @@ package kz.ncanode.controller
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
+import kz.ncanode.dto.request.XmlVerifyBatchRequest
 import kz.ncanode.dto.request.XmlVerifyRequest
 import kz.ncanode.dto.response.VerificationResponse
+import kz.ncanode.dto.response.WsseSignBatchResponse
 import kz.ncanode.dto.response.XmlSignResponse
+import kz.ncanode.dto.response.XmlVerifyBatchResponse
 import kz.ncanode.service.WsseService
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PostMapping
@@ -23,6 +27,10 @@ class WsseController(private val wsseService: WsseService) {
     fun sign(@Valid @RequestBody request: WsseSignRequest): ResponseEntity<XmlSignResponse> =
         ResponseEntity.ok(wsseService.sign(request))
 
+    @PostMapping("/sign/batch")
+    fun signBatch(@Valid @RequestBody request: WsseSignBatchRequest): ResponseEntity<WsseSignBatchResponse> =
+        ResponseEntity.ok(wsseService.signBatch(request))
+
     @PostMapping("/verify")
     fun verify(@Valid @RequestBody request: XmlVerifyRequest): ResponseEntity<VerificationResponse> =
         ResponseEntity.ok(
@@ -32,4 +40,8 @@ class WsseController(private val wsseService: WsseService) {
                 CertificateRevocation.CRL in request.revocationCheck,
             )
         )
+
+    @PostMapping("/verify/batch")
+    fun verifyBatch(@Valid @RequestBody request: XmlVerifyBatchRequest): ResponseEntity<XmlVerifyBatchResponse> =
+        ResponseEntity.ok(wsseService.verifyBatch(request))
 }

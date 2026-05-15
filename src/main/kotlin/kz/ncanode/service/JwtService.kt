@@ -5,13 +5,19 @@ import com.auth0.jwt.JWTCreator
 import com.auth0.jwt.algorithms.Algorithm
 import com.auth0.jwt.exceptions.JWTDecodeException
 import com.auth0.jwt.exceptions.JWTVerificationException
+import kz.ncanode.dto.request.JwtDecodeBatchRequest
 import kz.ncanode.dto.request.JwtDecodeRequest
+import kz.ncanode.dto.request.JwtEncodeBatchRequest
 import kz.ncanode.dto.request.JwtEncodeRequest
+import kz.ncanode.dto.response.JwtDecodeBatchResponse
 import kz.ncanode.dto.response.JwtDecodeResponse
+import kz.ncanode.dto.response.JwtEncodeBatchResponse
 import kz.ncanode.dto.response.JwtEncodeResponse
+import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
+import org.springframework.http.HttpStatus
 import kz.ncanode.wrapper.KalkanWrapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -60,6 +66,59 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
+    }
+
+    /**
+     * Batch-кодирование JWT: каждый header+payload в [JwtEncodeBatchRequest.jwts]
+     * подписывается общим ключом. Partial-response per item.
+     */
+    fun encodeBatch(request: JwtEncodeBatchRequest): JwtEncodeBatchResponse {
+        val items = request.jwts.map { jwt ->
+            try {
+                val itemRequest = JwtEncodeRequest().apply {
+                    this.jwt = jwt
+                    this.key = request.key
+                    this.password = request.password
+                    this.keyAlias = request.keyAlias
+                }
+                val response = encode(itemRequest)
+                JwtEncodeBatchResponse.Item(jwt = response.jwt)
+            } catch (e: ApplicationException) {
+                JwtEncodeBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                JwtEncodeBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return JwtEncodeBatchResponse(results = items)
+    }
+
+    /**
+     * Batch-декодирование JWT: каждый токен в [JwtDecodeBatchRequest.jwts]
+     * проверяется общим сертификатом. Ошибка верификации одного токена
+     * не валит остальных.
+     */
+    fun decodeBatch(request: JwtDecodeBatchRequest): JwtDecodeBatchResponse {
+        val items = request.jwts.map { token ->
+            try {
+                val itemRequest = JwtDecodeRequest().apply {
+                    this.jwt = token
+                    this.key = request.key
+                }
+                decode(itemRequest)
+            } catch (e: ApplicationException) {
+                JwtDecodeResponse(valid = false, status = e.status, message = e.message)
+            } catch (e: Exception) {
+                JwtDecodeResponse(
+                    valid = false,
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return JwtDecodeBatchResponse(results = items)
     }
 
     /**

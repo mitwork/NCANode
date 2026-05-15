@@ -5,10 +5,14 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kz.ncanode.dto.request.PdfSignBatchRequest
 import kz.ncanode.dto.request.PdfSignRequest
+import kz.ncanode.dto.request.PdfVerifyBatchRequest
 import kz.ncanode.dto.request.PdfVerifyRequest
+import kz.ncanode.dto.response.PdfSignBatchResponse
 import kz.ncanode.dto.response.PdfSignResponse
 import kz.ncanode.dto.response.PdfVerificationResponse
+import kz.ncanode.dto.response.PdfVerifyBatchResponse
 import kz.ncanode.service.PdfService
 
 class PdfControllerTest : FunSpec({
@@ -34,5 +38,33 @@ class PdfControllerTest : FunSpec({
 
         response.body!!.valid shouldBe true
         verify(exactly = 1) { service.verify(request) }
+    }
+
+    test("POST /pdf/sign/batch delegates to PdfService.signBatch") {
+        val service = mockk<PdfService>()
+        every { service.signBatch(any()) } returns PdfSignBatchResponse(
+            results = listOf(PdfSignBatchResponse.Item(pdf = "P1"), PdfSignBatchResponse.Item(pdf = "P2"))
+        )
+
+        val request = PdfSignBatchRequest().apply { pdfs = listOf("P", "Q") }
+        val response = PdfController(service).signBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        response.body!!.results.size shouldBe 2
+        verify(exactly = 1) { service.signBatch(request) }
+    }
+
+    test("POST /pdf/verify/batch delegates to PdfService.verifyBatch") {
+        val service = mockk<PdfService>()
+        every { service.verifyBatch(any()) } returns PdfVerifyBatchResponse(
+            results = listOf(PdfVerificationResponse(valid = true), PdfVerificationResponse(valid = false))
+        )
+
+        val request = PdfVerifyBatchRequest().apply { pdfs = listOf("P", "Q") }
+        val response = PdfController(service).verifyBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        response.body!!.results.size shouldBe 2
+        verify(exactly = 1) { service.verifyBatch(request) }
     }
 })

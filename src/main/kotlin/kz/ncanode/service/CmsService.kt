@@ -15,10 +15,12 @@ import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.cms.CmsSignerInfo
 import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
+import kz.ncanode.dto.request.CmsExtractBatchRequest
 import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.dto.response.CmsBatchResponse
 import kz.ncanode.dto.response.CmsDataResponse
+import kz.ncanode.dto.response.CmsExtractBatchResponse
 import kz.ncanode.dto.response.CmsResponse
 import kz.ncanode.dto.response.CmsVerificationBatchResponse
 import kz.ncanode.dto.response.CmsVerificationResponse
@@ -341,6 +343,28 @@ class CmsService(
             }
         }
         return CmsVerificationBatchResponse(results = items)
+    }
+
+    /**
+     * Batch-извлечение payload'а из массива CMS. Detached-CMS (без
+     * signedContent) корректно отметится как 500/ClientException
+     * без падения остальных.
+     */
+    fun extractBatch(request: CmsExtractBatchRequest): CmsExtractBatchResponse {
+        val items = request.cms.map { cms ->
+            try {
+                val response = extract(cms)
+                CmsExtractBatchResponse.Item(data = response.data)
+            } catch (e: ApplicationException) {
+                CmsExtractBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                CmsExtractBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return CmsExtractBatchResponse(results = items)
     }
 
     /**

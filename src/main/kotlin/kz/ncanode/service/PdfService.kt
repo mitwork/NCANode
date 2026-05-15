@@ -11,13 +11,19 @@ import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.gov.pki.kalkan.tsp.TimeStampTokenInfo
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.pdf.PdfSignerInfo
+import kz.ncanode.dto.request.PdfSignBatchRequest
 import kz.ncanode.dto.request.PdfSignRequest
+import kz.ncanode.dto.request.PdfVerifyBatchRequest
 import kz.ncanode.dto.request.PdfVerifyRequest
+import kz.ncanode.dto.response.PdfSignBatchResponse
 import kz.ncanode.dto.response.PdfSignResponse
 import kz.ncanode.dto.response.PdfVerificationResponse
+import kz.ncanode.dto.response.PdfVerifyBatchResponse
 import kz.ncanode.dto.tsp.TsaPolicy
+import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.NoSignaturesFoundException
 import kz.ncanode.exception.ServerException
+import org.springframework.http.HttpStatus
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
@@ -78,6 +84,57 @@ class PdfService(
     } catch (e: Exception) {
         log.error("Error signing PDF", e)
         throw ServerException("Error signing PDF: ${e.message}", e)
+    }
+
+    /**
+     * Batch-подпись PDF: каждый PDF в [PdfSignBatchRequest.pdfs] подписывается
+     * общим набором signer'ов и одинаковыми TSP/политикой. Partial-response.
+     */
+    fun signBatch(request: PdfSignBatchRequest): PdfSignBatchResponse {
+        val items = request.pdfs.map { pdf ->
+            try {
+                val itemRequest = PdfSignRequest().apply {
+                    this.pdf = pdf
+                    this.signers = request.signers
+                    this.isWithTsp = request.isWithTsp
+                    this.tsaPolicy = request.tsaPolicy
+                }
+                val response = sign(itemRequest)
+                PdfSignBatchResponse.Item(pdf = response.pdf)
+            } catch (e: ApplicationException) {
+                PdfSignBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                PdfSignBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return PdfSignBatchResponse(results = items)
+    }
+
+    /**
+     * Batch-верификация PDF: каждый PDF проверяется независимо.
+     */
+    fun verifyBatch(request: PdfVerifyBatchRequest): PdfVerifyBatchResponse {
+        val items = request.pdfs.map { pdf ->
+            try {
+                val itemRequest = PdfVerifyRequest().apply {
+                    this.pdf = pdf
+                    this.revocationCheck = request.revocationCheck
+                }
+                verify(itemRequest)
+            } catch (e: ApplicationException) {
+                PdfVerificationResponse(valid = false, status = e.status, message = e.message)
+            } catch (e: Exception) {
+                PdfVerificationResponse(
+                    valid = false,
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return PdfVerifyBatchResponse(results = items)
     }
 
     /**

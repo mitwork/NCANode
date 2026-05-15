@@ -7,7 +7,9 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import kz.ncanode.TestResources
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.PdfSignBatchRequest
 import kz.ncanode.dto.request.PdfSignRequest
+import kz.ncanode.dto.request.PdfVerifyBatchRequest
 import kz.ncanode.dto.request.PdfVerifyRequest
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.exception.NoSignaturesFoundException
@@ -118,6 +120,56 @@ class PdfServiceIntegrationTest(
             e
         }
         ex.shouldNotBeNull()
+    }
+
+    test("signBatch + verifyBatch roundtrip on N PDFs with shared signer") {
+        val request = PdfSignBatchRequest().apply {
+            pdfs = listOf(unsignedPdfBase64, unsignedPdfBase64)
+            signers = listOf(signerOf("individual_valid.p12"))
+        }
+        val signed = pdfService.signBatch(request)
+
+        signed.results shouldHaveSize 2
+        signed.results.forEach {
+            it.status shouldBe 200
+            it.pdf.shouldNotBeNull()
+        }
+
+        val verified = pdfService.verifyBatch(PdfVerifyBatchRequest().apply {
+            pdfs = signed.results.map { it.pdf!! }
+        })
+        verified.results shouldHaveSize 2
+        verified.results.forEach { it.valid shouldBe true }
+    }
+
+    test("signBatch: partial response — bad base64 doesn't kill others") {
+        val request = PdfSignBatchRequest().apply {
+            pdfs = listOf(unsignedPdfBase64, "###not-base64###", unsignedPdfBase64)
+            signers = listOf(signerOf("individual_valid.p12"))
+        }
+        val response = pdfService.signBatch(request)
+
+        response.results shouldHaveSize 3
+        response.results[0].status shouldBe 200
+        response.results[1].status shouldBe 500
+        response.results[2].status shouldBe 200
+    }
+
+    test("verifyBatch: unsigned PDF item gets 404 NoSignaturesFoundException, signed item passes") {
+        val signed = pdfService.sign(PdfSignRequest().apply {
+            pdf = unsignedPdfBase64
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+
+        val response = pdfService.verifyBatch(PdfVerifyBatchRequest().apply {
+            pdfs = listOf(signed.pdf!!, unsignedPdfBase64)
+        })
+
+        response.results shouldHaveSize 2
+        response.results[0].valid shouldBe true
+        // unsigned → NoSignaturesFoundException(status=404).
+        response.results[1].valid shouldBe false
+        response.results[1].status shouldBe 404
     }
 
     test("PdfSignerInfo fields populated: reason/location/contactInfo from request") {

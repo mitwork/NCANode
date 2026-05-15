@@ -6,10 +6,14 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
+import kz.ncanode.dto.request.XmlVerifyBatchRequest
 import kz.ncanode.dto.request.XmlVerifyRequest
 import kz.ncanode.dto.response.VerificationResponse
+import kz.ncanode.dto.response.WsseSignBatchResponse
 import kz.ncanode.dto.response.XmlSignResponse
+import kz.ncanode.dto.response.XmlVerifyBatchResponse
 import kz.ncanode.service.WsseService
 
 class WsseControllerTest : FunSpec({
@@ -50,5 +54,33 @@ class WsseControllerTest : FunSpec({
         WsseController(service).verify(request)
 
         verify(exactly = 1) { service.verify("<signed/>", false, true) }
+    }
+
+    test("POST /wsse/sign/batch delegates to WsseService.signBatch") {
+        val service = mockk<WsseService>()
+        every { service.signBatch(any()) } returns WsseSignBatchResponse(
+            results = listOf(WsseSignBatchResponse.Item(xml = "<a/>"))
+        )
+
+        val request = WsseSignBatchRequest().apply {
+            xmls = listOf("<a/>"); key = "K"; password = "P"
+        }
+        val response = WsseController(service).signBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        verify(exactly = 1) { service.signBatch(request) }
+    }
+
+    test("POST /wsse/verify/batch delegates to WsseService.verifyBatch") {
+        val service = mockk<WsseService>()
+        every { service.verifyBatch(any()) } returns XmlVerifyBatchResponse(
+            results = listOf(VerificationResponse(valid = true))
+        )
+
+        val request = XmlVerifyBatchRequest().apply { xmls = listOf("<signed/>") }
+        val response = WsseController(service).verifyBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        verify(exactly = 1) { service.verifyBatch(request) }
     }
 })

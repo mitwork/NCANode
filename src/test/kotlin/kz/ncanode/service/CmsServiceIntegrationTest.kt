@@ -10,6 +10,7 @@ import kz.ncanode.TestResources
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
+import kz.ncanode.dto.request.CmsExtractBatchRequest
 import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
 import org.springframework.beans.factory.annotation.Autowired
@@ -326,6 +327,47 @@ class CmsServiceIntegrationTest(
         // Невалидный CMS — verify() кидает ClientException(400) на парсинге.
         response.results[1].valid shouldBe false
         response.results[1].status shouldBe 400
+    }
+
+    test("extractBatch: roundtrip — sign + extract returns original payloads") {
+        val payloads = listOf("alpha", "beta", "gamma")
+        val signed = cmsService.createBatch(CmsCreateBatchRequest().apply {
+            data = payloads.map { b64(it) }
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+
+        val extracted = cmsService.extractBatch(CmsExtractBatchRequest().apply {
+            cms = signed.results.map { it.cms!! }
+        })
+
+        extracted.results shouldHaveSize 3
+        extracted.results.forEachIndexed { i, item ->
+            item.status shouldBe 200
+            String(java.util.Base64.getDecoder().decode(item.data!!)) shouldBe payloads[i]
+        }
+    }
+
+    test("extractBatch: detached CMS item gets 400 ClientException, others succeed") {
+        val signedAttached = cmsService.create(CmsCreateRequest().apply {
+            data = b64("attached-payload")
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+        val signedDetached = cmsService.create(CmsCreateRequest().apply {
+            data = b64("detached-payload")
+            signers = listOf(signerOf("individual_valid.p12"))
+            isDetached = true
+        })
+
+        val response = cmsService.extractBatch(CmsExtractBatchRequest().apply {
+            cms = listOf(signedAttached.cms!!, signedDetached.cms!!)
+        })
+
+        response.results shouldHaveSize 2
+        response.results[0].status shouldBe 200
+        response.results[0].data.shouldNotBeNull()
+        // Detached CMS не имеет signedContent — extract бросает ClientException(400).
+        response.results[1].status shouldBe 400
+        response.results[1].data shouldBe null
     }
 
     test("createBatch: partial response — bad data in middle doesn't kill the rest") {
