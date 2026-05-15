@@ -56,10 +56,37 @@ public class Util {
     }
 
     public static URL createNewUrl(String url, Logger log) {
+        if (url == null) {
+            return null;
+        }
+        String trimmed = url.trim();
+        // Java URL-конструктор lenient: пропускает строки с whitespace/control
+        // символами, оставляя их в path. Но URI.create() (используется в
+        // HttpGet) strict — падает на таких символах. Чтобы не получить
+        // отложенный URISyntaxException на этапе скачивания, фильтруем здесь.
+        //
+        // Реальный кейс: легаси-NCA CA-cert'ы содержат CRL DP с двумя URL'ами,
+        // склеенными через "\n URL=...". Это malformed cert, но он существует
+        // и не повлияет на остальные DistributionPoints, если мы просто
+        // отбросим такие записи.
+        for (int i = 0; i < trimmed.length(); i++) {
+            char c = trimmed.charAt(i);
+            if (Character.isWhitespace(c) || Character.isISOControl(c)) {
+                // DEBUG, не WARN: типичный кейс — легаси NCA-cert'ы
+                // (nca_gost.crt / nca_rsa.crt) с CRL DP вида
+                // "url1\n               URL=url2" (псевдо-human-readable
+                // форматирование, попавшее в ASN.1 IA5String). NCA выдала
+                // эти CA из активного обслуживания, починить с нашей стороны
+                // нельзя. Шум в WARN бесполезен; при diagnose видно через
+                // --debug.
+                log.debug("Skipping malformed URL with whitespace/control characters: '{}'", trimmed);
+                return null;
+            }
+        }
         try {
-            return new URL(url);
+            return new URL(trimmed);
         } catch (MalformedURLException e) {
-            log.warn("Cannot parse url '{}'", url, e);
+            log.warn("Cannot parse url '{}'", trimmed, e);
             return null;
         }
     }
