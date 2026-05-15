@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.spring.boot)
     alias(libs.plugins.spring.dependency.management)
     java
+    jacoco
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.spring)
 }
@@ -91,6 +92,33 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
+    classDirectories.setFrom(
+        files(classDirectories.files.map {
+            fileTree(it).apply {
+                // Шум для покрытия: DTO data classes, ENUM-объекты, Spring boilerplate,
+                // main-точка. Хочется видеть покрытие сервисов / wrapper'ов / util'ов.
+                exclude(
+                    "kz/ncanode/NCANode*",
+                    "kz/ncanode/NCANode\$OpenApiConfig*",
+                    "kz/ncanode/constants/**",
+                    "kz/ncanode/dto/**",
+                    "kz/ncanode/exception/**",
+                    "kz/ncanode/configuration/**",
+                    "kz/ncanode/oid/**",
+                )
+            }
+        })
+    )
 }
 
 springBoot {
