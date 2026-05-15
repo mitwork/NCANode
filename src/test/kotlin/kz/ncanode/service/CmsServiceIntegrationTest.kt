@@ -3,9 +3,9 @@ package kz.ncanode.service
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldHaveSize
-import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import kz.ncanode.TestResources
 import kz.ncanode.dto.request.CmsCreateRequest
 import kz.ncanode.dto.request.SignerRequest
@@ -151,5 +151,76 @@ class CmsServiceIntegrationTest(
         val signed = cmsService.create(request)
         val verification = cmsService.verify(signed.cms!!, null, checkOcsp = false, checkCrl = false)
         verification.valid shouldBe false
+    }
+
+    test("addSigners appends a second signer to existing CMS") {
+        val firstSigned = cmsService.create(CmsCreateRequest().apply {
+            data = b64("addSigners payload")
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+
+        val second = cmsService.addSigners(CmsCreateRequest().apply {
+            cms = firstSigned.cms
+            signers = listOf(signerOf("legal_ceo_valid.p12"))
+        })
+
+        val verification = cmsService.verify(second.cms!!, null, checkOcsp = false, checkCrl = false)
+        verification.valid shouldBe true
+        verification.signers shouldHaveSize 2
+    }
+
+    test("addSigners preserves TSP attribute on already-signed signers") {
+        // 1) Первый раз — с TSP.
+        val firstSigned = cmsService.create(CmsCreateRequest().apply {
+            data = b64("preserve TSP test")
+            signers = listOf(signerOf("individual_valid.p12"))
+            isWithTsp = true
+        })
+
+        // 2) Добавляем второго с TSP — у первого TSP должен остаться, у нового — тоже.
+        val second = cmsService.addSigners(CmsCreateRequest().apply {
+            cms = firstSigned.cms
+            signers = listOf(signerOf("legal_ceo_valid.p12"))
+            isWithTsp = true
+        })
+
+        val verification = cmsService.verify(second.cms!!, null, checkOcsp = false, checkCrl = false)
+        verification.valid shouldBe true
+        verification.signers shouldHaveSize 2
+        verification.signers.forEach { it.tsp.shouldNotBeNull() }
+    }
+
+    test("addSigners requires non-empty cms argument") {
+        val ex = try {
+            cmsService.addSigners(CmsCreateRequest().apply {
+                cms = null
+                signers = listOf(signerOf("individual_valid.p12"))
+            })
+            null
+        } catch (e: Exception) {
+            e
+        }
+        ex.shouldNotBeNull()
+        ex.message.shouldNotBeNull() shouldContain "CMS"
+    }
+
+    test("addSigners on detached CMS requires data argument") {
+        val firstSigned = cmsService.create(CmsCreateRequest().apply {
+            data = b64("detached for re-sign")
+            signers = listOf(signerOf("individual_valid.p12"))
+            isDetached = true
+        })
+
+        val ex = try {
+            cmsService.addSigners(CmsCreateRequest().apply {
+                cms = firstSigned.cms
+                // data НЕ передаём — для detached CMS это ошибка.
+                signers = listOf(signerOf("legal_ceo_valid.p12"))
+            })
+            null
+        } catch (e: Exception) {
+            e
+        }
+        ex.shouldNotBeNull()
     }
 })
