@@ -9,8 +9,10 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import kz.ncanode.TestResources
+import kz.ncanode.dto.request.Pkcs12AliasesBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
+import kz.ncanode.dto.request.SbaVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.dto.request.X509InfoBatchRequest
 import kz.ncanode.wrapper.KalkanWrapper
@@ -163,6 +165,35 @@ class CertificateServiceIntegrationTest(
         signer.valid shouldBe false
     }
 
+    test("verifyBatch (SBA): mixed items — valid cert + non-cert give per-item results") {
+        val validCert = extractCertBase64("individual_valid.p12")
+
+        val response = certificateService.verifyBatch(SbaVerifyBatchRequest().apply {
+            items = listOf(
+                // Валидный cert + garbage signature → valid=false, signer заполнен.
+                SbaVerifyBatchRequest.Item().apply {
+                    certificate = validCert
+                    signature = Base64.getEncoder().encodeToString(ByteArray(64) { 0 })
+                    data = "anything"
+                },
+                // Не-cert → valid=false, signer=null.
+                SbaVerifyBatchRequest.Item().apply {
+                    certificate = nonCertBase64
+                    signature = "AA=="
+                    data = "x"
+                },
+            )
+        })
+
+        response.results shouldHaveSize 2
+        response.results[0].valid shouldBe false
+        response.results[0].signers shouldHaveSize 1
+        response.results[0].signers[0].shouldNotBeNull()
+        response.results[1].valid shouldBe false
+        response.results[1].signers shouldHaveSize 1
+        response.results[1].signers[0].shouldBeNull()
+    }
+
     test("verifyCertsBatch: per-key status — bad password / good key coexist") {
         val response = certificateService.verifyCertsBatch(Pkcs12InfoBatchRequest().apply {
             keys = listOf(
@@ -185,6 +216,29 @@ class CertificateServiceIntegrationTest(
         // и пишет per-item status=500.
         response.results[1].status shouldBe 500
         response.results[1].signer.shouldBeNull()
+    }
+
+    test("aliasesBatch: per-key — valid p12 returns aliases, bad password returns 400") {
+        val response = certificateService.aliasesBatch(Pkcs12AliasesBatchRequest().apply {
+            keys = listOf(
+                SignerRequest().apply {
+                    key = TestResources.loadAsBase64("p12/individual_valid.p12")
+                    password = TestResources.P12_PASSWORD
+                },
+                SignerRequest().apply {
+                    key = TestResources.loadAsBase64("p12/individual_valid.p12")
+                    password = "wrong"
+                },
+            )
+        })
+
+        response.results shouldHaveSize 2
+        response.results[0].status shouldBe 200
+        response.results[0].aliases.shouldNotBeNull()
+        (response.results[0].aliases.size >= 1) shouldBe true
+        // KeyException на неверном пароле → per-item 400, aliases пуст.
+        response.results[1].status shouldBe 400
+        response.results[1].aliases shouldBe emptyList()
     }
 
     test("attachValidationData is idempotent: second call doesn't re-fetch OCSP") {

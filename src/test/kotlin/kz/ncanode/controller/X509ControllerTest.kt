@@ -6,9 +6,11 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.SbaVerifyBatchRequest
 import kz.ncanode.dto.request.SbaVerifyRequest
 import kz.ncanode.dto.request.X509InfoBatchRequest
 import kz.ncanode.dto.request.X509InfoRequest
+import kz.ncanode.dto.response.SbaVerifyBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.X509InfoBatchResponse
 import kz.ncanode.service.CertificateService
@@ -59,5 +61,25 @@ class X509ControllerTest : FunSpec({
         X509Controller(service).verify(request)
 
         verify(exactly = 1) { service.verify("CERT", "SIG", "DATA", /* OCSP */ false, /* CRL */ true) }
+    }
+
+    test("POST /x509/verify/batch delegates to CertificateService.verifyBatch") {
+        val service = mockk<CertificateService>()
+        every { service.verifyBatch(any()) } returns SbaVerifyBatchResponse(
+            results = listOf(VerificationResponse(valid = true), VerificationResponse(valid = false))
+        )
+
+        val request = SbaVerifyBatchRequest().apply {
+            items = listOf(
+                SbaVerifyBatchRequest.Item().apply { certificate = "C1"; signature = "S1"; data = "D1" },
+                SbaVerifyBatchRequest.Item().apply { certificate = "C2"; signature = "S2"; data = "D2" },
+            )
+            revocationCheck = setOf(CertificateRevocation.OCSP)
+        }
+        val response = X509Controller(service).verifyBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        response.body!!.results.size shouldBe 2
+        verify(exactly = 1) { service.verifyBatch(request) }
     }
 })

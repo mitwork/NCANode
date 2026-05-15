@@ -5,14 +5,19 @@ import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.constants.MessageConstants
 import kz.ncanode.dto.certificate.CertificateInfo
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.Pkcs12AliasesBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
+import kz.ncanode.dto.request.SbaVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.dto.request.X509InfoBatchRequest
+import kz.ncanode.dto.response.Pkcs12AliasesBatchResponse
 import kz.ncanode.dto.response.Pkcs12InfoBatchResponse
+import kz.ncanode.dto.response.SbaVerifyBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.X509InfoBatchResponse
 import kz.ncanode.exception.ApplicationException
+import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
 import org.springframework.http.HttpStatus
 import kz.ncanode.wrapper.CertificateWrapper
@@ -192,6 +197,35 @@ class CertificateService(
         return Pkcs12InfoBatchResponse(results = items)
     }
 
+    /**
+     * Batch-чтение alias'ов из массива p12-ключей. Каждый key читается
+     * по отдельности; ошибка в одном (битый p12 / неверный пароль) не
+     * валит остальных — на каждый ключ отдаётся свой status + aliases.
+     */
+    fun aliasesBatch(request: Pkcs12AliasesBatchRequest): Pkcs12AliasesBatchResponse {
+        val items = request.keys.map { key ->
+            try {
+                val keystore = kalkanWrapper.read(key.key, key.keyAlias, key.password)
+                Pkcs12AliasesBatchResponse.Item(aliases = keystore.aliases)
+            } catch (e: KeyException) {
+                // KeyException — checked, не наследует ApplicationException;
+                // битый p12 / неверный пароль / отсутствующий alias — клиентская ошибка.
+                Pkcs12AliasesBatchResponse.Item(
+                    status = HttpStatus.BAD_REQUEST.value(),
+                    message = e.message,
+                )
+            } catch (e: ApplicationException) {
+                Pkcs12AliasesBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                Pkcs12AliasesBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return Pkcs12AliasesBatchResponse(results = items)
+    }
+
     fun info(certsBase64: List<String>, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
         try {
             var valid = true
@@ -236,6 +270,30 @@ class CertificateService(
         } catch (e: IOException) {
             throw ServerException(e.message, e)
         }
+    }
+
+    /**
+     * Batch-проверка SBA: каждый элемент (cert, signature, data) обрабатывается
+     * независимо общими revocation-флагами. На исключение item получает
+     * `valid=false` со status/message — остальные продолжают.
+     */
+    fun verifyBatch(request: SbaVerifyBatchRequest): SbaVerifyBatchResponse {
+        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
+        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
+        val items = request.items.map { item ->
+            try {
+                verify(item.certificate, item.signature, item.data, checkOcsp, checkCrl)
+            } catch (e: ApplicationException) {
+                VerificationResponse(valid = false, status = e.status, message = e.message)
+            } catch (e: Exception) {
+                VerificationResponse(
+                    valid = false,
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return SbaVerifyBatchResponse(results = items)
     }
 
     fun verify(

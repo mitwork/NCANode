@@ -2,8 +2,10 @@ package kz.ncanode.controller
 
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
+import kz.ncanode.dto.request.Pkcs12AliasesBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
+import kz.ncanode.dto.response.Pkcs12AliasesBatchResponse
 import kz.ncanode.dto.response.Pkcs12AliasesResponse
 import kz.ncanode.dto.response.Pkcs12InfoBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
@@ -38,4 +40,8 @@ class Pkcs12Controller(
                 aliases = kalkanWrapper.read(request.keys).map { it.aliases },
             )
         )
+
+    @PostMapping("/aliases/batch")
+    fun aliasesBatch(@Valid @RequestBody request: Pkcs12AliasesBatchRequest): ResponseEntity<Pkcs12AliasesBatchResponse> =
+        ResponseEntity.ok(certificateService.aliasesBatch(request))
 }

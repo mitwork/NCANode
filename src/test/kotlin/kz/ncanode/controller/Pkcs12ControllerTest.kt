@@ -5,9 +5,11 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kz.ncanode.dto.request.Pkcs12AliasesBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
 import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.dto.response.Pkcs12AliasesBatchResponse
 import kz.ncanode.dto.response.Pkcs12InfoBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.service.CertificateService
@@ -49,6 +51,30 @@ class Pkcs12ControllerTest : FunSpec({
         response.statusCode.value() shouldBe 200
         response.body!!.results.size shouldBe 2
         verify(exactly = 1) { certService.verifyCertsBatch(request) }
+    }
+
+    test("POST /pkcs12/aliases/batch delegates to CertificateService.aliasesBatch") {
+        val certService = mockk<CertificateService>()
+        val kalkanWrapper = mockk<KalkanWrapper>()
+        every { certService.aliasesBatch(any()) } returns Pkcs12AliasesBatchResponse(
+            results = listOf(
+                Pkcs12AliasesBatchResponse.Item(aliases = listOf("alias-1")),
+                Pkcs12AliasesBatchResponse.Item(aliases = listOf("alias-2a", "alias-2b")),
+            )
+        )
+
+        val request = Pkcs12AliasesBatchRequest().apply {
+            keys = listOf(
+                SignerRequest().apply { key = "K1"; password = "P" },
+                SignerRequest().apply { key = "K2"; password = "P" },
+            )
+        }
+        val response = Pkcs12Controller(certService, kalkanWrapper).aliasesBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        response.body!!.results.size shouldBe 2
+        response.body!!.results[1].aliases.size shouldBe 2
+        verify(exactly = 1) { certService.aliasesBatch(request) }
     }
 
     test("POST /pkcs12/aliases reads keys via KalkanWrapper and returns list of alias lists") {
