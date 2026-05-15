@@ -1,0 +1,39 @@
+spring:
+  main:
+    banner-mode: off
+server:
+  port: 0   # random port для integration-тестов
+ncanode:
+  system:
+    detailedErrors: true
+    cacheDir: ${java.io.tmpdir}/ncanode-test-cache
+    requestLog:
+      enabled: false
+  crl:
+    enabled: true
+    cacheEnabled: true
+    warmupEnabled: false
+    ttl: 1440
+    url: http://test.pki.gov.kz/crl/nca_gost2022_test.crl
+    delta:
+      url: http://test.pki.gov.kz/crl/nca_gost2022_d_test.crl
+      ttl: 60
+  http-client:
+    connectionTtl: 10
+  ocsp:
+    url: http://test.pki.gov.kz/ocsp/
+    parallelEnabled: true
+  ca:
+    url: http://test.pki.gov.kz/cert/root_test_gost_2022.cer http://test.pki.gov.kz/cert/nca_gost2022_test.cer
+    ttl: 1440
+    crl:
+      enabled: true
+      cacheEnabled: true
+      warmupEnabled: false
+      ttl: 1440
+      url: http://test.pki.gov.kz/crl/nca_gost2022_test.crl
+      delta:
+        enabled: false
+  tsp:
+    url: http://test.pki.gov.kz/tsp/
+    retries: 3

@@ -79,6 +79,18 @@ dependencies {
     // BouncyCastle — bcprov-jdk18on (Java 17+ artifacts).
     implementation("org.bouncycastle:bcprov-jdk18on:1.84")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.84")
+
+    // Тесты — Kotest (JUnit 5 runner) + MockK + Spring Boot Test.
+    testImplementation("org.springframework.boot:spring-boot-starter-test") {
+        exclude(group = "org.junit.vintage", module = "junit-vintage-engine")
+    }
+    testImplementation(libs.bundles.kotest)
+    testImplementation(libs.kotest.spring)
+    testImplementation(libs.mockk)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 springBoot {
