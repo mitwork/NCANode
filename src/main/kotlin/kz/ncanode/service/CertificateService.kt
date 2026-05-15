@@ -155,7 +155,7 @@ class CertificateService(
                 valid = false
             }
 
-            return VerificationResponse(valid = valid, signers = certs).also { it.message = message }
+            return VerificationResponse(valid = valid, signers = certs, message = message)
         } catch (e: CertificateException) {
             throw ServerException(e.message, e)
         } catch (e: NoSuchProviderException) {
@@ -184,7 +184,7 @@ class CertificateService(
                 message = String.format(MessageConstants.CERT_INVALID, 0)
                 certs.add(null)
                 valid = false
-                return VerificationResponse(valid = valid, signers = certs).also { it.message = message }
+                return VerificationResponse(valid = valid, signers = certs, message = message)
             }
 
             val dataBytes = data.toByteArray(StandardCharsets.UTF_8)
@@ -205,7 +205,7 @@ class CertificateService(
 
             certs.add(cert.toCertificateInfo(currentDate, checkOcsp, checkCrl))
 
-            return VerificationResponse(valid = valid, signers = certs).also { it.message = message }
+            return VerificationResponse(valid = valid, signers = certs, message = message)
         } catch (e: CertificateException) {
             throw ServerException(e.message, e)
         } catch (e: NoSuchProviderException) {
