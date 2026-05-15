@@ -4,6 +4,10 @@ plugins {
     java
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.spring)
+    // Позволяет Kotlin-коду видеть Lombok-генерируемые геттеры/builder'ы
+    // (`@Data`, `@Builder`, `@Getter`) у Java-классов. Удалить, когда последний
+    // Java-DTO/Java-сервис будет портирован.
+    alias(libs.plugins.kotlin.lombok)
 }
 
 group = "kz"

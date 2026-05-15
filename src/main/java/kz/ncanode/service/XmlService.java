@@ -109,7 +109,7 @@ public class XmlService {
             }
 
             final XMLSignatureWrapper xmlSignature = new XMLSignatureWrapper(signature);
-            val cert = xmlSignature.getCertificate().orElse(null);
+            val cert = xmlSignature.getCertificate();
 
             if (cert == null) {
                 valid = false;

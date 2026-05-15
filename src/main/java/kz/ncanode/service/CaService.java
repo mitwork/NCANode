@@ -88,7 +88,7 @@ public class CaService {
                     if (force || !caFile.exists() || !caFile.canRead() || stale) {
                         cert = downloadCert(urlEntry.getValue(), caFile);
                     } else {
-                        cert = CertificateWrapper.fromFile(caFile).orElse(null);
+                        cert = CertificateWrapper.fromFile(caFile);
                     }
 
                     checkCertForNull(urlEntry, cert, caFile);
@@ -169,7 +169,7 @@ public class CaService {
             log.info("Downloading CA file: {}", url.toString());
             download(url, file);
             log.info("Download complete");
-            return CertificateWrapper.fromFile(file).orElse(null);
+            return CertificateWrapper.fromFile(file);
         } catch (CaException e) {
             log.error(e.getMessage());
             return null;
@@ -203,7 +203,7 @@ public class CaService {
                     certs = Arrays.stream(Objects.requireNonNull(directoryService.getCachePathFor(CA_CACHE_DIR_NAME).orElseThrow().listFiles()))
                         .filter(f -> f.isFile() && f.canRead() && f.getName().endsWith(CA_FILE_EXTENSION))
                         .map(CertificateWrapper::fromFile)
-                        .map(Optional::orElseThrow)
+                        .filter(Objects::nonNull)
                         .toList();
 
                     certificates.addAll(certs);
