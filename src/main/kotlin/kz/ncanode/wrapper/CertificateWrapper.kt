@@ -208,8 +208,8 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
 
         fun fromInputStream(inputStream: InputStream): CertificateWrapper? = try {
             val cert = CertificateFactory.getInstance("X.509", KalkanProvider.PROVIDER_NAME)
-                .generateCertificate(inputStream) as X509Certificate
-            CertificateWrapper(cert)
+                .generateCertificate(inputStream) as? X509Certificate
+            cert?.let { CertificateWrapper(it) }
         } catch (e: CertificateException) { null }
           catch (e: NoSuchProviderException) { null }
 
