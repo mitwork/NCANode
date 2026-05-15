@@ -79,7 +79,7 @@ public class CaService {
 
                 for (var urlEntry : urls.entrySet()) {
                     File caFile = new File(
-                        directoryService.getCachePathFor(CA_CACHE_DIR_NAME).orElseThrow(),
+                        java.util.Objects.requireNonNull(directoryService.getCachePathFor(CA_CACHE_DIR_NAME)),
                         urlEntry.getKey() + CA_FILE_EXTENSION
                     );
                     boolean stale = caFile.exists() && (now - caFile.lastModified()) > ttlMillis;
@@ -141,7 +141,7 @@ public class CaService {
     }
 
     private void deleteOrphanCacheFiles(Set<String> validKeys) {
-        File cacheDir = directoryService.getCachePathFor(CA_CACHE_DIR_NAME).orElse(null);
+        File cacheDir = directoryService.getCachePathFor(CA_CACHE_DIR_NAME);
         if (cacheDir == null) {
             return;
         }
@@ -200,7 +200,7 @@ public class CaService {
                 if (!certificates.isEmpty()) {
                     certs = certificates;
                 } else {
-                    certs = Arrays.stream(Objects.requireNonNull(directoryService.getCachePathFor(CA_CACHE_DIR_NAME).orElseThrow().listFiles()))
+                    certs = Arrays.stream(Objects.requireNonNull(directoryService.getCachePathFor(CA_CACHE_DIR_NAME).listFiles()))
                         .filter(f -> f.isFile() && f.canRead() && f.getName().endsWith(CA_FILE_EXTENSION))
                         .map(CertificateWrapper::fromFile)
                         .filter(Objects::nonNull)

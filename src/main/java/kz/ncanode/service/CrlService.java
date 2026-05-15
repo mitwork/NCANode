@@ -375,7 +375,7 @@ public class CrlService {
 
             for (var crlEntry : crlConfiguration.getUrlList().entrySet()) {
                 File crlFile = new File(
-                    directoryService.getCachePathFor(cacheDirectory).orElseThrow(),
+                    java.util.Objects.requireNonNull(directoryService.getCachePathFor(cacheDirectory)),
                     crlEntry.getKey() + CRL_FILE_EXTENSION
                 );
 
@@ -423,7 +423,7 @@ public class CrlService {
         final long ttlMillis = (long) crlConfiguration.getTtl() * 60_000L;
         final long now = System.currentTimeMillis();
         final String dirName = cacheOnDemandDir();
-        File cacheDir = directoryService.getCachePathFor(dirName).orElse(null);
+        File cacheDir = directoryService.getCachePathFor(dirName);
         if (cacheDir == null) {
             return;
         }
@@ -472,7 +472,7 @@ public class CrlService {
     }
 
     private boolean fileExistsIn(String dirName, String fileName) {
-        File dir = directoryService.getCachePathFor(dirName).orElse(null);
+        File dir = directoryService.getCachePathFor(dirName);
         if (dir == null) {
             return false;
         }
@@ -489,7 +489,7 @@ public class CrlService {
     }
 
     private void deleteOrphanCrlFiles(Set<String> validKeys, String cacheDirName) {
-        File cacheDir = directoryService.getCachePathFor(cacheDirName).orElse(null);
+        File cacheDir = directoryService.getCachePathFor(cacheDirName);
         if (cacheDir == null) {
             return;
         }
@@ -554,7 +554,7 @@ public class CrlService {
      * @return
      */
     public List<File> getCrlFiles(String cacheDirName) {
-        return Arrays.stream(Objects.requireNonNull(directoryService.getCachePathFor(cacheDirName).orElseThrow().listFiles()))
+        return Arrays.stream(Objects.requireNonNull(java.util.Objects.requireNonNull(directoryService.getCachePathFor(cacheDirName)).listFiles()))
             .filter(file -> file.isFile() && file.canRead() && file.getName().endsWith(CRL_FILE_EXTENSION))
             .toList();
     }
@@ -601,6 +601,6 @@ public class CrlService {
     }
 
     private File getCrlCacheFilePathFor(String cacheDirName, String fileName) {
-        return new File(directoryService.getCachePathFor(cacheDirName).orElseThrow(), fileName);
+        return new File(java.util.Objects.requireNonNull(directoryService.getCachePathFor(cacheDirName)), fileName);
     }
 }
