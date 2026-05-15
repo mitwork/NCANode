@@ -12,8 +12,9 @@ import kz.ncanode.wrapper.KeyStoreWrapper;
 import kz.ncanode.wrapper.XMLSignatureWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.ws.security.components.crypto.CertificateStore;
-import org.apache.ws.security.message.token.SecurityTokenReference;
+import org.apache.wss4j.common.bsp.BSPEnforcer;
+import org.apache.wss4j.common.crypto.CertificateStore;
+import org.apache.wss4j.common.token.SecurityTokenReference;
 import org.apache.wss4j.dom.WSConstants;
 import org.apache.wss4j.dom.message.WSSecHeader;
 import org.apache.xml.security.c14n.Canonicalizer;
@@ -26,7 +27,7 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import javax.xml.namespace.QName;
-import javax.xml.soap.*;
+import jakarta.xml.soap.*;
 import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
@@ -161,7 +162,7 @@ public class WsseService {
                     valid = false;
                     continue;
                 }
-                SecurityTokenReference ref = new SecurityTokenReference((Element) strInSignature.item(0));
+                SecurityTokenReference ref = new SecurityTokenReference((Element) strInSignature.item(0), new BSPEnforcer(true));
                 X509Certificate[] resolved = ref.getKeyIdentifier(new CertificateStore(new X509Certificate[]{}));
                 if (resolved == null || resolved.length == 0) {
                     log.warn("WSSE signature #{} could not resolve a certificate from STR", i);

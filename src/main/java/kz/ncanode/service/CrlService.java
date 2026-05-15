@@ -20,7 +20,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.support.PeriodicTrigger;
 
-import javax.annotation.PostConstruct;
+import jakarta.annotation.PostConstruct;
 import javax.security.auth.x500.X500Principal;
 import java.io.File;
 import java.io.FileInputStream;

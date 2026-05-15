@@ -6,8 +6,8 @@
 #   commit 4:        Spring Boot 2.7 → 3.x (javax → jakarta)
 #   commit 5:        Spring Boot 3.x → 4.x
 kotlin = "2.3.21"
-springBoot = "2.7.2"
-springDependencyManagement = "1.0.12.RELEASE"
+springBoot = "3.4.5"
+springDependencyManagement = "1.1.7"
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

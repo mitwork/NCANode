@@ -18,6 +18,7 @@ import kz.ncanode.wrapper.KeyStoreWrapper;
 import kz.ncanode.wrapper.KalkanWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.SignatureInterface;
@@ -54,7 +55,7 @@ public class PdfService {
 			byte[] pdfBytes = Base64.getDecoder().decode(pdfSignRequest.getPdf());
 
 			// Load PDF document
-			PDDocument document = PDDocument.load(new ByteArrayInputStream(pdfBytes));
+			PDDocument document = Loader.loadPDF(pdfBytes);
 
 			// Apply PDF signers
 			for (PdfSignRequest.PdfSigner pdfSigner : pdfSignRequest.getSigners()) {
@@ -101,7 +102,7 @@ public class PdfService {
 			byte[] pdfBytes = Base64.getDecoder().decode(pdfVerifyRequest.getPdf());
 
 			// Load PDF document
-			PDDocument document = PDDocument.load(new ByteArrayInputStream(pdfBytes));
+			PDDocument document = Loader.loadPDF(pdfBytes);
 
 			List<PdfSignerInfo> signerInfos = new ArrayList<>();
 			boolean allValid = true;
