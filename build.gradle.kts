@@ -47,9 +47,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-cache")
-    // AOP starter — нужен для @EnableCaching/@EnableRetry/@EnableScheduling/@EnableAsync;
+    // AspectJ starter — нужен для @EnableCaching/@EnableRetry/@EnableScheduling/@EnableAsync;
     // тянет spring-aop, spring-aspects, aspectjweaver runtime.
-    implementation("org.springframework.boot:spring-boot-starter-aop")
+    // В SB 4 переименован из spring-boot-starter-aop.
+    implementation("org.springframework.boot:spring-boot-starter-aspectj")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
     implementation("org.springframework.retry:spring-retry:2.0.10")
     providedRuntime("org.springframework.boot:spring-boot-starter-tomcat")
