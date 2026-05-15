@@ -11,8 +11,9 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 84 теста / 70% coverage. Готова к
-  CI/CD-фазе, или к продолжению расширения покрытия.
+- **Состояние v4:** functional + 163 теста / **76% coverage**.
+  CI/CD обновлён под Java 25 + actions из demo-pki-center.
+  Batch endpoints (issue #212) реализованы для всех сервисов.
 
 ## Стек
 
@@ -26,7 +27,7 @@
 | **Jakarta EE** | jakarta.* (НЕ javax.* кроме JDK-native xml/naming/security.auth) |
 | **Jackson** | 3 (tools.jackson.*) через jackson-module-kotlin — без Jackson 2 fallback'а |
 | **Кriptoprovider** | Kalkan 0.7.5 + kalkancrypt-xmldsig 0.5 (flatDir `lib/`) |
-| **TLS/PKI deps** | BouncyCastle bcprov/bcpkix-jdk18on 1.84, Santuario xmlsec 4.0.3, wss4j 4.0.0 (без OpenSAML), pdfbox 3.0.3, jaxws-rt 4.0.3, springdoc 3.0.3 |
+| **TLS/PKI deps** | BouncyCastle bcprov/bcpkix-jdk18on 1.84, Santuario xmlsec 4.0.3, wss4j 4.0.0 (без OpenSAML), pdfbox 3.0.3, jaxws-rt 4.0.3 (SAAJ runtime для WsseService), springdoc 3.0.3 |
 | **HTTP client** | Apache httpclient 4.5.14 (4.x API — не 5.x) |
 | **Тесты** | Kotest 5.9 (JUnit 5 runner) + MockK 1.14 + spring-boot-starter-test |
 
@@ -50,8 +51,39 @@ src/main/kotlin/kz/ncanode/
   wrapper/                    ← CertificateWrapper, KeyStoreWrapper, KalkanWrapper, DocumentWrapper, XMLSignatureWrapper
 ```
 
-103 Kotlin файла, 0 Java. Все DTOs — Kotlin data classes (mutable response/
-request DTOs — обычные классы с `var` для Jackson 3 setter-based deserialization).
+Все DTOs — Kotlin data classes (mutable response/request DTOs — обычные
+классы с `var` для Jackson 3 setter-based deserialization).
+
+## Batch endpoints (issue malikzh/NCANode#212)
+
+15 batch endpoints, симметрично с одиночными. Каждый принимает массив
+вместо одного элемента + общие signers/key/cert и возвращает
+partial-response (per-item status + payload):
+
+| Сервис | Endpoints |
+|---|---|
+| XML | `/xml/sign/batch`, `/xml/verify/batch` |
+| CMS | `/cms/sign/batch`, `/cms/verify/batch`, `/cms/extract/batch` |
+| WSSE | `/wsse/sign/batch`, `/wsse/verify/batch` |
+| JWT | `/jwt/encode/batch`, `/jwt/decode/batch` |
+| PDF | `/pdf/sign/batch`, `/pdf/verify/batch` |
+| X509 | `/x509/info/batch`, `/x509/verify/batch` |
+| Pkcs12 | `/pkcs12/info/batch`, `/pkcs12/aliases/batch` |
+
+Дизайн-инварианты:
+
+- **Общий signer/key на весь batch.** Mass-signing use case.
+- **Sequential обработка items.** KalkanProvider thread-safety на GOST 2015
+  без аудита не доверяем. Parallel — возможная оптимизация после нагрузки.
+- **Top-level status — HTTP-уровень** (200 = "batch обработан до конца").
+  Per-item status — в `results[i].status`. Aggregate-`valid` намеренно
+  НЕ публикуется — клиент сам решает агрегировать в AND.
+- **Status codes per item**: 200 успех; 400 client error
+  (плохой p12 пароль, не-cert base64, malformed JWT); 404 NoSignaturesFound;
+  500 для всего остального (ServerException и неклассифицированные).
+- **DTO naming**: `<Operation>BatchRequest` / `<Operation>BatchResponse`
+  с inner `Item` для sign-вариантов; verify-варианты возвращают массив
+  существующих `VerificationResponse` без обёртки в Item.
 
 ## Тестовая инфраструктура
 
@@ -59,17 +91,22 @@ request DTOs — обычные классы с `var` для Jackson 3 setter-ba
 src/test/kotlin/kz/ncanode/
   TestResources.kt            ← общий helper. KalkanProvider bootstrap +
                                 loadAsBase64 / loadBytes + P12_PASSWORD
-  util/UtilTest.kt            ← 10 specs
-  util/KalkanUtilTest.kt      ← 6
-  wrapper/                    ← 4 файла, 32 specs
+  util/                       ← UtilTest, KalkanUtilTest
+  wrapper/                    ← 4 файла: Certificate / Document / Kalkan / KeyStore
   service/
-    CmsServiceIntegrationTest          ← 12 specs (включая addSigners)
-    CertificateServiceIntegrationTest  ← 9 specs (verifyCerts, info, verify)
-    XmlServiceIntegrationTest          ← 4 specs
-    WsseServiceIntegrationTest         ← 3 specs
-    JwtServiceIntegrationTest          ← 2 specs (GG2015)
-    PdfServiceIntegrationTest          ← 5 specs (CAdES-T)
-    CrlWarmupServiceTest               ← 2 specs (pure unit, MockK)
+    CmsServiceIntegrationTest          ← roundtrip через test.pki.gov.kz, addSigners, batch
+    CertificateServiceIntegrationTest  ← verifyCerts, info, verify, batch варианты
+    XmlServiceIntegrationTest          ← sign/verify + signBatch/verifyBatch
+    WsseServiceIntegrationTest         ← sign/verify + signBatch/verifyBatch
+    JwtServiceIntegrationTest          ← GG2015 encode+decode + batch
+    PdfServiceIntegrationTest          ← CAdES-T + signBatch/verifyBatch
+    CrlServiceTest                     ← pure unit MockK: REVOKED через mock X509CRL,
+                                         ACTIVE на реальных CRL, foreign-CA filter
+    OcspServiceTest                    ← pure unit MockK: nonce, null issuer, HTTP errors
+    TspServiceTest                     ← pure unit MockK: generateNonce, info(не-TSP)
+    CrlWarmupServiceTest               ← pure unit MockK
+  controller/                          ← 8 файлов + advice/, прямой вызов с MockK
+    advice/ExceptionHandlerControllerAdviceTest
 
 src/test/resources/
   application-test.yml        ← test profile, points to test.pki.gov.kz
@@ -85,7 +122,7 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-84 теста / 70% line coverage.
+163 теста / **76% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -103,38 +140,65 @@ http://test.pki.gov.kz/tsp/
 Если интеграционные тесты падают на CI — проверить network доступ к этому
 хосту первым делом.
 
+⚠️ **NCA test-pack p12 не отзываются через CRL.** `nca_gost2022_test.crl`
+содержит 54 entry, но ни одного нашего `*_revoked.p12` среди них — отзывы
+для них публикуются только через OCSP. Поэтому в `CrlServiceTest`
+REVOKED-ветка покрывается через mock'нутый `X509CRL`, а не реальные данные.
+
 ## Команды (cheatsheet)
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 84 теста + JaCoCo report
+./gradlew test                   # 163 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
 
 # Просмотр coverage
 open build/reports/jacoco/test/html/index.html
-
-# Per-package summary (есть python script ниже)
 ```
 
-Python helper для пер-пакетной таблицы (если нужно):
+Python helper для пер-пакетной таблицы:
 ```python
 import xml.etree.ElementTree as ET
 tree = ET.parse("build/reports/jacoco/test/jacocoTestReport.xml")
-for pkg in tree.getroot().findall("package"):
-    line = next((c for c in pkg.findall("counter") if c.get("type") == "LINE"), None)
-    if line:
-        c, m = int(line.get("covered")), int(line.get("missed"))
-        print(f"{pkg.get('name'):<40} {c}/{c+m} ({100*c//(c+m)}%)")
+total_c = total_m = 0
+for pkg in sorted(tree.getroot().findall("package"), key=lambda p: p.get("name")):
+    line = next((c for c in pkg if c.tag == "counter" and c.get("type") == "LINE"), None)
+    if line is None: continue
+    c, m = int(line.get("covered")), int(line.get("missed"))
+    total_c += c; total_m += m
+    print(f"{pkg.get('name'):<40} {c}/{c+m} ({100*c//(c+m)}%)")
+print(f"{'--- TOTAL':<40} {total_c}/{total_c+total_m} ({100*total_c//(total_c+total_m)}%)")
 ```
+
+## CI / Release infra
+
+`.github/workflows/`:
+
+- **build-ci.yml** — push/PR на master и v4. Java 25 (temurin),
+  setup-gradle@v6, codecov-action@v5. Concurrency group с
+  cancel-in-progress (cancel предыдущий on push).
+- **create-release.yml** — push tag `v[0-9]+.[0-9]+.[0-9]+[-*]` →
+  bootJar + `gh release create --generate-notes --draft` (вместо
+  устаревшего create-release@v1).
+- **create-docker-release.yml** — release published → docker
+  buildx push на DockerHub multi-arch (amd64/arm64).
+- **github-pages.yml** — Jekyll + Swagger UI generator, master only.
+
+Все версии actions подняты до тех, что в sister-проекте demo-pki-center
+(checkout@v6, setup-java@v5, gradle/actions/setup-gradle@v6,
+docker/build-push-action@v7, upload-artifact@v7 — см. коммит 7949a29).
+
+Dockerfile: `amazoncorretto:25-alpine` (бывший 17).
 
 ## Non-obvious quirks (история и почему)
 
 ### 1. Lombok удалён, kotlin-lombok plugin тоже
 Был нужен только для DTO с `@Builder/@Data/@Jacksonized`. После полного
 порта DTO в Kotlin data classes — Jackson 3 + `jackson-module-kotlin`
-обрабатывает их нативно, Lombok не нужен.
+обрабатывает их нативно, Lombok не нужен. `lombok.config` удалён
+в коммите 20b6ad9.
 
 ### 2. Jackson 3 (tools.jackson.*), но annotations из com.fasterxml.jackson.annotation
 `tools.jackson.annotation` нет на classpath. `com.fasterxml.jackson.annotation`
@@ -158,6 +222,8 @@ class CmsResponse(
 Плюс `@JsonPropertyOrder("status", "message")` на `StatusResponse` —
 гарантирует status+message в начале JSON (как было в Lombok-эпохе).
 
+Касается и всех batch-response типов (`*BatchResponse` + inner `Item`).
+
 ### 4. War plugin удалён
 SB 4 + Gradle 9.5.1 + `war` plugin'овский `providedRuntime` фильтровал
 `spring-web` из runtimeClasspath, NoClassDefFoundError на
@@ -177,99 +243,116 @@ implementation("org.apache.wss4j:wss4j-ws-security-dom:4.0.0") {
 }
 ```
 
-### 7. Spring AspectJ starter
+### 7. jaxws-rt — это SAAJ runtime для WsseService, не "JAX-WS"
+`com.sun.xml.ws:jaxws-rt:4.0.3` нужен потому что
+`kz.ncanode.service.WsseService` использует `jakarta.xml.soap.MessageFactory`
+для парсинга/перепаковки SOAP envelope'ов. wss4j подтягивает только
+API `jakarta.xml.soap-api`, реализацию SAAJ нужно дать явно. `jaxws-rt`
+её тащит. `jakarta.xml.ws-api` отдельно НЕ нужен — был удалён в 20b6ad9.
+
+### 8. Spring AspectJ starter
 SB 4 переименовал `spring-boot-starter-aop` → `spring-boot-starter-aspectj`.
 Нужен для `@EnableScheduling` + `@EnableAsync` (которые включены
 в NCANode.kt).
 
-### 8. @EnableCaching, @EnableRetry, spring-retry, starter-cache — УДАЛЕНЫ
-Нет `@Cacheable` / `@Retryable` использования в коде. Раньше включались
-"на всякий случай", сейчас обрезано.
+### 9. @EnableCaching, @EnableRetry, spring-retry, starter-cache — УДАЛЕНЫ
+Нет `@Cacheable` / `@Retryable` использования в коде.
 
-### 9. CrlWarmupService — @field:Value vs @Value
+### 10. CrlWarmupService — @field:Value vs @Value
 Kotlin 2.3+ требует явный target. На `var` property в `@Service`
 используется `@field:Value(...)` (`@param:Value` не подходит, не в primary
 constructor).
 
-### 10. @param:Qualifier на primary constructor params
-То же что и #9, для `@Qualifier` на ctor-param Kotlin 2.3 предупреждает.
+### 11. @param:Qualifier на primary constructor params
+То же что и #10, для `@Qualifier` на ctor-param Kotlin 2.3 предупреждает.
 
-### 11. CertificateWrapper.fromInputStream — safe cast
+### 12. CertificateWrapper.fromInputStream — safe cast
 `as X509Certificate` → `as? X509Certificate ?: null` — для случая когда
 `generateCertificate()` возвращает не-X.509 (или null). Раньше падало с
 NPE, теперь корректно возвращает `null`.
 
-### 12. URL(String) deprecated в Java 20+
+### 13. URL(String) deprecated в Java 20+
 Все три места заменены на `URI(s).toURL()` (Util, TspConfiguration,
 HttpClientConfiguration).
 
-### 13. PeriodicTrigger(Long, TimeUnit) deprecated в Spring 6+
+### 14. PeriodicTrigger(Long, TimeUnit) deprecated в Spring 6+
 В CrlService переключён на `PeriodicTrigger(Duration.ofMinutes(...))` +
 `setInitialDelay(Duration.ZERO)`.
 
-### 14. GOST 2004 / RSA — только legacy compat в коде, тестами НЕ покрыты
+### 15. GOST 2004 / RSA — только legacy compat в коде, тестами НЕ покрыты
 НУЦ РК полностью перешла на GOST 2015. SDK 2.0 тестовых ключей других
 форматов нет. Код пути для них оставлены для backward compat.
 
-### 15. KalkanProvider bootstrap в тестах
+### 16. KalkanProvider bootstrap в тестах
 В `TestResources.kt` есть `init` блок: `Security.addProvider(KalkanProvider())`
 один раз на JVM. Без него `KalkanWrapper` и production-flow не работают.
 Идемпотентный — повторный addProvider игнорируется.
 
-### 16. JwtService.decode требует cert base64, не p12
+### 17. JwtService.decode требует cert base64, не p12
 В `JwtServiceIntegrationTest` есть helper — вытащить .encoded cert из p12
 через `KeyStore.getInstance("PKCS12", KalkanProvider)`. Иначе в decode
 негде взять `key`.
 
-### 17. CaService.updateCache(true) в `beforeSpec` integration-тестов
+### 18. CaService.updateCache(true) в `beforeSpec` integration-тестов
 Метод `@Scheduled(initialDelay=0)` запускается через TaskScheduler
 **асинхронно**. Без явного синхронного `updateCache(true)` в beforeSpec —
 первый OCSP-call в тесте может прийти раньше, чем CA bundle загрузится →
 issuer = null → OCSP UNKNOWN, тест ломается случайным образом.
 
-### 18. application-test.yml: warmupEnabled=false
+### 19. application-test.yml: warmupEnabled=false
 Иначе integration-тесты ждут CRL warmup на startup. Lazy load работает
 нормально (первый verify платит за парсинг, последующие — кеш).
 
-## Что НЕ покрыто тестами (526 lines uncovered)
+### 20. ExceptionHandlerControllerAdvice.handleRuntimeException — public, не protected
+Изменено в коммите 01fab53. Spring дёргает @ExceptionHandler через
+reflection в любом случае; protected мешало unit-тестам напрямую вызвать
+метод без поднятия Spring MVC. Стандартная практика — public.
 
-| Слой | % | Не покрыто | Почему |
-|---|---|---|---|
-| `service/CrlService` | 55% | ~107 lines | Defensive branches кеша + scheduler init. Нужны MockK на HttpClient |
-| `service/TspService.verify` | 54% | ~56 lines | Negative paths (bad imprint, missing EKU). Нужны hand-crafted TSP-токены |
-| `service/CmsService.create` | 59% | ~30 lines | Большинство покрыто, осталось NotEmpty validation в request |
-| `controller/` | 24% | ~57 lines | Integration-тесты обходят HTTP-слой. Нужны `@WebMvcTest` |
-| `controller/advice/` | 22% | 7 lines | ExceptionHandler не дёргается на happy-path |
-| `service/CaService.shutdown()` | — | 5 lines | `System.exit` — нельзя нормально тестировать |
+### 21. CrlService.verify REVOKED — через mock X509CRL, не реальный
+NCA публикует отзывы наших test-pack p12 только через OCSP. В CRL'ях
+`nca_gost2022_test.crl` (54 entry) + delta (0 entry) их нет. CrlServiceTest
+покрывает pipeline `verify` через mock'нутый X509CRL.isRevoked → true.
+Сам JDK-овый X509CRL.isRevoked не тестируем — это библиотечный код.
+
+### 22. Batch endpoints — partial response, top-level всегда 200
+См. отдельный раздел "Batch endpoints" выше. Aggregate `valid` намеренно
+не добавлен на top-level: для mass-flow вреднее прятать ошибку в одном
+из item'ов, чем требовать от клиента ручного AND.
+
+## Что не покрыто тестами (≈494 lines)
+
+| Слой | % | Что осталось |
+|---|---|---|
+| `service` overall | 74% | TspService.verify negative paths (битый imprint, missing EKU) — нужны hand-crafted ASN.1 TSP-токены; CaService.shutdown() — System.exit |
+| `controller` | 98% | HomePageController IO error path (один невозможный case) |
+| `controller/advice` | 100% | — |
+| `util` | 78% | Defensive branches в KalkanUtil |
+| `wrapper` | 78% | Defensive branches в DocumentWrapper |
+
+OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bin` ответы
+для оффлайн-тестов REVOKED/ACTIVE/UNKNOWN на mismatch nonce) — пока
+не сделаны. Сейчас эти ветки покрываются через `CmsServiceIntegrationTest`
+с live test.pki.gov.kz.
 
 ## Что дальше — варианты
 
-### A. Расширить покрытие до 75-80%
+### A. Дальнейший рост покрытия (76% → 80%)
 
-Самые большие гэпы — CrlService и TspService negative paths. Нужны:
-- MockK на CloseableHttpClient (для CRL/OCSP/TSP HTTP layer)
-- Hand-crafted ASN.1 TSP-токены (битый imprint, missing EKU)
-- `@WebMvcTest` на 4-5 контроллеров (поднимет controller с 24% → 95%)
+Самые крупные оставшиеся гэпы:
+- TspService.verify negative paths — нужны hand-crafted ASN.1 TSP-токены
+  (битый messageImprint, missing EKU id-kp-timeStamping). +~30 lines.
+- OCSP fixtures bootstrap (опциональный @Tags("bootstrap") test'ник
+  для генерации `.bin` ответов с известным nonce; затем pure-unit
+  REVOKED/ACTIVE/UNKNOWN-mismatch-nonce). +~20 lines.
 
-Ориентировочно: 10-15 тестов → +5-8% покрытия.
-
-### B. CI/CD (вероятнее всего следующая фаза)
-
-- GitHub Actions для PR-check'а (build + test + coverage gate на 70%)
-- Dependabot config (mvn deps + Gradle wrapper)
-- Release workflow: tag `ncanode-v*.*.*` → build → upload bootJar to GH Releases + Docker image
-- Coverage badge через codecov / coveralls
-
-### C. Прочая зачистка
+### B. Прочая зачистка
 
 - **Баннер 3→4** — откладывали несколько раз. Заглянуть в NCANode.kt
   banner() и руками поменять.
-- **`Optional<T>` в TspService.info** — был T?, переписать на T?
-  если ещё не сделано.
 - **`Date` → `Instant` / `LocalDateTime`** — модернизация date-types
   везде. Большая правка, низкий ROI.
 
-### D. Merge стратегия
+### C. Merge стратегия
 
 - `improvements` ветка: continue Java fixes, можно PR в upstream
   malikzh/NCANode
@@ -280,13 +363,20 @@ issuer = null → OCSP UNKNOWN, тест ломается случайным о�
 
 Историю смотри через `git log --oneline master..v4`. Логические фазы:
 
-1. **Платформенная миграция** (commits 6935cde → b4fa9cc): Gradle Kotlin
-   DSL, Java 25, SB 4, deps bumps. ~10 commits.
-2. **Service layer port** (2c4f16a → a1572cf): все 15 сервисов на Kotlin.
-3. **Controllers + DTO + остальное** (c2699ee → d621344).
-4. **Cleanup** (9f67633 → 124aefc): warnings, dead deps, idiom drift.
-5. **Test phase** (248b746 → 286854d): Kotest, NCA SDK test pack,
-   70% coverage.
+1. **Платформенная миграция**: Gradle Kotlin DSL, Java 25, SB 4, deps bumps.
+2. **Service layer port**: все 15 сервисов на Kotlin.
+3. **Controllers + DTO + остальное** (`c2699ee → d621344`).
+4. **Cleanup**: warnings, dead deps, idiom drift.
+5. **Test phase** (`248b746 → 286854d`): Kotest, NCA SDK test pack, 70% coverage.
+6. **CLAUDE.md** (`dd7ac1f`): этот файл.
+7. **Hardening session** (`20b6ad9 → 01fab53`): legacy deps cleanup,
+   README rewrite, CI bump до Java 25, service unit tests
+   (Crl/Ocsp/Tsp), controller + advice tests (24% → 98%).
+   Покрытие 70% → 75%.
+8. **Batch endpoints** (`472d80b → bd2672c`): issue malikzh/NCANode#212.
+   15 endpoint'ов в 4 round'а: XML/CMS sign+verify → WSSE/CMS-extract/JWT/PDF
+   → X509-info/Pkcs12-info → X509-verify(SBA)/Pkcs12-aliases.
+   Покрытие 75% → **76%**, тесты 96 → 163.
 
 Все коммиты подписаны `Co-Authored-By: Claude Opus 4.7`.
 
