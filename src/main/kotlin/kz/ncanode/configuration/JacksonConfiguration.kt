@@ -1,11 +1,9 @@
-package kz.ncanode.configuration;
+package kz.ncanode.configuration
 
-import org.springframework.context.annotation.Configuration;
-import org.springframework.http.converter.HttpMessageConverter;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
-import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
-
-import java.util.List;
+import org.springframework.context.annotation.Configuration
+import org.springframework.http.converter.HttpMessageConverter
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 
 /**
  * Регистрирует Jackson 2 как первый JSON HttpMessageConverter.
@@ -24,10 +22,9 @@ import java.util.List;
  * понимает их через kotlin-module нативно).
  */
 @Configuration
-public class JacksonConfiguration implements WebMvcConfigurer {
-
-    @Override
-    public void configureMessageConverters(List<HttpMessageConverter<?>> converters) {
-        converters.add(0, new MappingJackson2HttpMessageConverter());
+@Suppress("removal", "DEPRECATION")
+class JacksonConfiguration : WebMvcConfigurer {
+    override fun configureMessageConverters(converters: MutableList<HttpMessageConverter<*>>) {
+        converters.add(0, MappingJackson2HttpMessageConverter())
     }
 }

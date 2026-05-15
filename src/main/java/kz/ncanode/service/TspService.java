@@ -227,10 +227,11 @@ public class TspService {
     }
 
     private TimeStampResponse makeRequest(byte[] request) {
-        URL url = tspConfiguration.getParsedUrl().orElseThrow(() -> {
+        URL url = tspConfiguration.getParsedUrl();
+        if (url == null) {
             log.error("Invalid TSP url");
-            return new TspException("Invalid tsp url");
-        });
+            throw new TspException("Invalid tsp url");
+        }
 
         HttpPost httpPost = new HttpPost(url.toString());
         httpPost.setHeader("Content-Type", "application/timestamp-query");
