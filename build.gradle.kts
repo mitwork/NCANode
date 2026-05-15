@@ -4,10 +4,6 @@ plugins {
     java
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.spring)
-    // Позволяет Kotlin-коду видеть Lombok-генерируемые геттеры/builder'ы
-    // (`@Data`, `@Builder`, `@Getter`) у Java-классов. Удалить, когда последний
-    // Java-DTO/Java-сервис будет портирован.
-    alias(libs.plugins.kotlin.lombok)
 }
 
 group = "kz"
@@ -25,12 +21,6 @@ kotlin {
     jvmToolchain(25)
     compilerOptions {
         freeCompilerArgs.add("-Xjsr305=strict")
-    }
-}
-
-configurations {
-    compileOnly {
-        extendsFrom(configurations.annotationProcessor.get())
     }
 }
 
@@ -62,11 +52,6 @@ dependencies {
     // оставляем 4.5.x явной зависимостью (он совместим с jakarta-stack, т.к. не
     // касается servlet/web API напрямую).
     implementation("org.apache.httpcomponents:httpclient:4.5.14")
-
-    // Lombok (используется в существующем Java-коде; убираем когда последний Java
-    // файл будет портирован в Kotlin).
-    compileOnly("org.projectlombok:lombok:1.18.40")
-    annotationProcessor("org.projectlombok:lombok:1.18.40")
 
     // KalkanCrypt из flatDir lib/
     implementation(":knca_provider_jce_kalkan-0.7.5")
