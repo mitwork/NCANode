@@ -116,10 +116,7 @@ class CertificateService(
             certs.add(cert.toCertificateInfo(date, withOcsp, withCrl))
         }
 
-        return VerificationResponse.builder()
-            .valid(valid)
-            .signers(certs)
-            .build()
+        return VerificationResponse(valid = valid, signers = certs)
     }
 
     fun info(certsBase64: List<String>, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
@@ -158,11 +155,7 @@ class CertificateService(
                 valid = false
             }
 
-            return VerificationResponse.builder()
-                .valid(valid)
-                .signers(certs)
-                .message(message)
-                .build()
+            return VerificationResponse(valid = valid, signers = certs).also { it.message = message }
         } catch (e: CertificateException) {
             throw ServerException(e.message, e)
         } catch (e: NoSuchProviderException) {
@@ -191,11 +184,7 @@ class CertificateService(
                 message = String.format(MessageConstants.CERT_INVALID, 0)
                 certs.add(null)
                 valid = false
-                return VerificationResponse.builder()
-                    .valid(valid)
-                    .signers(certs)
-                    .message(message)
-                    .build()
+                return VerificationResponse(valid = valid, signers = certs).also { it.message = message }
             }
 
             val dataBytes = data.toByteArray(StandardCharsets.UTF_8)
@@ -216,11 +205,7 @@ class CertificateService(
 
             certs.add(cert.toCertificateInfo(currentDate, checkOcsp, checkCrl))
 
-            return VerificationResponse.builder()
-                .valid(valid)
-                .signers(certs)
-                .message(message)
-                .build()
+            return VerificationResponse(valid = valid, signers = certs).also { it.message = message }
         } catch (e: CertificateException) {
             throw ServerException(e.message, e)
         } catch (e: NoSuchProviderException) {

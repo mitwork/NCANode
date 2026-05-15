@@ -18,11 +18,10 @@ class ExceptionHandlerControllerAdvice(private val systemConfiguration: SystemCo
 
         val details = if (systemConfiguration.isDetailedErrors && e.cause != null) e.cause?.message else null
 
-        val response = ErrorResponse.builder()
-            .status(status)
-            .message(e.message)
-            .details(details)
-            .build()
+        val response = ErrorResponse(details = details).apply {
+            this.status = status
+            this.message = e.message
+        }
 
         return ResponseEntity.status(status).body(response)
     }

@@ -214,7 +214,7 @@ open class CrlService(
      */
     fun verify(cert: CertificateWrapper): CrlStatus {
         if (!crlConfiguration.isEnabled) {
-            return CrlStatus.builder().result(CrlResult.ACTIVE).build()
+            return CrlStatus(result = CrlResult.ACTIVE)
         }
 
         val certIssuer = cert.issuerX500Principal
@@ -288,20 +288,20 @@ open class CrlService(
                 if (crl.isRevoked(cert.x509Certificate)) {
                     val entry = crl.getRevokedCertificate(cert.x509Certificate)
                     return if (entry != null) {
-                        CrlStatus.builder()
-                            .result(CrlResult.REVOKED)
-                            .file(crlFile.name)
-                            .revocationDate(entry.revocationDate)
-                            .reason(entry.revocationReason?.toString() ?: "")
-                            .build()
+                        CrlStatus(
+                            result = CrlResult.REVOKED,
+                            file = crlFile.name,
+                            revocationDate = entry.revocationDate,
+                            reason = entry.revocationReason?.toString() ?: "",
+                        )
                     } else {
-                        CrlStatus.builder().result(CrlResult.REVOKED).build()
+                        CrlStatus(result = CrlResult.REVOKED)
                     }
                 }
             }
         }
 
-        return CrlStatus.builder().result(CrlResult.ACTIVE).build()
+        return CrlStatus(result = CrlResult.ACTIVE)
     }
 
     /**

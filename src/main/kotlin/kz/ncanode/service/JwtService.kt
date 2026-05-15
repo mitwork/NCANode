@@ -54,9 +54,7 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
                 keystore.privateKey,
             )
 
-            return JwtEncodeResponse.builder()
-                .jwt(builder.sign(algorithm))
-                .build()
+            return JwtEncodeResponse(jwt = builder.sign(algorithm))
         } catch (e: KeyException) {
             throw ClientException(e.message, e)
         } catch (e: Exception) {
@@ -99,15 +97,10 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
             header["alg"] = data.algorithm
             header["typ"] = data.type
 
-            return JwtDecodeResponse.builder()
-                .valid(valid)
-                .jwt(
-                    JwtDecodeResponse.Jwt.builder()
-                        .header(header)
-                        .payload(payload)
-                        .build()
-                )
-                .build()
+            return JwtDecodeResponse(
+                valid = valid,
+                jwt = JwtDecodeResponse.Jwt(header = header, payload = payload),
+            )
         } catch (e: ClientException) {
             throw e
         } catch (e: Exception) {

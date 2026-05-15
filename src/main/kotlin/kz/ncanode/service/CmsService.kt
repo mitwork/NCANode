@@ -10,6 +10,7 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.gov.pki.kalkan.util.encoders.Hex
+import kz.ncanode.dto.certificate.CertificateInfo
 import kz.ncanode.dto.cms.CmsSignerInfo
 import kz.ncanode.dto.request.CmsCreateRequest
 import kz.ncanode.dto.request.SignerRequest
@@ -80,9 +81,7 @@ class CmsService(
                 signed = CMSSignedData.replaceSigners(signed, SignerInformationStore(updated))
             }
 
-            return CmsResponse.builder()
-                .cms(Base64.getEncoder().encodeToString(signed.encoded))
-                .build()
+            return CmsResponse(cms = Base64.getEncoder().encodeToString(signed.encoded))
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
@@ -149,9 +148,7 @@ class CmsService(
                 signed = CMSSignedData.replaceSigners(signed, SignerInformationStore(updated))
             }
 
-            return CmsResponse.builder()
-                .cms(Base64.getEncoder().encodeToString(signed.encoded))
-                .build()
+            return CmsResponse(cms = Base64.getEncoder().encodeToString(signed.encoded))
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
@@ -207,7 +204,7 @@ class CmsService(
             val currentDate = certificateService.getCurrentDate()
 
             for ((signer, certs) in signerCerts) {
-                val signerInfoBuilder = CmsSignerInfo.builder()
+                var tspInfo: TspInfo? = null
 
                 // Время, на которое проверяется срок действия сертификата подписанта.
                 // При наличии валидной TSP-метки используем её genTime (CAdES-T):
@@ -239,16 +236,14 @@ class CmsService(
 
                     if (tspi != null) {
                         try {
-                            val tspInfo = TspInfo.builder()
-                                .serialNumber(String(Hex.encode(tspi.serialNumber.toByteArray())))
-                                .genTime(tspi.genTime)
-                                .policy(tspi.policy)
-                                .tsa(tspi.tsa?.toString())
-                                .tspHashAlgorithm(getHashingAlgorithmByOID(tspi.messageImprintAlgOID))
-                                .hash(String(Hex.encode(tspi.messageImprintDigest)))
-                                .build()
-
-                            signerInfoBuilder.tsp(tspInfo)
+                            tspInfo = TspInfo(
+                                serialNumber = String(Hex.encode(tspi.serialNumber.toByteArray())),
+                                genTime = tspi.genTime,
+                                policy = tspi.policy,
+                                tsa = tspi.tsa?.toString(),
+                                tspHashAlgorithm = getHashingAlgorithmByOID(tspi.messageImprintAlgOID),
+                                hash = String(Hex.encode(tspi.messageImprintDigest)),
+                            )
 
                             if (tspi.genTime != null) {
                                 validationDate = tspi.genTime
@@ -262,6 +257,7 @@ class CmsService(
                     }
                 }
 
+                val certificateInfos = mutableListOf<CertificateInfo>()
                 for (cert in certs) {
                     // attachValidationData идемпотентен: prefetch уже сделал
                     // тяжёлую часть (OCSP параллельно, CRL с кэшем), здесь
@@ -274,16 +270,13 @@ class CmsService(
                         valid = false
                     }
 
-                    signerInfoBuilder.certificate(cert.toCertificateInfo(validationDate, checkOcsp, checkCrl))
+                    certificateInfos.add(cert.toCertificateInfo(validationDate, checkOcsp, checkCrl))
                 }
 
-                signers.add(signerInfoBuilder.build())
+                signers.add(CmsSignerInfo(certificates = certificateInfos, tsp = tspInfo))
             }
 
-            return CmsVerificationResponse.builder()
-                .valid(valid)
-                .signers(signers)
-                .build()
+            return CmsVerificationResponse(valid = valid, signers = signers)
         } catch (e: Exception) {
             throw ClientException(e.message, e)
         }
@@ -299,9 +292,7 @@ class CmsService(
 
             return ByteArrayOutputStream().use { out ->
                 content.write(out)
-                CmsDataResponse.builder()
-                    .data(Base64.getEncoder().encodeToString(out.toByteArray()))
-                    .build()
+                CmsDataResponse(data = Base64.getEncoder().encodeToString(out.toByteArray()))
             }
         } catch (e: CMSException) {
             throw ServerException(e.message, e)

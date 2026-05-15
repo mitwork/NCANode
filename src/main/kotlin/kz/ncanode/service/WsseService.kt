@@ -95,7 +95,7 @@ class WsseService(
             return StringWriter().use { os ->
                 val transformer = TransformerFactory.newInstance().newTransformer()
                 transformer.transform(DOMSource(doc), StreamResult(os))
-                XmlSignResponse.builder().xml(os.toString()).build()
+                XmlSignResponse(xml = os.toString())
             }
         } catch (e: KeyException) {
             throw ClientException(e.message, e)
@@ -119,10 +119,7 @@ class WsseService(
             val signaturesLength = signatures.length
 
             if (signaturesLength < 1) {
-                return VerificationResponse.builder()
-                    .valid(false)
-                    .signers(emptyList<CertificateInfo>())
-                    .build()
+                return VerificationResponse(valid = false, signers = emptyList())
             }
 
             var valid = true
@@ -160,10 +157,10 @@ class WsseService(
                 certs.add(cert)
             }
 
-            return VerificationResponse.builder()
-                .valid(valid)
-                .signers(certs.map { it.toCertificateInfo(currentDate, checkOcsp, checkCrl) })
-                .build()
+            return VerificationResponse(
+                valid = valid,
+                signers = certs.map { it.toCertificateInfo(currentDate, checkOcsp, checkCrl) },
+            )
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }

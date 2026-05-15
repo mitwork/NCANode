@@ -28,8 +28,8 @@ class Pkcs12Controller(
     @PostMapping("/aliases")
     fun aliases(@Valid @RequestBody request: Pkcs12InfoRequest): ResponseEntity<Pkcs12AliasesResponse> =
         ResponseEntity.ok(
-            Pkcs12AliasesResponse.builder()
-                .aliases(kalkanWrapper.read(request.keys).map { it.aliases })
-                .build()
+            Pkcs12AliasesResponse(
+                aliases = kalkanWrapper.read(request.keys).map { it.aliases },
+            )
         )
 }

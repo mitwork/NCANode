@@ -59,10 +59,10 @@ class OcspService(
     fun verify(cert: CertificateWrapper, issuer: CertificateWrapper?): List<OcspStatus> {
         if (issuer == null) {
             return listOf(
-                OcspStatus.builder()
-                    .result(OcspResult.UNKNOWN)
-                    .message("Cannot find root certificate in NCANode. Try add it using NCANODE_CA_URL variable.")
-                    .build()
+                OcspStatus(
+                    result = OcspResult.UNKNOWN,
+                    message = "Cannot find root certificate in NCANode. Try add it using NCANODE_CA_URL variable.",
+                )
             )
         }
 
@@ -75,7 +75,7 @@ class OcspService(
 
                 makeRequest(url, request.encoded).use { response ->
                     val status = processOcspResponse(response.entity.content, nonce, issuer)
-                    statuses.add(status.toBuilder().url(url).build())
+                    statuses.add(status.copy(url = url))
                 }
             } catch (e: IOException) {
                 statuses.add(unknownStatus(url, e.message))
@@ -191,19 +191,19 @@ class OcspService(
         }
 
         return when (val status = singleResp.certStatus) {
-            null -> OcspStatus.builder().result(OcspResult.ACTIVE).message("OK").build()
+            null -> OcspStatus(result = OcspResult.ACTIVE, message = "OK")
             is RevokedStatus -> {
                 val reason = try {
                     status.revocationReason
                 } catch (e: IllegalStateException) {
                     -1
                 }
-                OcspStatus.builder()
-                    .result(OcspResult.REVOKED)
-                    .revocationTime(status.revocationTime)
-                    .revocationReason(reason)
-                    .message("OK")
-                    .build()
+                OcspStatus(
+                    result = OcspResult.REVOKED,
+                    revocationTime = status.revocationTime,
+                    revocationReason = reason,
+                    message = "OK",
+                )
             }
             else -> unknownStatus(message = "Unknown status")
         }
@@ -281,11 +281,7 @@ class OcspService(
     }
 
     private fun unknownStatus(url: String? = null, message: String?): OcspStatus =
-        OcspStatus.builder()
-            .result(OcspResult.UNKNOWN)
-            .apply { if (url != null) url(url) }
-            .message(message)
-            .build()
+        OcspStatus(result = OcspResult.UNKNOWN, url = url, message = message)
 
     companion object {
         private val log = LoggerFactory.getLogger(OcspService::class.java)

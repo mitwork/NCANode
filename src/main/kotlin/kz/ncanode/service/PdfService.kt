@@ -73,9 +73,7 @@ class PdfService(
 
             val outputStream = ByteArrayOutputStream()
             document.saveIncremental(outputStream)
-            PdfSignResponse.builder()
-                .pdf(Base64.getEncoder().encodeToString(outputStream.toByteArray()))
-                .build()
+            PdfSignResponse(pdf = Base64.getEncoder().encodeToString(outputStream.toByteArray()))
         }
     } catch (e: Exception) {
         log.error("Error signing PDF", e)
@@ -104,10 +102,7 @@ class PdfService(
                     if (!signerInfo.isValid) allValid = false
                 }
 
-                return PdfVerificationResponse.builder()
-                    .valid(allValid)
-                    .signers(signerInfos)
-                    .build()
+                return PdfVerificationResponse(valid = allValid, signers = signerInfos)
             }
         } catch (e: NoSignaturesFoundException) {
             throw e
@@ -128,10 +123,7 @@ class PdfService(
             // 1) Extract raw CMS (the /Contents) and the signed content (ByteRange)
             val signatureContent = signature.contents
             if (signatureContent == null || signatureContent.isEmpty()) {
-                return PdfSignerInfo.builder()
-                    .valid(false)
-                    .reason("Empty signature contents")
-                    .build()
+                return PdfSignerInfo(isValid = false, reason = "Empty signature contents")
             }
 
             val signedContent = originalPdfBytes.inputStream().use { signature.getSignedContent(it) }
@@ -197,27 +189,22 @@ class PdfService(
                 break
             }
 
-            return PdfSignerInfo.builder()
-                .valid(valid)
-                .reason(signature.reason)
-                .location(signature.location)
-                .contactInfo(signature.contactInfo)
-                .signDate(signature.signDate?.time)
-                .certificate(
-                    certificateWrapper?.toCertificateInfo(validationDate, withOcsp, withCrl)
-                )
+            return PdfSignerInfo(
+                isValid = valid,
+                reason = signature.reason,
+                location = signature.location,
+                contactInfo = signature.contactInfo,
+                signDate = signature.signDate?.time,
+                certificate = certificateWrapper?.toCertificateInfo(validationDate, withOcsp, withCrl),
                 // Keep your current semantics:
                 // - signatureAlgorithm shows PDF SubFilter (structure-level)
                 // - digestAlgorithm shows CMS digest OID (crypto-level)
-                .signatureAlgorithm(signature.subFilter)
-                .digestAlgorithm(digestAlgReported ?: "unknown")
-                .build()
+                signatureAlgorithm = signature.subFilter,
+                digestAlgorithm = digestAlgReported ?: "unknown",
+            )
         } catch (e: Exception) {
             log.error("Error verifying signature", e)
-            return PdfSignerInfo.builder()
-                .valid(false)
-                .reason("Verification error: ${e.message}")
-                .build()
+            return PdfSignerInfo(isValid = false, reason = "Verification error: ${e.message}")
         }
     }
 

@@ -68,20 +68,20 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
         crlStatus?.let { revocations.add(it.toCertificateRevocationStatus()) }
         ocspStatus?.let { statuses -> revocations.addAll(statuses.map { it.toCertificateRevocationStatus() }) }
 
-        return CertificateInfo.builder()
-            .valid(isValid(date, checkOcsp, checkCrl))
-            .revocations(revocations)
-            .notBefore(cert.notBefore)
-            .notAfter(cert.notAfter)
-            .keyUsage(CertificateKeyUsage.fromKeyUsageBits(cert.keyUsage))
-            .serialNumber(cert.serialNumber.toString(16))
-            .signAlg(cert.sigAlgName)
-            .keyUser(keyUser)
-            .publicKey(String(Base64.getEncoder().encode(cert.publicKey.encoded)))
-            .signature(String(Base64.getEncoder().encode(cert.signature)))
-            .subject(createCertificateSubjectFromDn(cert.subjectX500Principal.toString(), extractSanEmail(cert)))
-            .issuer(createCertificateSubjectFromDn(cert.issuerX500Principal.toString(), null))
-            .build()
+        return CertificateInfo(
+            valid = isValid(date, checkOcsp, checkCrl),
+            revocations = revocations,
+            notBefore = cert.notBefore,
+            notAfter = cert.notAfter,
+            keyUsage = CertificateKeyUsage.fromKeyUsageBits(cert.keyUsage),
+            serialNumber = cert.serialNumber.toString(16),
+            signAlg = cert.sigAlgName,
+            keyUser = keyUser,
+            publicKey = String(Base64.getEncoder().encode(cert.publicKey.encoded)),
+            signature = String(Base64.getEncoder().encode(cert.signature)),
+            subject = createCertificateSubjectFromDn(cert.subjectX500Principal.toString(), extractSanEmail(cert)),
+            issuer = createCertificateSubjectFromDn(cert.issuerX500Principal.toString(), null),
+        )
     }
 
     /**
@@ -225,37 +225,55 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
 
         private fun createCertificateSubjectFromDn(dn: String, fallbackEmail: String?): CertificateSubject? = try {
             val ldapName = LdapName(dn)
-            val builder = CertificateSubject.builder()
+            var commonName: String? = null
+            var lastName: String? = null
+            var surName: String? = null
             var email: String? = null
+            var organization: String? = null
+            var iin: String? = null
+            var bin: String? = null
+            var country: String? = null
+            var locality: String? = null
+            var state: String? = null
 
             for (rdn in ldapName.rdns) {
                 val type = rdn.type
                 val value = rdn.value as? String ?: continue
                 when {
-                    type.equals("CN", ignoreCase = true) -> builder.commonName(value)
-                    type.equals("SURNAME", ignoreCase = true) -> builder.surName(value)
+                    type.equals("CN", ignoreCase = true) -> commonName = value
+                    type.equals("SURNAME", ignoreCase = true) -> surName = value
                     type.equals("SERIALNUMBER", ignoreCase = true) -> {
-                        if (value.startsWith("BIN")) builder.bin(value.removePrefix("BIN"))
-                        else builder.iin(value.removePrefix("IIN"))
+                        if (value.startsWith("BIN")) bin = value.removePrefix("BIN")
+                        else iin = value.removePrefix("IIN")
                     }
-                    type.equals("C", ignoreCase = true) -> builder.country(value)
-                    type.equals("L", ignoreCase = true) -> builder.locality(value)
-                    type.equals("S", ignoreCase = true) -> builder.state(value)
+                    type.equals("C", ignoreCase = true) -> country = value
+                    type.equals("L", ignoreCase = true) -> locality = value
+                    type.equals("S", ignoreCase = true) -> state = value
                     type.equals("E", ignoreCase = true) || type.equals("EMAILADDRESS", ignoreCase = true) -> {
                         email = value
                     }
-                    type.equals("O", ignoreCase = true) -> builder.organization(value)
-                    type.equals("OU", ignoreCase = true) -> builder.bin(value.removePrefix("BIN"))
-                    type.equals("G", ignoreCase = true) -> builder.lastName(value)
+                    type.equals("O", ignoreCase = true) -> organization = value
+                    type.equals("OU", ignoreCase = true) -> bin = value.removePrefix("BIN")
+                    type.equals("G", ignoreCase = true) -> lastName = value
                 }
             }
 
             // Современные NCA-сертификаты кладут email в SubjectAlternativeName
             // (rfc822Name), а не в Subject DN. Если в DN email не нашли,
             // подставляем из SAN, который пришёл сверху.
-            (email ?: fallbackEmail)?.let { builder.email(it) }
-            builder.dn(dn)
-            builder.build()
+            CertificateSubject(
+                commonName = commonName,
+                lastName = lastName,
+                surName = surName,
+                email = email ?: fallbackEmail,
+                organization = organization,
+                iin = iin,
+                bin = bin,
+                country = country,
+                locality = locality,
+                state = state,
+                dn = dn,
+            )
         } catch (e: InvalidNameException) {
             log.warn("Distinguished name parsing error", e)
             null

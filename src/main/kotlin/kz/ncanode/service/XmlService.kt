@@ -59,9 +59,7 @@ class XmlService(
                 .sign(keyStore.privateKey)
         }
 
-        return XmlSignResponse.builder()
-            .xml(document.toString())
-            .build()
+        return XmlSignResponse(xml = document.toString())
     }
 
     /**
@@ -103,10 +101,10 @@ class XmlService(
             certs.add(cert)
         }
 
-        return VerificationResponse.builder()
-            .valid(valid)
-            .signers(certs.map { it?.toCertificateInfo(currentDate, checkOcsp, checkCrl) })
-            .build()
+        return VerificationResponse(
+            valid = valid,
+            signers = certs.map { it?.toCertificateInfo(currentDate, checkOcsp, checkCrl) },
+        )
     }
 
     fun prepare(xml: String, trimXml: Boolean): String =
