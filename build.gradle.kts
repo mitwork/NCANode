@@ -36,7 +36,7 @@ tasks.bootJar { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
 tasks.jar { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
 
 dependencies {
-    // Spring Boot 3.x (jakarta namespace).
+    // Spring Boot 4.x (jakarta namespace).
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
@@ -46,8 +46,8 @@ dependencies {
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
     // tomcat теперь приходит транзитивно через starter-web; war/providedRuntime убрали.
 
-    // HTTP client. SB 3 поставляет httpclient5 в BOM, но наш код пока на 4.x API —
-    // оставляем 4.5.x явной зависимостью (он совместим с jakarta-stack, т.к. не
+    // HTTP client. SB BOM поставляет httpclient5, но наш код пока на 4.x API —
+    // оставляем 4.5.x явной зависимостью (совместим с jakarta-stack, т.к. не
     // касается servlet/web API напрямую).
     implementation("org.apache.httpcomponents:httpclient:4.5.14")
 
@@ -65,7 +65,9 @@ dependencies {
     implementation("org.apache.wss4j:wss4j-ws-security-dom:4.0.0") {
         exclude(group = "org.opensaml")
     }
-    implementation("jakarta.xml.ws:jakarta.xml.ws-api:4.0.2")
+    // SAAJ runtime — даёт jakarta.xml.soap.MessageFactory, который использует
+    // WsseService для парсинга/перепаковки SOAP envelope'ов. wss4j подтягивает
+    // только jakarta.xml.soap-api (интерфейсы), реализацию нужно дать явно.
     implementation("com.sun.xml.ws:jaxws-rt:4.0.3")
 
     // OpenAPI / Swagger UI — v3 (для Spring 7 / SB 4).
