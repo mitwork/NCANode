@@ -85,8 +85,11 @@ dependencies {
     implementation("jakarta.xml.ws:jakarta.xml.ws-api:4.0.2")
     implementation("com.sun.xml.ws:jaxws-rt:4.0.3")
 
-    // OpenAPI / Swagger UI — v2 (jakarta).
-    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:2.5.0")
+    // OpenAPI / Swagger UI — v3 (для Spring 7 / SB 4).
+    // springdoc 2.x ссылается на удалённый в Spring 7 конструктор
+    // ControllerAdviceBean(Object) — NoSuchMethodError на любой запрос
+    // через DispatcherServlet с @ControllerAdvice бином.
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.3")
 
     // PDFBox 3.x — jakarta-совместимый.
     implementation("org.apache.pdfbox:pdfbox:3.0.3")
