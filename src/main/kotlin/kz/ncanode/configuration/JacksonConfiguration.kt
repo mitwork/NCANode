@@ -24,7 +24,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 @Configuration
 @Suppress("removal", "DEPRECATION")
 class JacksonConfiguration : WebMvcConfigurer {
-    override fun configureMessageConverters(converters: MutableList<HttpMessageConverter<*>>) {
+    // extendMessageConverters расширяет default list (StringHttpMessageConverter
+    // + Jackson 3 + т.п.), configureMessageConverters его бы заменил полностью —
+    // тогда бы пропали text/html и прочие конвертеры, и GET / возвращал бы 500.
+    override fun extendMessageConverters(converters: MutableList<HttpMessageConverter<*>>) {
         converters.add(0, MappingJackson2HttpMessageConverter())
     }
 }
