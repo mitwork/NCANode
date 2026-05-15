@@ -6,10 +6,15 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
+import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.CmsVerifyRequest
+import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.dto.response.CmsBatchResponse
 import kz.ncanode.dto.response.CmsDataResponse
 import kz.ncanode.dto.response.CmsResponse
+import kz.ncanode.dto.response.CmsVerificationBatchResponse
 import kz.ncanode.dto.response.CmsVerificationResponse
 import kz.ncanode.service.CmsService
 
@@ -71,6 +76,51 @@ class CmsControllerTest : FunSpec({
         CmsController(service).verify(request)
 
         verify(exactly = 1) { service.verify("BASE64", null, false, false) }
+    }
+
+    test("POST /cms/sign/batch delegates to CmsService.createBatch") {
+        val service = mockk<CmsService>()
+        val batchResp = CmsBatchResponse(
+            results = listOf(
+                CmsBatchResponse.Item(cms = "CMS-1"),
+                CmsBatchResponse.Item(cms = "CMS-2"),
+            )
+        )
+        every { service.createBatch(any()) } returns batchResp
+
+        val request = CmsCreateBatchRequest().apply {
+            data = listOf("AA==", "BB==")
+            signers = listOf(SignerRequest().apply { key = "K"; password = "P" })
+        }
+        val response = CmsController(service).signBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        response.body!!.results.size shouldBe 2
+        verify(exactly = 1) { service.createBatch(request) }
+    }
+
+    test("POST /cms/verify/batch delegates to CmsService.verifyBatch") {
+        val service = mockk<CmsService>()
+        val batchResp = CmsVerificationBatchResponse(
+            results = listOf(
+                CmsVerificationResponse(valid = true),
+                CmsVerificationResponse(valid = false),
+            )
+        )
+        every { service.verifyBatch(any()) } returns batchResp
+
+        val request = CmsVerifyBatchRequest().apply {
+            items = listOf(
+                CmsVerifyBatchRequest.Item().apply { cms = "CMS-1" },
+                CmsVerifyBatchRequest.Item().apply { cms = "CMS-2"; data = "DATA-2" },
+            )
+            revocationCheck = setOf(CertificateRevocation.OCSP)
+        }
+        val response = CmsController(service).verifyBatch(request)
+
+        response.statusCode.value() shouldBe 200
+        response.body!!.results.size shouldBe 2
+        verify(exactly = 1) { service.verifyBatch(request) }
     }
 
     test("POST /cms/extract delegates to CmsService.extract") {

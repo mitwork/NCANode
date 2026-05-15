@@ -7,7 +7,10 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import kz.ncanode.TestResources
+import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
+import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -202,6 +205,144 @@ class CmsServiceIntegrationTest(
         }
         ex.shouldNotBeNull()
         ex.message.shouldNotBeNull() shouldContain "CMS"
+    }
+
+    test("createBatch: all items signed, each independently verifiable") {
+        val request = CmsCreateBatchRequest().apply {
+            data = listOf(b64("payload-1"), b64("payload-2"), b64("payload-3"))
+            signers = listOf(signerOf("individual_valid.p12"))
+        }
+        val response = cmsService.createBatch(request)
+
+        response.results shouldHaveSize 3
+        response.results.forEach {
+            it.status shouldBe 200
+            it.cms.shouldNotBeNull()
+        }
+        // Каждый CMS должен независимо верифицироваться.
+        response.results.forEach { item ->
+            cmsService.verify(item.cms!!, null, checkOcsp = false, checkCrl = false).valid shouldBe true
+        }
+    }
+
+    test("createBatch: TSP flag propagates to each item") {
+        val request = CmsCreateBatchRequest().apply {
+            data = listOf(b64("tsp-a"), b64("tsp-b"))
+            signers = listOf(signerOf("individual_valid.p12"))
+            isWithTsp = true
+        }
+        val response = cmsService.createBatch(request)
+
+        response.results shouldHaveSize 2
+        response.results.forEach { item ->
+            val verification = cmsService.verify(item.cms!!, null, checkOcsp = false, checkCrl = false)
+            verification.valid shouldBe true
+            // У каждого signer'а должна стоять TSP-метка с genTime.
+            verification.signers.shouldHaveSize(1).first().tsp.shouldNotBeNull().genTime.shouldNotBeNull()
+        }
+    }
+
+    test("verifyBatch: each CMS verified independently with valid flag per item") {
+        // Готовим два CMS через createBatch и проверяем их одним verifyBatch.
+        val signed = cmsService.createBatch(CmsCreateBatchRequest().apply {
+            data = listOf(b64("vb-a"), b64("vb-b"))
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+
+        val verifyResp = cmsService.verifyBatch(CmsVerifyBatchRequest().apply {
+            items = signed.results.map { item ->
+                CmsVerifyBatchRequest.Item().apply { cms = item.cms!! }
+            }
+        })
+
+        verifyResp.results shouldHaveSize 2
+        verifyResp.results.forEach { it.valid shouldBe true }
+    }
+
+    test("verifyBatch: detached CMS — each item passes its own data") {
+        val payload1 = "detached-batch-1"
+        val payload2 = "detached-batch-2"
+
+        val signed1 = cmsService.create(CmsCreateRequest().apply {
+            data = b64(payload1)
+            signers = listOf(signerOf("individual_valid.p12"))
+            isDetached = true
+        })
+        val signed2 = cmsService.create(CmsCreateRequest().apply {
+            data = b64(payload2)
+            signers = listOf(signerOf("individual_valid.p12"))
+            isDetached = true
+        })
+
+        val response = cmsService.verifyBatch(CmsVerifyBatchRequest().apply {
+            items = listOf(
+                CmsVerifyBatchRequest.Item().apply { cms = signed1.cms!!; data = b64(payload1) },
+                CmsVerifyBatchRequest.Item().apply { cms = signed2.cms!!; data = b64(payload2) },
+            )
+        })
+
+        response.results shouldHaveSize 2
+        response.results.forEach { it.valid shouldBe true }
+    }
+
+    test("verifyBatch: OCSP flag propagates — revoked signer flagged as invalid") {
+        val signedOk = cmsService.create(CmsCreateRequest().apply {
+            data = b64("ok")
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+        val signedRevoked = cmsService.create(CmsCreateRequest().apply {
+            data = b64("revoked")
+            signers = listOf(signerOf("individual_revoked.p12"))
+        })
+
+        val response = cmsService.verifyBatch(CmsVerifyBatchRequest().apply {
+            items = listOf(
+                CmsVerifyBatchRequest.Item().apply { cms = signedOk.cms!! },
+                CmsVerifyBatchRequest.Item().apply { cms = signedRevoked.cms!! },
+            )
+            revocationCheck = setOf(CertificateRevocation.OCSP)
+        })
+
+        response.results shouldHaveSize 2
+        response.results[0].valid shouldBe true
+        response.results[1].valid shouldBe false
+    }
+
+    test("verifyBatch: partial response — bad CMS doesn't kill the rest") {
+        val signed = cmsService.create(CmsCreateRequest().apply {
+            data = b64("good-cms")
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+
+        val response = cmsService.verifyBatch(CmsVerifyBatchRequest().apply {
+            items = listOf(
+                CmsVerifyBatchRequest.Item().apply { cms = signed.cms!! },
+                CmsVerifyBatchRequest.Item().apply { cms = "###not-base64-cms###" },
+            )
+        })
+
+        response.results shouldHaveSize 2
+        response.results[0].valid shouldBe true
+        // Невалидный CMS — verify() кидает ClientException(400) на парсинге.
+        response.results[1].valid shouldBe false
+        response.results[1].status shouldBe 400
+    }
+
+    test("createBatch: partial response — bad data in middle doesn't kill the rest") {
+        // Второй элемент — не валидный base64. ServerException → 500, остальные ОК.
+        val request = CmsCreateBatchRequest().apply {
+            data = listOf(b64("ok-1"), "###not-base64###", b64("ok-3"))
+            signers = listOf(signerOf("individual_valid.p12"))
+        }
+        val response = cmsService.createBatch(request)
+
+        response.results shouldHaveSize 3
+        response.results[0].status shouldBe 200
+        response.results[0].cms.shouldNotBeNull()
+        response.results[1].status shouldBe 500
+        response.results[1].cms shouldBe null
+        response.results[2].status shouldBe 200
+        response.results[2].cms.shouldNotBeNull()
     }
 
     test("addSigners on detached CMS requires data argument") {

@@ -11,16 +11,23 @@ import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.gov.pki.kalkan.util.encoders.Hex
 import kz.ncanode.dto.certificate.CertificateInfo
+import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.cms.CmsSignerInfo
+import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
+import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.dto.response.CmsBatchResponse
 import kz.ncanode.dto.response.CmsDataResponse
 import kz.ncanode.dto.response.CmsResponse
+import kz.ncanode.dto.response.CmsVerificationBatchResponse
 import kz.ncanode.dto.response.CmsVerificationResponse
 import kz.ncanode.dto.tsp.TsaPolicy
 import kz.ncanode.dto.tsp.TspInfo
+import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.ServerException
+import org.springframework.http.HttpStatus
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getHashingAlgorithmByOID
 import kz.ncanode.wrapper.CertificateWrapper
@@ -85,6 +92,36 @@ class CmsService(
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
+    }
+
+    /**
+     * Batch-создание CMS. На каждый элемент [CmsCreateBatchRequest.data]
+     * создаётся отдельный CMS общим набором signer'ов с одинаковыми
+     * TSP/detached флагами. Partial-response: ошибка на N-м data
+     * не валит остальные (issue malikzh/NCANode#212).
+     */
+    fun createBatch(request: CmsCreateBatchRequest): CmsBatchResponse {
+        val items = request.data.map { data ->
+            try {
+                val itemRequest = CmsCreateRequest().apply {
+                    this.data = data
+                    this.signers = request.signers
+                    this.isWithTsp = request.isWithTsp
+                    this.tsaPolicy = request.tsaPolicy
+                    this.isDetached = request.isDetached
+                }
+                val response = create(itemRequest)
+                CmsBatchResponse.Item(cms = response.cms)
+            } catch (e: ApplicationException) {
+                CmsBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                CmsBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return CmsBatchResponse(results = items)
     }
 
     /**
@@ -280,6 +317,30 @@ class CmsService(
         } catch (e: Exception) {
             throw ClientException(e.message, e)
         }
+    }
+
+    /**
+     * Batch-верификация: каждая пара (cms, data?) проверяется независимо
+     * с общими revocation-флагами. На исключение — item возвращается с
+     * `valid=false` и status/message; остальные продолжают.
+     */
+    fun verifyBatch(request: CmsVerifyBatchRequest): CmsVerificationBatchResponse {
+        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
+        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
+        val items = request.items.map { item ->
+            try {
+                verify(item.cms, item.data, checkOcsp, checkCrl)
+            } catch (e: ApplicationException) {
+                CmsVerificationResponse(valid = false, status = e.status, message = e.message)
+            } catch (e: Exception) {
+                CmsVerificationResponse(
+                    valid = false,
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return CmsVerificationBatchResponse(results = items)
     }
 
     /**
