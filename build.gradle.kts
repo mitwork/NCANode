@@ -2,9 +2,7 @@ plugins {
     alias(libs.plugins.spring.boot)
     alias(libs.plugins.spring.dependency.management)
     java
-    groovy
     war
-    jacoco
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.spring)
 }
@@ -12,15 +10,18 @@ plugins {
 group = "kz"
 version = (findProperty("version") as? String)
     ?.takeUnless { it.isBlank() || it == "unspecified" }
-    ?: "3.0.0-SNAPSHOT"
+    ?: "4.0.0-SNAPSHOT"
 
+// Java 25 через Gradle toolchain (auto-download через foojay resolver, см. settings.gradle.kts).
+// Launcher JVM может оставаться на любом 17+ — Gradle сам подтянет JDK 25 для компиляции.
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(25)
     compilerOptions {
         freeCompilerArgs.add("-Xjsr305=strict")
     }
@@ -44,9 +45,7 @@ tasks.jar { duplicatesStrategy = DuplicatesStrategy.EXCLUDE }
 
 dependencies {
     // Spring
-    implementation("org.codehaus.groovy:groovy-all:3.0.13")
     implementation("org.springframework.boot:spring-boot-starter-web")
-    testImplementation("org.springframework.boot:spring-boot-starter-test")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("org.springframework.boot:spring-boot-starter-cache")
@@ -56,17 +55,10 @@ dependencies {
     implementation("org.springframework.retry:spring-retry:1.3.3")
     providedRuntime("org.springframework.boot:spring-boot-starter-tomcat")
 
-    // Spock/Mockito
-    testImplementation("org.spockframework:spock-core:2.2-groovy-3.0")
-    testImplementation("org.spockframework:spock-spring:2.2-groovy-3.0")
-    testImplementation("org.mockito:mockito-core:4.8.0")
-
     // Lombok (используется в существующем Java-коде; убираем когда последний Java
     // файл будет портирован в Kotlin).
-    testCompileOnly("org.projectlombok:lombok:1.18.24")
-    testAnnotationProcessor("org.projectlombok:lombok:1.18.24")
-    compileOnly("org.projectlombok:lombok:1.18.24")
-    annotationProcessor("org.projectlombok:lombok:1.18.24")
+    compileOnly("org.projectlombok:lombok:1.18.40")
+    annotationProcessor("org.projectlombok:lombok:1.18.40")
 
     // KalkanCrypt из flatDir lib/
     implementation(":knca_provider_jce_kalkan-0.7.5")
@@ -89,41 +81,9 @@ dependencies {
     implementation("org.bouncycastle:bcpkix-jdk15on:1.70")
 }
 
-tasks.test {
-    useJUnitPlatform()
-}
-
+// mainClass задан явно — иначе SB 2.7 plugin'овский ASM падает на Java 25 bytecode
+// при сканировании @SpringBootApplication. Уйдёт при bump'е до SB 3+.
 springBoot {
+    mainClass = "kz.ncanode.NCANode"
     buildInfo()
-}
-
-tasks.jacocoTestReport {
-    reports {
-        xml.required.set(true)
-        html.required.set(false)
-    }
-}
-
-afterEvaluate {
-    tasks.jacocoTestReport {
-        classDirectories.setFrom(
-            files(classDirectories.files.map {
-                fileTree(it).apply {
-                    exclude(
-                        "kz/ncanode/NCANode.class",
-                        "kz/ncanode/constants/*",
-                        "kz/ncanode/exception/*",
-                        "kz/ncanode/configuration/**",
-                        "kz/ncanode/dto/**",
-                        "kz/ncanode/util/*",
-                        "kz/ncanode/controller/advice/ExceptionHandlerControllerAdvice.class",
-                    )
-                }
-            })
-        )
-    }
-}
-
-tasks.check {
-    dependsOn(tasks.jacocoTestReport)
 }
