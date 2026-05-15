@@ -13,7 +13,7 @@ import org.springframework.web.context.request.WebRequest
 class ExceptionHandlerControllerAdvice(private val systemConfiguration: SystemConfiguration) {
 
     @ExceptionHandler(RuntimeException::class)
-    protected fun handleRuntimeException(e: RuntimeException, request: WebRequest): ResponseEntity<ErrorResponse> {
+    fun handleRuntimeException(e: RuntimeException, request: WebRequest): ResponseEntity<ErrorResponse> {
         val status = (e as? ApplicationException)?.status ?: HttpStatus.INTERNAL_SERVER_ERROR.value()
 
         val details = if (systemConfiguration.isDetailedErrors && e.cause != null) e.cause?.message else null
