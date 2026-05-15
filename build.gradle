@@ -28,6 +28,14 @@ repositories {
     }
 }
 
+bootJar {
+    duplicatesStrategy(DuplicatesStrategy.EXCLUDE)
+}
+
+jar {
+    duplicatesStrategy(DuplicatesStrategy.EXCLUDE)
+}
+
 dependencies {
     // Spring
     implementation 'org.codehaus.groovy:groovy-all:3.0.13'
