@@ -26,9 +26,9 @@ import java.security.PublicKey
 import java.security.cert.CertificateException
 import java.security.cert.CertificateFactory
 import java.security.cert.X509CRL
+import java.time.Duration
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import javax.security.auth.x500.X500Principal
 
 /**
@@ -182,8 +182,8 @@ open class CrlService(
         if (ttl == null || ttl < 1) return
 
         log.info("Initializing '{}' CRL Service...", crlServiceType)
-        val trigger = PeriodicTrigger(ttl.toLong(), TimeUnit.MINUTES).apply {
-            setInitialDelay(0)
+        val trigger = PeriodicTrigger(Duration.ofMinutes(ttl.toLong())).apply {
+            setInitialDelay(Duration.ZERO)
             isFixedRate = true
         }
         taskScheduler.schedule({ updateCache(false, crlConfiguration, cacheFullDir()) }, trigger)
@@ -196,8 +196,8 @@ open class CrlService(
         if (ttl == null || ttl < 1) return
 
         log.info("Initializing '{}' CRL Delta Service...", crlServiceType)
-        val trigger = PeriodicTrigger(ttl.toLong(), TimeUnit.MINUTES).apply {
-            setInitialDelay(0)
+        val trigger = PeriodicTrigger(Duration.ofMinutes(ttl.toLong())).apply {
+            setInitialDelay(Duration.ZERO)
             isFixedRate = true
         }
         taskScheduler.schedule({ updateCache(false, delta, cacheDeltaDir()) }, trigger)

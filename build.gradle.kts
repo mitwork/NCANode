@@ -39,13 +39,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
-    implementation("org.springframework.boot:spring-boot-starter-cache")
-    // AspectJ starter — нужен для @EnableCaching/@EnableRetry/@EnableScheduling/@EnableAsync;
-    // тянет spring-aop, spring-aspects, aspectjweaver runtime.
-    // В SB 4 переименован из spring-boot-starter-aop.
+    // AspectJ starter — нужен для AOP-прокси @Async / @Scheduled
+    // (spring-aop + spring-aspects + aspectjweaver runtime).
     implementation("org.springframework.boot:spring-boot-starter-aspectj")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
-    implementation("org.springframework.retry:spring-retry:2.0.10")
     // tomcat теперь приходит транзитивно через starter-web; war/providedRuntime убрали.
 
     // HTTP client. SB 3 поставляет httpclient5 в BOM, но наш код пока на 4.x API —

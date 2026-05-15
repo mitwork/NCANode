@@ -197,18 +197,15 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
     companion object {
         private val log = LoggerFactory.getLogger(CertificateWrapper::class.java)
 
-        @JvmStatic
         fun fromBase64(encodedCert: String): CertificateWrapper? =
             fromBytes(Base64.getDecoder().decode(encodedCert.replace("\\s".toRegex(), "")))
 
-        @JvmStatic
         fun fromBytes(encodedCert: ByteArray): CertificateWrapper? = try {
             ByteArrayInputStream(encodedCert).use { fromInputStream(it) }
         } catch (e: IOException) {
             null
         }
 
-        @JvmStatic
         fun fromInputStream(inputStream: InputStream): CertificateWrapper? = try {
             val cert = CertificateFactory.getInstance("X.509", KalkanProvider.PROVIDER_NAME)
                 .generateCertificate(inputStream) as X509Certificate
@@ -216,7 +213,6 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
         } catch (e: CertificateException) { null }
           catch (e: NoSuchProviderException) { null }
 
-        @JvmStatic
         fun fromFile(file: File): CertificateWrapper? = try {
             fromInputStream(FileInputStream(file))
         } catch (e: FileNotFoundException) {
