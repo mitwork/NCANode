@@ -1,0 +1,16 @@
+[versions]
+# Languages / plugins.
+# Kotlin/Spring Boot versии повышаем поэтапно отдельными коммитами:
+#   commit 1 (этот): Kotlin DSL + Kotlin plugin, версии SB остаются 2.7.x
+#   commit 3:        Java 17 → 25
+#   commit 4:        Spring Boot 2.7 → 3.x (javax → jakarta)
+#   commit 5:        Spring Boot 3.x → 4.x
+kotlin = "2.3.21"
+springBoot = "2.7.2"
+springDependencyManagement = "1.0.12.RELEASE"
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotlin" }
+spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "springDependencyManagement" }
