@@ -3,26 +3,32 @@ name: Create Release
 on:
   push:
     tags:
-      - '**'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
+      - uses: actions/checkout@v6
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          # Full history нужна для auto-generated release notes
+          # (gh берёт PR'ы между last release и текущим tag'ом).
+          fetch-depth: 0
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
       - name: Setup Gradle
-        uses: gradle/gradle-build-action@v2
+        uses: gradle/actions/setup-gradle@v6
       - name: Cache Kalkancrypt libraries
         id: kalkancrypt-cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ./lib
           key: ${{ runner.os }}-kalkancrypt-libs-2
@@ -34,34 +40,25 @@ jobs:
         run: |
           wget -P ./lib "$KALKAN_CRYPT_URL"
           wget -P ./lib "$KALKAN_CRYPT_XMLDSIG_URL"
-      - name: Release version
-        run: echo $GITHUB_REF_NAME
-      - name: Build and Run tests
-        run: ./gradlew -Pversion=$GITHUB_REF_NAME bootJar bootWar
-      - uses: actions/upload-artifact@v4
+      - name: Extract version from tag (strip leading `v`)
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build bootJar with release version
+        run: ./gradlew -Pversion=${{ steps.ver.outputs.version }} bootJar --stacktrace
+      - uses: actions/upload-artifact@v7
         with:
           name: NCANode-build
           path: build/libs
           if-no-files-found: error
-      - name: Create asset
-        run: zip --junk-paths ./NCANode.zip build/libs/*.jar build/libs/*.war README.md LICENSE
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Create release asset
+        run: zip --junk-paths ./NCANode.zip build/libs/*.jar README.md LICENSE
+      - name: Create GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: NCANode v${{ github.ref_name }}
-          draft: true
-          prerelease: false
-      - name: Upload Release Asset
-        id: upload-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./NCANode.zip
-          asset_name: NCANode-${{ github.ref_name }}.zip
-          asset_content_type: application/zip
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "NCANode ${{ steps.ver.outputs.version }}" \
+            --generate-notes \
+            --verify-tag \
+            --draft \
+            ./NCANode.zip
