@@ -5,9 +5,16 @@ import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.constants.MessageConstants
 import kz.ncanode.dto.certificate.CertificateInfo
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
+import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.dto.request.X509InfoBatchRequest
+import kz.ncanode.dto.response.Pkcs12InfoBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
+import kz.ncanode.dto.response.X509InfoBatchResponse
+import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ServerException
+import org.springframework.http.HttpStatus
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import org.springframework.stereotype.Service
@@ -117,6 +124,72 @@ class CertificateService(
         }
 
         return VerificationResponse(valid = valid, signers = certs)
+    }
+
+    /**
+     * Batch-info для X.509: каждый cert обрабатывается независимо.
+     * status элемента:
+     *  - 200 OK — cert успешно распарсен (revocation/validity отражены в `signer.valid`);
+     *  - 400/500 — cert не распарсился (плохой base64, не x509, ASN.1-битый).
+     */
+    fun infoBatch(request: X509InfoBatchRequest): X509InfoBatchResponse {
+        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
+        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
+        val items = request.certs.map { cert ->
+            try {
+                val response = info(listOf(cert), checkOcsp, checkCrl)
+                val signer = response.signers.firstOrNull()
+                if (signer == null) {
+                    // info() возвращает null в позиции с message типа
+                    // "[0]: Invalid certificate given" — это per-cert client error.
+                    X509InfoBatchResponse.Item(
+                        status = HttpStatus.BAD_REQUEST.value(),
+                        message = response.message ?: "Invalid certificate",
+                    )
+                } else {
+                    X509InfoBatchResponse.Item(signer = signer)
+                }
+            } catch (e: ApplicationException) {
+                X509InfoBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                X509InfoBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return X509InfoBatchResponse(results = items)
+    }
+
+    /**
+     * Batch-info для p12: каждый ключ читается независимо.
+     * status элемента:
+     *  - 200 OK — p12 прочитан, cert извлечён;
+     *  - 4xx/5xx — ошибка чтения (битый p12, неверный пароль и т.п.).
+     */
+    fun verifyCertsBatch(request: Pkcs12InfoBatchRequest): Pkcs12InfoBatchResponse {
+        val items = request.keys.map { key ->
+            try {
+                val singleRequest = Pkcs12InfoRequest().apply {
+                    keys = listOf(SignerRequest().apply {
+                        this.key = key.key
+                        this.password = key.password
+                        this.keyAlias = key.keyAlias
+                    })
+                    revocationCheck = request.revocationCheck
+                }
+                val response = verifyCerts(singleRequest)
+                Pkcs12InfoBatchResponse.Item(signer = response.signers.firstOrNull())
+            } catch (e: ApplicationException) {
+                Pkcs12InfoBatchResponse.Item(status = e.status, message = e.message)
+            } catch (e: Exception) {
+                Pkcs12InfoBatchResponse.Item(
+                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    message = e.message,
+                )
+            }
+        }
+        return Pkcs12InfoBatchResponse(results = items)
     }
 
     fun info(certsBase64: List<String>, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {

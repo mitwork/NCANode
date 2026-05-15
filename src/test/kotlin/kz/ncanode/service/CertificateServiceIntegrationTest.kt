@@ -9,8 +9,10 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import kz.ncanode.TestResources
+import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
 import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.dto.request.X509InfoBatchRequest
 import kz.ncanode.wrapper.KalkanWrapper
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -127,6 +129,62 @@ class CertificateServiceIntegrationTest(
         // Cert сам по себе валидный + parsed → присутствует в signers.
         response.signers shouldHaveSize 1
         response.signers[0].shouldNotBeNull()
+    }
+
+    test("infoBatch: per-cert results — valid+invalid coexist, each with own status") {
+        val response = certificateService.infoBatch(X509InfoBatchRequest().apply {
+            certs = listOf(
+                extractCertBase64("individual_valid.p12"),
+                nonCertBase64,
+                extractCertBase64("legal_ceo_valid.p12"),
+            )
+        })
+
+        response.results shouldHaveSize 3
+        response.results[0].status shouldBe 200
+        response.results[0].signer.shouldNotBeNull()
+        // Невалидный base64-cert → status=400 per-item, signer=null.
+        response.results[1].status shouldBe 400
+        response.results[1].signer.shouldBeNull()
+        response.results[2].status shouldBe 200
+        response.results[2].signer.shouldNotBeNull()
+    }
+
+    test("infoBatch: revoked cert is parsed (status=200) but signer.valid=false with OCSP") {
+        val response = certificateService.infoBatch(X509InfoBatchRequest().apply {
+            certs = listOf(extractCertBase64("individual_revoked.p12"))
+            revocationCheck = setOf(kz.ncanode.dto.certificate.CertificateRevocation.OCSP)
+        })
+
+        response.results shouldHaveSize 1
+        // Парсинг успешен → status 200, но revocation на бизнес-уровне → signer.valid=false.
+        response.results[0].status shouldBe 200
+        val signer = response.results[0].signer.shouldNotBeNull()
+        signer.valid shouldBe false
+    }
+
+    test("verifyCertsBatch: per-key status — bad password / good key coexist") {
+        val response = certificateService.verifyCertsBatch(Pkcs12InfoBatchRequest().apply {
+            keys = listOf(
+                SignerRequest().apply {
+                    key = TestResources.loadAsBase64("p12/individual_valid.p12")
+                    password = TestResources.P12_PASSWORD
+                },
+                SignerRequest().apply {
+                    key = TestResources.loadAsBase64("p12/individual_valid.p12")
+                    password = "wrong-password"
+                },
+            )
+        })
+
+        response.results shouldHaveSize 2
+        response.results[0].status shouldBe 200
+        response.results[0].signer.shouldNotBeNull()
+        // Неверный пароль → KalkanWrapper.tryReadKey оборачивает в
+        // ServerException (status=500). На batch-уровне попадает в catch
+        // и пишет per-item status=500.
+        response.results[1].status shouldBe 500
+        response.results[1].signer.shouldBeNull()
     }
 
     test("attachValidationData is idempotent: second call doesn't re-fetch OCSP") {

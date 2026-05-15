@@ -2,8 +2,10 @@ package kz.ncanode.controller
 
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
+import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
 import kz.ncanode.dto.response.Pkcs12AliasesResponse
+import kz.ncanode.dto.response.Pkcs12InfoBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.service.CertificateService
 import kz.ncanode.wrapper.KalkanWrapper
@@ -24,6 +26,10 @@ class Pkcs12Controller(
     @PostMapping("/info")
     fun info(@Valid @RequestBody request: Pkcs12InfoRequest): ResponseEntity<VerificationResponse> =
         ResponseEntity.ok(certificateService.verifyCerts(request))
+
+    @PostMapping("/info/batch")
+    fun infoBatch(@Valid @RequestBody request: Pkcs12InfoBatchRequest): ResponseEntity<Pkcs12InfoBatchResponse> =
+        ResponseEntity.ok(certificateService.verifyCertsBatch(request))
 
     @PostMapping("/aliases")
     fun aliases(@Valid @RequestBody request: Pkcs12InfoRequest): ResponseEntity<Pkcs12AliasesResponse> =
