@@ -43,7 +43,7 @@ class CertificateService(
      * а потом основной цикл просто проходит через assemble без перерасчёта.
      */
     fun attachValidationData(cert: CertificateWrapper, checkOcsp: Boolean, checkCrl: Boolean) {
-        cert.issuerCertificate = caService.getRootCertificateFor(cert).orElse(null)
+        cert.issuerCertificate = caService.getRootCertificateFor(cert)
         if (checkOcsp && cert.ocspStatus == null) {
             cert.ocspStatus = ocspService.verify(cert, cert.issuerCertificate)
         }
@@ -70,7 +70,7 @@ class CertificateService(
         if (certs.isEmpty() || (!checkOcsp && !checkCrl)) return
 
         for (cert in certs) {
-            cert.issuerCertificate = caService.getRootCertificateFor(cert).orElse(null)
+            cert.issuerCertificate = caService.getRootCertificateFor(cert)
         }
 
         if (checkOcsp) {
