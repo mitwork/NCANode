@@ -237,10 +237,6 @@ class CertificateService(
     }
 
     companion object {
-        // @JvmStatic — единственный Java-caller (JwtService) использует синтаксис
-        // `CertificateService.load(...)` как static. Уйдёт когда JwtService будет
-        // портирован в Kotlin.
-        @JvmStatic
         @Throws(CertificateException::class, NoSuchProviderException::class, IOException::class)
         fun load(cert: ByteArray): X509Certificate? =
             ByteArrayInputStream(cert).use { stream ->
