@@ -216,7 +216,32 @@ public class CmsService {
             }
 
             CertStore certStore = cms.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME);
-            val signerIt = cms.getSignerInfos().getSigners().iterator();
+
+            // Pre-collect signers + их сертификаты в Map.
+            // Это нужно чтобы prefetch валидационных данных (OCSP/CRL) сделать
+            // одним батчем для всех cert'ов параллельно, а не последовательно
+            // внутри цикла per-signer. Для CMS с N подписантами OCSP-запросы
+            // уйдут параллельно — ускорение почти N-кратное (при включённом
+            // NCANODE_OCSP_PARALLEL).
+            LinkedHashMap<SignerInformation, List<CertificateWrapper>> signerCerts = new LinkedHashMap<>();
+            for (Object signerObj : cms.getSignerInfos().getSigners()) {
+                SignerInformation s = (SignerInformation) signerObj;
+                var certCollection = certStore.getCertificates(s.getSID());
+                List<CertificateWrapper> wrapped = new ArrayList<>();
+                for (Object certObj : certCollection) {
+                    wrapped.add(new CertificateWrapper((X509Certificate) certObj));
+                }
+                signerCerts.put(s, wrapped);
+            }
+
+            // Batch-prefetch: параллельный OCSP + последовательный CRL/issuer
+            // для всех cert'ов всех подписантов сразу.
+            if (checkOcsp || checkCrl) {
+                List<CertificateWrapper> allCerts = signerCerts.values().stream()
+                    .flatMap(List::stream)
+                    .toList();
+                certificateService.prefetchValidationData(allCerts, checkOcsp, checkCrl);
+            }
 
             final List<CmsSignerInfo> signers = new ArrayList<>();
 
@@ -224,10 +249,11 @@ public class CmsService {
 
             val currentDate = certificateService.getCurrentDate();
 
-            while (signerIt.hasNext()) {
+            for (Map.Entry<SignerInformation, List<CertificateWrapper>> entry : signerCerts.entrySet()) {
                 var signerInfoBuilder = CmsSignerInfo.builder();
 
-                var signer = (SignerInformation) signerIt.next();
+                var signer = entry.getKey();
+                var certs = entry.getValue();
 
                 // Время, на которое проверяется срок действия сертификата подписанта.
                 // При наличии валидной TSP-метки используем её genTime (CAdES-T):
@@ -292,14 +318,10 @@ public class CmsService {
                     }
                 }
 
-                X509CertSelector signerConstraints = signer.getSID();
-                var certCollection = certStore.getCertificates(signerConstraints);
-
-                var certIt = certCollection.iterator();
-
-                while (certIt.hasNext()) {
-                    CertificateWrapper cert = new CertificateWrapper((X509Certificate) certIt.next());
-
+                for (CertificateWrapper cert : certs) {
+                    // attachValidationData идемпотентен: prefetch уже сделал
+                    // тяжёлую часть (OCSP параллельно, CRL с кэшем), здесь
+                    // только выставится issuer если он null.
                     certificateService.attachValidationData(cert, checkOcsp, checkCrl);
 
                     if (!signer.verify(cert.getPublicKey(), KalkanProvider.PROVIDER_NAME) || !cert.isValid(validationDate, checkOcsp, checkCrl)) {

@@ -7,8 +7,12 @@ ncanode:
   system:
     detailedErrors: ${NCANODE_DEBUG:false}
     cacheDir: ${NCANODE_CACHE_DIR:./cache}
+    requestLog:
+      enabled: ${NCANODE_REQUEST_LOG_ENABLED:true}
   crl:
     enabled: ${NCANODE_CRL_ENABLED:true}
+    cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
+    warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:true}
     ttl: ${NCANODE_CRL_TTL:1440}
     url: ${NCANODE_CRL_URL:http://crl.pki.gov.kz/nca_rsa_2022.crl http://crl.pki.gov.kz/nca_gost_2022.crl}
     delta:
@@ -23,11 +27,14 @@ ncanode:
       password: ${NCANODE_PROXY_PASSWORD:}
   ocsp:
     url: ${NCANODE_OCSP_URL:http://ocsp.pki.gov.kz/}
+    parallelEnabled: ${NCANODE_OCSP_PARALLEL:true}
   ca:
     url: ${NCANODE_CA_URL:http://pki.gov.kz/cert/nca_rsa.crt http://pki.gov.kz/cert/nca_gost.crt http://pki.gov.kz/cert/root_gost_2022.cer http://root.gov.kz/cert/root_gost_2020.cer http://root.gov.kz/cert/root_rsa_2020.cer http://pki.gov.kz/cert/nca_gost_2022.cer}
     ttl: ${NCANODE_CA_TTL:1440}
     crl:
       enabled: ${NCANODE_CA_CRL_ENABLED:true}
+      cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
+      warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:false}
       ttl: ${NCANODE_CA_CRL_TTL:1440}
       url: ${NCANODE_CA_CRL_URL:http://crl.root.gov.kz/gost.crl http://crl.root.gov.kz/rsa.crl http://crl.root.gov.kz/gost2020.crl http://crl.root.gov.kz/rsa2020.crl}
       delta:

@@ -18,6 +18,15 @@ import java.util.Map;
 public class OcspConfiguration {
     private String url;
 
+    /**
+     * Если true — при верификации CMS с несколькими подписантами OCSP-запросы
+     * для каждого signer'а уходят параллельно. Это даёт N-кратное ускорение
+     * относительно последовательного флоу. Выключайте, если responder
+     * ограничивает количество одновременных запросов с одного клиента
+     * (rate-limit / connection-limit / per-IP throttling).
+     */
+    private boolean parallelEnabled = true;
+
     public Map<String, URL> getUrlList() {
         return Util.urlMap(getUrl(), log);
     }

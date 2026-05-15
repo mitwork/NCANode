@@ -28,11 +28,67 @@ public class CertificateService {
     private final OcspService ocspService;
     private final CaService caService;
     private final KalkanWrapper kalkanWrapper;
+    private final kz.ncanode.configuration.OcspConfiguration ocspConfiguration;
 
+    /**
+     * Заполняет cert данными валидации (issuer, OCSP, CRL).
+     *
+     * Идемпотентна для OCSP и CRL: если соответствующее поле уже выставлено
+     * (например, через {@link #prefetchValidationData}), повторно не вычисляет.
+     * Это позволяет вызывать prefetch один раз параллельно для всех signer'ов,
+     * а потом основной цикл просто проходит через assemble без перерасчёта.
+     */
     public void attachValidationData(final CertificateWrapper cert, boolean checkOcsp, boolean checkCrl) {
         cert.setIssuerCertificate(caService.getRootCertificateFor(cert).orElse(null));
-        cert.setOcspStatus(checkOcsp ? ocspService.verify(cert, cert.getIssuerCertificate()) : null);
-        cert.setCrlStatus(checkCrl ? crlService.verify(cert) : null);
+        if (checkOcsp && cert.getOcspStatus() == null) {
+            cert.setOcspStatus(ocspService.verify(cert, cert.getIssuerCertificate()));
+        }
+        if (checkCrl && cert.getCrlStatus() == null) {
+            cert.setCrlStatus(crlService.verify(cert));
+        }
+    }
+
+    /**
+     * Пакетный prefetch валидационных данных для списка сертификатов.
+     *
+     * OCSP-запросы для разных cert'ов могут идти параллельно (когда
+     * {@code NCANODE_OCSP_PARALLEL=true} и cert'ов больше одного) — каждый
+     * OCSP-запрос блокирующий, для CMS с N подписантами получаем N-кратное
+     * ускорение vs последовательного {@link #attachValidationData}.
+     *
+     * CRL делается последовательно: даже без распараллеливания CRL-проверка
+     * быстрая благодаря in-memory кэшу parsed+verified CRL'ей.
+     *
+     * Issuer-lookup тоже последовательный — он работает с in-memory CA-listом,
+     * измеряется микросекундами.
+     */
+    public void prefetchValidationData(List<CertificateWrapper> certs, boolean checkOcsp, boolean checkCrl) {
+        if (certs.isEmpty() || (!checkOcsp && !checkCrl)) {
+            return;
+        }
+
+        for (CertificateWrapper cert : certs) {
+            cert.setIssuerCertificate(caService.getRootCertificateFor(cert).orElse(null));
+        }
+
+        if (checkOcsp) {
+            boolean parallel = ocspConfiguration.isParallelEnabled() && certs.size() > 1;
+            if (parallel) {
+                certs.parallelStream().forEach(cert ->
+                    cert.setOcspStatus(ocspService.verify(cert, cert.getIssuerCertificate()))
+                );
+            } else {
+                for (CertificateWrapper cert : certs) {
+                    cert.setOcspStatus(ocspService.verify(cert, cert.getIssuerCertificate()));
+                }
+            }
+        }
+
+        if (checkCrl) {
+            for (CertificateWrapper cert : certs) {
+                cert.setCrlStatus(crlService.verify(cert));
+            }
+        }
     }
 
     public Date getCurrentDate() {

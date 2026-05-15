@@ -76,6 +76,137 @@ public class CrlService {
         return "crl/" + crlServiceType + "/ondemand";
     }
 
+    /**
+     * In-memory кэш распарсенных и подпись-верифицированных CRL'ей.
+     * Включается через {@code NCANODE_CRL_CACHE_ENABLED} (по умолчанию true).
+     *
+     * Без кэша на каждый verify-call делается полный {@code loadCrl} +
+     * {@code crl.verify(issuerKey)} для каждого файла в каталоге. Для крупных
+     * GOST 2015 CRL'ей (десятки MB) это уходит на десятки секунд.
+     * С кэшем — миллисекунды (только {@code isRevoked} lookup).
+     *
+     * Инвалидация: автоматически по {@code lastModified} файла.
+     * Repeat-verify против того же ключа issuer'а не делается повторно
+     * (cmp encoded key bytes).
+     */
+    private record CachedCrl(X509CRL crl, long fileMtime, byte[] verifiedAgainstKeyEncoded) {}
+    private final java.util.concurrent.ConcurrentHashMap<String, CachedCrl> crlMemCache =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Возвращает распарсенный CRL, используя in-memory кэш если включён.
+     * При промахе или изменении файла — re-parse, кэшируем без verified-key
+     * (signature проверится отдельно).
+     */
+    private X509CRL loadCachedCrl(File file) {
+        if (!crlConfiguration.isCacheEnabled()) {
+            return loadCrl(file);
+        }
+        String key = file.getAbsolutePath();
+        if (key == null) {
+            // Без стабильного идентификатора кэшировать нельзя — парсим напрямую.
+            // Срабатывает в основном на моках Mockito, где getAbsolutePath() = null.
+            return loadCrl(file);
+        }
+        long mtime = file.lastModified();
+        CachedCrl cached = crlMemCache.get(key);
+        if (cached != null && cached.fileMtime == mtime) {
+            return cached.crl;
+        }
+        X509CRL parsed = loadCrl(file);
+        crlMemCache.put(key, new CachedCrl(parsed, mtime, null));
+        return parsed;
+    }
+
+    /**
+     * Криптопроверка подписи CRL ключом issuer'а с кэшированием.
+     * Если подпись уже была успешно проверена против того же ключа и
+     * файл не менялся — повторно не верифицируется. Throws — как у
+     * {@code X509CRL.verify}, если cert'у нельзя доверять.
+     */
+    /**
+     * Прогревает in-memory кэш: проходит по всем CRL-файлам в этом
+     * cache namespace, парсит каждый и (по возможности) проверяет подпись
+     * против issuer-сертификата из переданного CA-bundle'а.
+     *
+     * Цель — чтобы первый user-verify не платил многосекундную цену парсинга
+     * крупных GOST CRL'ей. Прогревается всё что есть на диске; orphan'ы
+     * пропускаем тихо.
+     *
+     * Если cache отключён в конфиге, метод тихо выходит — нет смысла парсить
+     * в кэш, который всё равно не используется.
+     *
+     * @param caCerts набор доверенных CA для матчинга по
+     *                {@code X500Principal} CRL-issuer'а; если issuer не
+     *                нашёлся — парсим CRL без signature-верификации
+     *                (она сделается лениво при verify cert'а если потребуется)
+     */
+    public void warmCache(List<CertificateWrapper> caCerts) {
+        if (!crlConfiguration.isCacheEnabled()) {
+            log.debug("CRL cache disabled for '{}', skipping warmup", crlServiceType);
+            return;
+        }
+
+        int parsed = 0;
+        int sigVerified = 0;
+        int errors = 0;
+
+        for (String dir : List.of(cacheFullDir(), cacheDeltaDir(), cacheOnDemandDir())) {
+            for (File crlFile : getCrlFiles(dir)) {
+                try {
+                    X509CRL crl = loadCachedCrl(crlFile);
+                    parsed++;
+
+                    final X500Principal crlIssuer = crl.getIssuerX500Principal();
+                    PublicKey issuerKey = caCerts.stream()
+                        .filter(ca -> ca.getSubjectX500Principal().equals(crlIssuer))
+                        .map(CertificateWrapper::getPublicKey)
+                        .findFirst()
+                        .orElse(null);
+
+                    if (issuerKey != null) {
+                        try {
+                            verifyCachedSignature(crlFile, crl, issuerKey);
+                            sigVerified++;
+                        } catch (GeneralSecurityException e) {
+                            log.debug("CRL {} signature verify failed during warmup: {}",
+                                crlFile.getName(), e.getMessage());
+                        }
+                    }
+                } catch (Exception e) {
+                    errors++;
+                    log.warn("Failed to warm CRL {}: {}", crlFile.getName(), e.getMessage());
+                }
+            }
+        }
+
+        log.info("CRL cache warmup for '{}': {} parsed, {} signature-verified, {} errors",
+            crlServiceType, parsed, sigVerified, errors);
+    }
+
+    private void verifyCachedSignature(File file, X509CRL crl, PublicKey issuerKey) throws GeneralSecurityException {
+        if (!crlConfiguration.isCacheEnabled()) {
+            crl.verify(issuerKey);
+            return;
+        }
+        String key = file.getAbsolutePath();
+        if (key == null) {
+            crl.verify(issuerKey);
+            return;
+        }
+        long mtime = file.lastModified();
+        byte[] keyEnc = issuerKey.getEncoded();
+        CachedCrl cached = crlMemCache.get(key);
+        if (cached != null
+            && cached.fileMtime == mtime
+            && cached.verifiedAgainstKeyEncoded != null
+            && Arrays.equals(cached.verifiedAgainstKeyEncoded, keyEnc)) {
+            return;
+        }
+        crl.verify(issuerKey);
+        crlMemCache.put(key, new CachedCrl(crl, mtime, keyEnc));
+    }
+
     @PostConstruct
     private void initializeScheduler() {
         if (crlConfiguration.getTtl() == null || crlConfiguration.getTtl() < 1) {
@@ -145,7 +276,7 @@ public class CrlService {
             for (File crlFile : getCrlFiles(cacheDirectory)) {
                 final X509CRL crl;
                 try {
-                    crl = loadCrl(crlFile);
+                    crl = loadCachedCrl(crlFile);
                 } catch (ServerException e) {
                     log.warn("Skipping unreadable CRL file: {}", crlFile.getName());
                     continue;
@@ -171,7 +302,7 @@ public class CrlService {
                 // Подпись CRL должна быть подтверждена ключом издателя.
                 if (issuerKey != null) {
                     try {
-                        crl.verify(issuerKey);
+                        verifyCachedSignature(crlFile, crl, issuerKey);
                     } catch (GeneralSecurityException e) {
                         // Это уже реальная проблема — подпись CRL не сходится,
                         // либо ключ от другого CA. Такой CRL пропускаем.
@@ -302,6 +433,16 @@ public class CrlService {
                 continue;
             }
             String fileName = Util.sha1(url.toString()) + CRL_FILE_EXTENSION;
+
+            // Дедуп: если URL уже покрывается scheduled-flow'ом (т.е. файл
+            // уже есть в config-кэше full или delta), не качаем дубликат
+            // в ondemand. Reuse того же файла, что обновляет scheduled-job
+            // — экономит диск и убирает удвоенную работу при verify.
+            if (isAlreadyInConfigCache(fileName)) {
+                log.debug("CRL URL already covered by config cache, skipping on-demand: {}", url);
+                continue;
+            }
+
             File crlFile = new File(cacheDir, fileName);
 
             boolean stale = !crlFile.exists()
@@ -316,6 +457,26 @@ public class CrlService {
             log.debug("On-demand fetching CRL from cert CRL-DP: {}", url);
             downloadCrl(dirName, url);
         }
+    }
+
+    /**
+     * Проверяет, лежит ли файл с таким именем в `full` или `delta` каталогах
+     * (то есть обслуживается scheduled-update'ом из {@code NCANODE_CRL_URL} /
+     * {@code NCANODE_CA_CRL_URL}). Если да — on-demand fetch для этого URL
+     * не нужен, иначе получим два одинаковых файла в двух каталогах и
+     * двойную работу при verify.
+     */
+    private boolean isAlreadyInConfigCache(String fileName) {
+        return fileExistsIn(cacheFullDir(), fileName)
+            || fileExistsIn(cacheDeltaDir(), fileName);
+    }
+
+    private boolean fileExistsIn(String dirName, String fileName) {
+        File dir = directoryService.getCachePathFor(dirName).orElse(null);
+        if (dir == null) {
+            return false;
+        }
+        return new File(dir, fileName).isFile();
     }
 
     private static boolean isAllowedCrlScheme(URL url) {
