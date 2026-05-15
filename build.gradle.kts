@@ -2,7 +2,6 @@ plugins {
     alias(libs.plugins.spring.boot)
     alias(libs.plugins.spring.dependency.management)
     java
-    war
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.spring)
 }
@@ -53,7 +52,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-aspectj")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
     implementation("org.springframework.retry:spring-retry:2.0.10")
-    providedRuntime("org.springframework.boot:spring-boot-starter-tomcat")
+    // tomcat теперь приходит транзитивно через starter-web; war/providedRuntime убрали.
 
     // HTTP client. SB 3 поставляет httpclient5 в BOM, но наш код пока на 4.x API —
     // оставляем 4.5.x явной зависимостью (он совместим с jakarta-stack, т.к. не
