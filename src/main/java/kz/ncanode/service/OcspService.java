@@ -55,6 +55,15 @@ public class OcspService {
     /**
      * Выполняет запрос на OCSP серверы и возвращает статус для каждого URL.
      *
+     * URL'ы определяются по такому правилу:
+     *  1) Если в сертификате есть extension `authorityInfoAccess` с
+     *     `id-ad-ocsp` (RFC 5280 §4.2.2.1) — используются URL'ы оттуда.
+     *     Cert сам говорит, какой responder обслуживает его revocation.
+     *  2) Если AIA отсутствует — fallback на `NCANODE_OCSP_URL` из конфига.
+     *
+     * URL'ы фильтруются по схеме: разрешаются только http/https
+     * (defense-in-depth против SSRF на file:// и т.п.).
+     *
      * @param cert   Проверяемый сертификат
      * @param issuer Сертификат удостоверяющего центра, выпустившего {@code cert}
      */
@@ -71,8 +80,8 @@ public class OcspService {
             return statuses;
         }
 
-        for (Map.Entry<String, URL> entry : ocspConfiguration.getUrlList().entrySet()) {
-            String url = entry.getValue().toString();
+        for (URL ocspUrl : resolveOcspUrls(cert)) {
+            String url = ocspUrl.toString();
             try {
                 byte[] nonce = generateOcspNonce();
                 OCSPReq request = buildOcspRequest(cert.getX509Certificate().getSerialNumber(), issuer.getX509Certificate(), nonce);
@@ -92,6 +101,38 @@ public class OcspService {
         }
 
         return statuses;
+    }
+
+    /**
+     * Определяет, какие OCSP-URL'ы использовать для проверки этого cert'а.
+     * Приоритет: AIA-extension cert'а → config fallback.
+     */
+    private List<URL> resolveOcspUrls(CertificateWrapper cert) {
+        List<URL> aiaUrls = cert.getOcspUrls().stream()
+            .filter(OcspService::isAllowedScheme)
+            .toList();
+
+        if (!aiaUrls.isEmpty()) {
+            log.debug("Using OCSP URLs from cert AIA: {}", aiaUrls);
+            return aiaUrls;
+        }
+
+        List<URL> configUrls = ocspConfiguration.getUrlList().values().stream()
+            .filter(OcspService::isAllowedScheme)
+            .toList();
+        if (!configUrls.isEmpty()) {
+            log.debug("Cert has no AIA OCSP URLs, falling back to {} configured URL(s)", configUrls.size());
+        }
+        return configUrls;
+    }
+
+    private static boolean isAllowedScheme(URL url) {
+        String scheme = url.getProtocol();
+        boolean ok = "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+        if (!ok) {
+            log.warn("Refusing OCSP URL with disallowed scheme: {}", url);
+        }
+        return ok;
     }
 
     private OCSPReq buildOcspRequest(BigInteger serialNumber, X509Certificate issuer, byte[] nonce) throws OCSPException {

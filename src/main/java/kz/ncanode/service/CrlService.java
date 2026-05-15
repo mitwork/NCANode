@@ -68,6 +68,14 @@ public class CrlService {
         return "crl/" + crlServiceType + "/delta";
     }
 
+    /**
+     * Кэш для CRL'ей, скачанных по cRLDistributionPoints из самого cert'а
+     * (lazy fetch при первой верификации cert'а от неизвестного CA).
+     */
+    private String cacheOnDemandDir() {
+        return "crl/" + crlServiceType + "/ondemand";
+    }
+
     @PostConstruct
     private void initializeScheduler() {
         if (crlConfiguration.getTtl() == null || crlConfiguration.getTtl() < 1) {
@@ -126,7 +134,14 @@ public class CrlService {
             .map(CertificateWrapper::getPublicKey)
             .orElseGet(() -> selfSigned ? cert.getPublicKey() : null);
 
-        for (final String cacheDirectory : List.of(cacheDeltaDir(), cacheFullDir())) {
+        // On-demand fetch: cert указывает в своём cRLDistributionPoints, откуда
+        // качать CRL. Это primary-источник по RFC 5280 §4.2.1.13. Если URL'ы
+        // ещё не закэшированы или протухли по TTL — синхронно докачиваем,
+        // тогда основной цикл ниже их подхватит. Конфиг-CRL'и продолжают
+        // обслуживаться schedule'ом и тоже остаются в cache (см. updateCache).
+        fetchOnDemandCrls(cert);
+
+        for (final String cacheDirectory : List.of(cacheDeltaDir(), cacheFullDir(), cacheOnDemandDir())) {
             for (File crlFile : getCrlFiles(cacheDirectory)) {
                 final X509CRL crl;
                 try {
@@ -257,6 +272,59 @@ public class CrlService {
                 log.info("{} files updated in CRL cache for '{}'", updatedCount, cacheDirectory);
             }
         }
+    }
+
+    /**
+     * Скачивает CRL'и, указанные в `cRLDistributionPoints` cert'а, если они
+     * ещё не лежат в кэше или протухли по TTL. Тихий метод — упавший
+     * download не пробрасывает наружу (есть логирование внутри downloadCrl),
+     * verify() в любом случае попробует использовать имеющийся кэш.
+     *
+     * URL фильтруются по схеме (только http/https) — defense-in-depth против
+     * SSRF через подконтрольный атакующему cert.
+     */
+    private void fetchOnDemandCrls(CertificateWrapper cert) {
+        List<URL> crlUrls = cert.getCrlList();
+        if (crlUrls.isEmpty()) {
+            return;
+        }
+
+        final long ttlMillis = (long) crlConfiguration.getTtl() * 60_000L;
+        final long now = System.currentTimeMillis();
+        final String dirName = cacheOnDemandDir();
+        File cacheDir = directoryService.getCachePathFor(dirName).orElse(null);
+        if (cacheDir == null) {
+            return;
+        }
+
+        for (URL url : crlUrls) {
+            if (!isAllowedCrlScheme(url)) {
+                continue;
+            }
+            String fileName = Util.sha1(url.toString()) + CRL_FILE_EXTENSION;
+            File crlFile = new File(cacheDir, fileName);
+
+            boolean stale = !crlFile.exists()
+                || !crlFile.isFile()
+                || !crlFile.canRead()
+                || (now - crlFile.lastModified()) > ttlMillis;
+
+            if (!stale) {
+                continue;
+            }
+
+            log.debug("On-demand fetching CRL from cert CRL-DP: {}", url);
+            downloadCrl(dirName, url);
+        }
+    }
+
+    private static boolean isAllowedCrlScheme(URL url) {
+        String scheme = url.getProtocol();
+        boolean ok = "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+        if (!ok) {
+            log.warn("Refusing CRL URL with disallowed scheme: {}", url);
+        }
+        return ok;
     }
 
     private void deleteOrphanCrlFiles(Set<String> validKeys, String cacheDirName) {

@@ -156,6 +156,50 @@ public class CertificateWrapper {
     }
 
     /**
+     * Возвращает список OCSP-URL'ов, объявленных самим сертификатом в его
+     * `authorityInfoAccess` extension'е (RFC 5280 §4.2.2.1, AccessMethod
+     * `id-ad-ocsp` = 1.3.6.1.5.5.7.48.1).
+     *
+     * Это primary-источник для OCSP-проверки данного cert'а: cert сам говорит,
+     * куда обращаться. Если AIA отсутствует или нет OCSP-записей, возвращается
+     * пустой список, и вызывающий должен использовать fallback из конфига.
+     *
+     * @return список URL'ов из AIA или пустой список
+     */
+    public List<URL> getOcspUrls() {
+        byte[] aiaExt = getX509Certificate().getExtensionValue(
+            X509Extensions.AuthorityInfoAccess.getId()
+        );
+        if (aiaExt == null) {
+            return Collections.emptyList();
+        }
+
+        try {
+            AuthorityInformationAccess aia = AuthorityInformationAccess.getInstance(
+                X509ExtensionUtil.fromExtensionValue(aiaExt)
+            );
+            List<String> urls = new ArrayList<>();
+            for (AccessDescription ad : aia.getAccessDescriptions()) {
+                if (!AccessDescription.id_ad_ocsp.equals(ad.getAccessMethod())) {
+                    continue;
+                }
+                GeneralName gn = ad.getAccessLocation();
+                if (gn.getTagNo() != GeneralName.uniformResourceIdentifier) {
+                    continue;
+                }
+                urls.add(DERIA5String.getInstance(gn.getName()).getString());
+            }
+            return urls.stream()
+                .map(u -> Util.createNewUrl(u, log))
+                .filter(Objects::nonNull)
+                .toList();
+        } catch (IOException e) {
+            log.warn("Failed to parse AuthorityInformationAccess extension", e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
      * Метод для валидации сертификата
      *
      * @param checkOcsp
