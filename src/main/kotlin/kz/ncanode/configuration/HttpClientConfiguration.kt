@@ -14,8 +14,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Scope
-import java.net.MalformedURLException
-import java.net.URL
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 @Configuration
@@ -33,7 +32,7 @@ open class HttpClientConfiguration {
         val proxyConfig = proxy
         if (proxyConfig?.url?.isNotBlank() == true) {
             try {
-                val proxyUrl = URL(proxyConfig.url)
+                val proxyUrl = URI(proxyConfig.url).toURL()
                 customClient.setProxy(HttpHost(proxyUrl.host, proxyUrl.port, proxyUrl.protocol))
 
                 if (proxyConfig.username?.isNotBlank() == true) {
@@ -42,7 +41,7 @@ open class HttpClientConfiguration {
                     credentialsProvider.setCredentials(AuthScope(proxyUrl.host, proxyUrl.port), credentials)
                     customClient.setDefaultCredentialsProvider(credentialsProvider)
                 }
-            } catch (e: MalformedURLException) {
+            } catch (e: Exception) {
                 log.error("Invalid proxy url: $proxyConfig", e)
             }
         }

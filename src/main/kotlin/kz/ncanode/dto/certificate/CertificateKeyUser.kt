@@ -1,7 +1,5 @@
 package kz.ncanode.dto.certificate
 
-import java.util.Optional
-
 enum class CertificateKeyUser(val oid: String) {
     INDIVIDUAL("1.2.398.3.3.4.1.1"),
     ORGANIZATION("1.2.398.3.3.4.1.2"),
@@ -21,8 +19,6 @@ enum class CertificateKeyUser(val oid: String) {
     ;
 
     companion object {
-        @JvmStatic
-        fun fromOID(oid: String): Optional<CertificateKeyUser> =
-            Optional.ofNullable(entries.firstOrNull { it.oid == oid })
+        fun fromOID(oid: String): CertificateKeyUser? = entries.firstOrNull { it.oid == oid }
     }
 }

@@ -3,7 +3,7 @@ package kz.ncanode.configuration
 import jakarta.validation.constraints.Min
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.context.annotation.Configuration
-import java.net.MalformedURLException
+import java.net.URI
 import java.net.URL
 
 @Configuration
@@ -16,8 +16,8 @@ open class TspConfiguration {
 
     val parsedUrl: URL?
         get() = try {
-            url?.let { URL(it) }
-        } catch (e: MalformedURLException) {
+            url?.let { URI(it).toURL() }
+        } catch (e: Exception) {
             null
         }
 }

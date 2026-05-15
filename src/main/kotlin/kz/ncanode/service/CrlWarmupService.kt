@@ -30,11 +30,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Service
 class CrlWarmupService(
     private val crlService: CrlService,
-    @Qualifier("caCrlService") private val caCrlService: CrlService,
+    @param:Qualifier("caCrlService") private val caCrlService: CrlService,
     private val caService: CaService,
 ) {
 
-    @Value("\${ncanode.crl.warmupEnabled:false}")
+    @field:Value("\${ncanode.crl.warmupEnabled:false}")
     var isWarmupEnabled: Boolean = false
 
     private val warmupComplete = AtomicBoolean(false)

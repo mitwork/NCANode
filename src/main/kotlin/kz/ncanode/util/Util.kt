@@ -9,6 +9,8 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.net.MalformedURLException
+import java.net.URI
+import java.net.URISyntaxException
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -62,8 +64,14 @@ fun createNewUrl(url: String?, log: Logger): URL? {
         return null
     }
     return try {
-        URL(trimmed)
+        URI(trimmed).toURL()
     } catch (e: MalformedURLException) {
+        log.warn("Cannot parse url '{}'", trimmed, e)
+        null
+    } catch (e: URISyntaxException) {
+        log.warn("Cannot parse url '{}'", trimmed, e)
+        null
+    } catch (e: IllegalArgumentException) {
         log.warn("Cannot parse url '{}'", trimmed, e)
         null
     }

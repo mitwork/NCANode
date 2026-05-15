@@ -192,7 +192,7 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
         }
 
     private val keyUser: Set<CertificateKeyUser>
-        get() = extendedKeyUsage.mapNotNull { CertificateKeyUser.fromOID(it).orElse(null) }.toSet()
+        get() = extendedKeyUsage.mapNotNull { CertificateKeyUser.fromOID(it) }.toSet()
 
     companion object {
         private val log = LoggerFactory.getLogger(CertificateWrapper::class.java)

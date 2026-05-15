@@ -28,7 +28,7 @@ class CaService(
     private val caConfiguration: CaConfiguration,
     private val client: CloseableHttpClient,
     private val directoryService: DirectoryService,
-    @Qualifier("caCrlService") private val caCrlService: CrlService,
+    @param:Qualifier("caCrlService") private val caCrlService: CrlService,
 ) {
 
     private val certificates: MutableList<CertificateWrapper> = mutableListOf()
