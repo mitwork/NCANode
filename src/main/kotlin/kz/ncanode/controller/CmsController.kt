@@ -21,9 +21,9 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
-@Tag(name = "CMS", description = "Методы для работы с CMS")
+@Tag(name = "CMS", description = "PKCS#7/CMS подписи (attached/detached), addSigners, CAdES-T")
 @RestController
-@RequestMapping("cms")
+@RequestMapping("/cms")
 class CmsController(private val cmsService: CmsService) {
 
     @PostMapping("/sign")

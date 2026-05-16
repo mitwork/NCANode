@@ -17,9 +17,9 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
-@Tag(name = "PDF", description = "Методы для работы с PDF")
+@Tag(name = "PDF", description = "Подпись и верификация PDF (PAdES/CAdES-T)")
 @RestController
-@RequestMapping("pdf")
+@RequestMapping("/pdf")
 class PdfController(private val pdfService: PdfService) {
 
     @PostMapping("/sign")

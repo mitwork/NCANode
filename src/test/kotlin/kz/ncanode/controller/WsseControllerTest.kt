@@ -8,12 +8,12 @@ import io.mockk.verify
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
-import kz.ncanode.dto.request.XmlVerifyBatchRequest
-import kz.ncanode.dto.request.XmlVerifyRequest
+import kz.ncanode.dto.request.WsseVerifyBatchRequest
+import kz.ncanode.dto.request.WsseVerifyRequest
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.WsseSignBatchResponse
+import kz.ncanode.dto.response.WsseVerifyBatchResponse
 import kz.ncanode.dto.response.XmlSignResponse
-import kz.ncanode.dto.response.XmlVerifyBatchResponse
 import kz.ncanode.service.WsseService
 
 class WsseControllerTest : FunSpec({
@@ -34,7 +34,7 @@ class WsseControllerTest : FunSpec({
         val service = mockk<WsseService>()
         every { service.verify(any(), any(), any()) } returns VerificationResponse(valid = true)
 
-        val request = XmlVerifyRequest().apply {
+        val request = WsseVerifyRequest().apply {
             xml = "<signed/>"
             revocationCheck = setOf(CertificateRevocation.OCSP, CertificateRevocation.CRL)
         }
@@ -47,7 +47,7 @@ class WsseControllerTest : FunSpec({
         val service = mockk<WsseService>()
         every { service.verify(any(), any(), any()) } returns VerificationResponse(valid = true)
 
-        val request = XmlVerifyRequest().apply {
+        val request = WsseVerifyRequest().apply {
             xml = "<signed/>"
             revocationCheck = setOf(CertificateRevocation.CRL)
         }
@@ -73,11 +73,11 @@ class WsseControllerTest : FunSpec({
 
     test("POST /wsse/verify/batch delegates to WsseService.verifyBatch") {
         val service = mockk<WsseService>()
-        every { service.verifyBatch(any()) } returns XmlVerifyBatchResponse(
+        every { service.verifyBatch(any()) } returns WsseVerifyBatchResponse(
             results = listOf(VerificationResponse(valid = true))
         )
 
-        val request = XmlVerifyBatchRequest().apply { xmls = listOf("<signed/>") }
+        val request = WsseVerifyBatchRequest().apply { xmls = listOf("<signed/>") }
         val response = WsseController(service).verifyBatch(request)
 
         response.statusCode.value() shouldBe 200

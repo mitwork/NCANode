@@ -18,9 +18,9 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
-@Tag(name = "XML", description = "Методы для работы с XML")
+@Tag(name = "XML", description = "XMLDSIG: подпись и верификация XML-документов")
 @RestController
-@RequestMapping("xml")
+@RequestMapping("/xml")
 class XmlController(private val xmlService: XmlService) {
 
     @PostMapping("/sign")

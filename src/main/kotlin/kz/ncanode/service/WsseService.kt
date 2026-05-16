@@ -5,11 +5,11 @@ import kz.ncanode.dto.certificate.CertificateInfo
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
-import kz.ncanode.dto.request.XmlVerifyBatchRequest
+import kz.ncanode.dto.request.WsseVerifyBatchRequest
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.WsseSignBatchResponse
+import kz.ncanode.dto.response.WsseVerifyBatchResponse
 import kz.ncanode.dto.response.XmlSignResponse
-import kz.ncanode.dto.response.XmlVerifyBatchResponse
 import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
@@ -205,12 +205,8 @@ class WsseService(
      * Batch-верификация SOAP envelope'ов. Каждый item проверяется
      * независимо с общими revocation-флагами; на исключение item
      * получает `valid=false` со status/message.
-     *
-     * Переиспользует [XmlVerifyBatchRequest] / [XmlVerifyBatchResponse] —
-     * формат запроса/ответа симметричен с XML batch verify
-     * (как и одиночные /wsse/verify и /xml/verify оба берут [kz.ncanode.dto.request.XmlVerifyRequest]).
      */
-    fun verifyBatch(request: XmlVerifyBatchRequest): XmlVerifyBatchResponse {
+    fun verifyBatch(request: WsseVerifyBatchRequest): WsseVerifyBatchResponse {
         val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
         val checkCrl = CertificateRevocation.CRL in request.revocationCheck
         val items = request.xmls.map { xml ->
@@ -226,7 +222,7 @@ class WsseService(
                 )
             }
         }
-        return XmlVerifyBatchResponse(results = items)
+        return WsseVerifyBatchResponse(results = items)
     }
 
     companion object {

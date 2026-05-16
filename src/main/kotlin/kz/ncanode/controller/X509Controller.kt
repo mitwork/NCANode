@@ -17,9 +17,9 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
-@Tag(name = "X509", description = "Методы для работы с x509")
+@Tag(name = "X509", description = "Чтение/валидация x509-сертификатов и SBA-verify")
 @RestController
-@RequestMapping("x509")
+@RequestMapping("/x509")
 class X509Controller(private val certificateService: CertificateService) {
 
     @PostMapping("/info")

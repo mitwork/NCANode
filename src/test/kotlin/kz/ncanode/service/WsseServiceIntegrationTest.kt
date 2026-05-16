@@ -8,7 +8,7 @@ import io.kotest.matchers.shouldBe
 import kz.ncanode.TestResources
 import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
-import kz.ncanode.dto.request.XmlVerifyBatchRequest
+import kz.ncanode.dto.request.WsseVerifyBatchRequest
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
@@ -74,7 +74,7 @@ class WsseServiceIntegrationTest(
             it.xml.shouldNotBeNull()
         }
 
-        val verifyResponse = wsseService.verifyBatch(XmlVerifyBatchRequest().apply {
+        val verifyResponse = wsseService.verifyBatch(WsseVerifyBatchRequest().apply {
             xmls = signed.results.map { it.xml!! }
         })
         verifyResponse.results shouldHaveSize 3

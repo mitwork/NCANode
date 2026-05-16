@@ -17,9 +17,9 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
-@Tag(name = "JWT", description = "Методы для работы с JWT")
+@Tag(name = "JWT", description = "JWT encode/decode (GG2015/GG2004/ES*/RS*)")
 @RestController
-@RequestMapping("jwt")
+@RequestMapping("/jwt")
 class JwtController(private val jwtService: JwtService) {
 
     @PostMapping("/encode")

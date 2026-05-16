@@ -17,9 +17,9 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
-@Tag(name = "Pkcs12", description = "Методы для работы с Pkcs12")
+@Tag(name = "PKCS12", description = "Чтение p12-хранилищ: info и aliases")
 @RestController
-@RequestMapping("pkcs12")
+@RequestMapping("/pkcs12")
 class Pkcs12Controller(
     private val certificateService: CertificateService,
     private val kalkanWrapper: KalkanWrapper,
