@@ -1,5 +1,6 @@
 package kz.ncanode.controller
 
+import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
 import kz.ncanode.dto.certificate.CertificateRevocation
@@ -16,6 +17,7 @@ import kz.ncanode.dto.response.CmsVerificationBatchResponse
 import kz.ncanode.dto.response.CmsVerificationResponse
 import kz.ncanode.service.CmsService
 import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
@@ -30,6 +32,27 @@ class CmsController(private val cmsService: CmsService) {
     fun sign(@Valid @RequestBody request: CmsCreateRequest): ResponseEntity<CmsResponse> =
         ResponseEntity.ok(cmsService.create(request))
 
+    /**
+     * Добавляет нового signer'а к существующему CMS (re-sign).
+     *
+     * PATCH семантически точен: это partial-update существующего CMS-ресурса
+     * (RFC 5789), а не создание нового. URL тот же что у POST /cms/sign —
+     * один ресурс, два глагола.
+     */
+    @PatchMapping("/sign")
+    fun signPatch(@Valid @RequestBody request: CmsCreateRequest): ResponseEntity<CmsResponse> =
+        ResponseEntity.ok(cmsService.addSigners(request))
+
+    /**
+     * Deprecated alias для PATCH /cms/sign. Оставлен для backward-compat
+     * с v3-клиентами upstream. Будет удалён в v5.
+     */
+    @Deprecated(
+        message = "Use PATCH /cms/sign instead",
+        replaceWith = ReplaceWith("signPatch(request)"),
+        level = DeprecationLevel.WARNING,
+    )
+    @Operation(deprecated = true, summary = "Deprecated alias for PATCH /cms/sign — see signPatch")
     @PostMapping("/sign/add")
     fun signAdd(@Valid @RequestBody request: CmsCreateRequest): ResponseEntity<CmsResponse> =
         ResponseEntity.ok(cmsService.addSigners(request))

@@ -43,11 +43,25 @@ class CmsControllerTest : FunSpec({
         verify(exactly = 1) { service.create(request) }
     }
 
-    test("POST /cms/sign/add delegates to CmsService.addSigners") {
+    test("PATCH /cms/sign delegates to CmsService.addSigners (canonical re-sign endpoint)") {
         val service = mockk<CmsService>()
         every { service.addSigners(any()) } returns CmsResponse(cms = "CMS-WITH-EXTRA-SIGNER")
 
         val request = CmsCreateRequest().apply { cms = "ORIGINAL" }
+        val response = CmsController(service).signPatch(request)
+
+        response.body!!.cms shouldBe "CMS-WITH-EXTRA-SIGNER"
+        verify(exactly = 1) { service.addSigners(request) }
+    }
+
+    test("POST /cms/sign/add (deprecated alias) still works and delegates to addSigners") {
+        // Backward-compat для v3-клиентов upstream. До удаления в v5 поведение
+        // должно совпадать с PATCH /cms/sign.
+        val service = mockk<CmsService>()
+        every { service.addSigners(any()) } returns CmsResponse(cms = "CMS-WITH-EXTRA-SIGNER")
+
+        val request = CmsCreateRequest().apply { cms = "ORIGINAL" }
+        @Suppress("DEPRECATION")
         val response = CmsController(service).signAdd(request)
 
         response.body!!.cms shouldBe "CMS-WITH-EXTRA-SIGNER"
