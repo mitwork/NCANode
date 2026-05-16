@@ -1,3 +1,7 @@
+import java.net.HttpURLConnection
+import java.net.URI
+import java.util.concurrent.TimeUnit
+
 plugins {
     alias(libs.plugins.spring.boot)
     alias(libs.plugins.spring.dependency.management)
@@ -125,4 +129,73 @@ tasks.jacocoTestReport {
 
 springBoot {
     buildInfo()
+}
+
+/**
+ * Live-генерация openapi.yml.
+ *
+ * `./gradlew generateOpenApiDocs` поднимает приложение через bootJar
+ * на временном порту 14580 (не пересекаемся с дефолтным 14579),
+ * забирает spec через /v3/api-docs.yaml и сохраняет в корень репо
+ * как openapi.yml. После — глушит процесс.
+ *
+ * Файл публикуется через .github/workflows/github-pages.yml как
+ * статичный Swagger UI на GitHub Pages. После каждого изменения API
+ * (новый endpoint, переименование тэга и т.д.) нужно перегенерировать
+ * и закоммитить.
+ *
+ * Реализация ручная (не через springdoc-openapi-gradle-plugin) —
+ * плагин не пробрасывает Java toolchain в форкнутый процесс,
+ * поэтому стартует Java 17 на классах Java 25 → UnsupportedClassVersionError.
+ */
+tasks.register("generateOpenApiDocs") {
+    group = "openapi"
+    description = "Boot the app, fetch /v3/api-docs.yaml, save as openapi.yml"
+    dependsOn(tasks.bootJar)
+
+    doLast {
+        val javaExe = javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(25))
+        }.get().executablePath.asFile.absolutePath
+        val jar = tasks.bootJar.get().archiveFile.get().asFile
+        val port = 14580
+        val specUrl = URI("http://localhost:$port/v3/api-docs.yaml").toURL()
+        val outputFile = layout.projectDirectory.file("openapi.yml").asFile
+
+        val process = ProcessBuilder(
+            javaExe, "-jar", jar.absolutePath, "--server.port=$port",
+        ).redirectErrorStream(true).start()
+
+        try {
+            // Poll до 90 секунд (CA bundle download при первом старте может занять до минуты).
+            val deadline = System.currentTimeMillis() + 90_000
+            var lastErr: Exception? = null
+            while (System.currentTimeMillis() < deadline) {
+                if (!process.isAlive) {
+                    error("Application process died unexpectedly before serving spec")
+                }
+                try {
+                    val conn = specUrl.openConnection() as HttpURLConnection
+                    conn.connectTimeout = 1000
+                    conn.readTimeout = 5000
+                    if (conn.responseCode == 200) {
+                        val yaml = conn.inputStream.bufferedReader().use { it.readText() }
+                        outputFile.writeText(yaml)
+                        logger.lifecycle("openapi.yml updated (${yaml.length} bytes) ← $specUrl")
+                        return@doLast
+                    }
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    lastErr = e
+                }
+                Thread.sleep(1000)
+            }
+            error("Failed to fetch $specUrl within 90s (last error: ${lastErr?.message})")
+        } finally {
+            process.destroy()
+            if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+            }
+        }
+    }
 }

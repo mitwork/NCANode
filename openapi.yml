@@ -1,327 +1,628 @@
-openapi: 3.0.1
+openapi: 3.1.0
 info:
-  title: OpenAPI definition
-  version: v0
+  title: NCANode API
+  description: |-
+    Server-side подпись и верификация для ЭЦП НУЦ РК (gosrk).
+
+    Интегрируется с НУЦ-инфраструктурой: pki.gov.kz / test.pki.gov.kz
+    (OCSP/TSP/CRL). Поддерживает GOST 34.10-2015 (актуальный стандарт),
+    форматы CMS/CAdES-T, XMLDSIG, PAdES, WS-Security, JWT.
+
+    Каждая операция доступна в одиночном (`/<service>/<op>`)
+    и batch (`/<service>/<op>/batch`) вариантах.
+  license:
+    name: MIT
+    url: https://github.com/malikzh/NCANode/blob/master/LICENSE
+  version: v4
 servers:
-  - url: ''
-    description: current server
+- url: ""
+  description: current server
 tags:
-  - name: Pkcs12
-    description: Методы для работы с Pkcs12
-  - name: CMS
-    description: Методы для работы с CMS
-  - name: PDF
-    description: Методы для работы с PDF
-  - name: WSSE
-    description: Методы для работы с WSSE
-  - name: X509
-    description: Методы для работы с x509
-  - name: XML
-    description: Методы для работы с XML
-  - name: JWT
-    description: Методы для работы с JWT
-  - name: Actuator
-    description: Monitor and interact
-    externalDocs:
-      description: Spring Boot Actuator Web API Documentation
-      url: https://docs.spring.io/spring-boot/docs/current/actuator-api/html/
+- name: JWT
+  description: JWT encode/decode (GG2015/GG2004/ES*/RS*)
+- name: PKCS12
+  description: "Чтение p12-хранилищ: info и aliases"
+- name: WSSE
+  description: WS-Security X.509 подпись SOAP-конвертов (для SmartBridge sb.egov.kz)
+- name: PDF
+  description: Подпись и верификация PDF (PAdES/CAdES-T)
+- name: CMS
+  description: "PKCS#7/CMS подписи (attached/detached), addSigners, CAdES-T"
+- name: X509
+  description: Чтение/валидация x509-сертификатов и SBA-verify
+- name: XML
+  description: "XMLDSIG: подпись и верификация XML-документов"
+- name: Actuator
+  description: Monitor and interact
+  externalDocs:
+    description: Spring Boot Actuator Web API Documentation
+    url: https://docs.spring.io/spring-boot/docs/current/actuator-api/html/
 paths:
   /xml/verify:
     post:
       tags:
-        - XML
+      - XML
       operationId: verify
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/XmlVerifyRequest'
+              $ref: "#/components/schemas/XmlVerifyRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/VerificationResponse'
+                $ref: "#/components/schemas/VerificationResponse"
+  /xml/verify/batch:
+    post:
+      tags:
+      - XML
+      operationId: verifyBatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/XmlVerifyBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/XmlVerifyBatchResponse"
   /xml/sign:
     post:
       tags:
-        - XML
+      - XML
       operationId: sign
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/XmlSignRequest'
+              $ref: "#/components/schemas/XmlSignRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/XmlSignResponse'
+                $ref: "#/components/schemas/XmlSignResponse"
+  /xml/sign/batch:
+    post:
+      tags:
+      - XML
+      operationId: signBatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/XmlSignBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/XmlSignBatchResponse"
   /x509/verify:
     post:
       tags:
-        - X509
+      - X509
       operationId: verify_1
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SbaVerifyRequest'
+              $ref: "#/components/schemas/SbaVerifyRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/VerificationResponse'
+                $ref: "#/components/schemas/VerificationResponse"
+  /x509/verify/batch:
+    post:
+      tags:
+      - X509
+      operationId: verifyBatch_1
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SbaVerifyBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/SbaVerifyBatchResponse"
   /x509/info:
     post:
       tags:
-        - X509
-      operationId: verify_2
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/X509InfoRequest'
-        required: true
-      responses:
-        '200':
-          description: OK
-          content:
-            '*/*':
-              schema:
-                $ref: '#/components/schemas/VerificationResponse'
-  /wsse/verify:
-    post:
-      tags:
-        - WSSE
-      operationId: verify_3
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/XmlVerifyRequest'
-        required: true
-      responses:
-        '200':
-          description: OK
-          content:
-            '*/*':
-              schema:
-                $ref: '#/components/schemas/VerificationResponse'
-  /wsse/sign:
-    post:
-      tags:
-        - WSSE
-      operationId: sign_1
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/WsseSignRequest'
-        required: true
-      responses:
-        '200':
-          description: OK
-          content:
-            '*/*':
-              schema:
-                $ref: '#/components/schemas/XmlSignResponse'
-  /pkcs12/info:
-    post:
-      tags:
-        - Pkcs12
+      - X509
       operationId: info
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Pkcs12InfoRequest'
+              $ref: "#/components/schemas/X509InfoRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/VerificationResponse'
+                $ref: "#/components/schemas/VerificationResponse"
+  /x509/info/batch:
+    post:
+      tags:
+      - X509
+      operationId: infoBatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/X509InfoBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/X509InfoBatchResponse"
+  /wsse/verify:
+    post:
+      tags:
+      - WSSE
+      operationId: verify_2
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WsseVerifyRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/VerificationResponse"
+  /wsse/verify/batch:
+    post:
+      tags:
+      - WSSE
+      operationId: verifyBatch_2
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WsseVerifyBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/WsseVerifyBatchResponse"
+  /wsse/sign:
+    post:
+      tags:
+      - WSSE
+      operationId: sign_1
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WsseSignRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/XmlSignResponse"
+  /wsse/sign/batch:
+    post:
+      tags:
+      - WSSE
+      operationId: signBatch_1
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WsseSignBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/WsseSignBatchResponse"
+  /pkcs12/info:
+    post:
+      tags:
+      - PKCS12
+      operationId: info_1
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pkcs12InfoRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/VerificationResponse"
+  /pkcs12/info/batch:
+    post:
+      tags:
+      - PKCS12
+      operationId: infoBatch_1
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pkcs12InfoBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/Pkcs12InfoBatchResponse"
   /pkcs12/aliases:
     post:
       tags:
-        - Pkcs12
+      - PKCS12
       operationId: aliases
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Pkcs12InfoRequest'
+              $ref: "#/components/schemas/Pkcs12InfoRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/Pkcs12AliasesResponse'
-  /pdf/verify:
+                $ref: "#/components/schemas/Pkcs12AliasesResponse"
+  /pkcs12/aliases/batch:
     post:
       tags:
-        - PDF
-      operationId: verify_4
+      - PKCS12
+      operationId: aliasesBatch
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PdfVerifyRequest'
+              $ref: "#/components/schemas/Pkcs12AliasesBatchRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/PdfVerificationResponse'
+                $ref: "#/components/schemas/Pkcs12AliasesBatchResponse"
+  /pdf/verify:
+    post:
+      tags:
+      - PDF
+      operationId: verify_3
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PdfVerifyRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/PdfVerificationResponse"
+  /pdf/verify/batch:
+    post:
+      tags:
+      - PDF
+      operationId: verifyBatch_3
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PdfVerifyBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/PdfVerifyBatchResponse"
   /pdf/sign:
     post:
       tags:
-        - PDF
+      - PDF
       operationId: sign_2
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PdfSignRequest'
+              $ref: "#/components/schemas/PdfSignRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/PdfSignResponse'
-  /cms/verify:
+                $ref: "#/components/schemas/PdfSignResponse"
+  /pdf/sign/batch:
     post:
       tags:
-        - CMS
-      operationId: verify_5
+      - PDF
+      operationId: signBatch_2
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CmsVerifyRequest'
+              $ref: "#/components/schemas/PdfSignBatchRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/CmsVerificationResponse'
-  /cms/sign:
-    post:
-      tags:
-        - CMS
-      operationId: sign_3
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CmsCreateRequest'
-        required: true
-      responses:
-        '200':
-          description: OK
-          content:
-            '*/*':
-              schema:
-                $ref: '#/components/schemas/CmsResponse'
-  /cms/sign/add:
-    post:
-      tags:
-        - CMS
-      operationId: signAdd
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CmsCreateRequest'
-        required: true
-      responses:
-        '200':
-          description: OK
-          content:
-            '*/*':
-              schema:
-                $ref: '#/components/schemas/CmsResponse'
-  /cms/extract:
-    post:
-      tags:
-        - CMS
-      operationId: extract
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CmsVerifyRequest'
-        required: true
-      responses:
-        '200':
-          description: OK
-          content:
-            '*/*':
-              schema:
-                $ref: '#/components/schemas/CmsDataResponse'
+                $ref: "#/components/schemas/PdfSignBatchResponse"
   /jwt/encode:
     post:
       tags:
-        - JWT
+      - JWT
       operationId: encode
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/JwtEncodeRequest'
+              $ref: "#/components/schemas/JwtEncodeRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/JwtEncodeResponse'
+                $ref: "#/components/schemas/JwtEncodeResponse"
+  /jwt/encode/batch:
+    post:
+      tags:
+      - JWT
+      operationId: encodeBatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JwtEncodeBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/JwtEncodeBatchResponse"
   /jwt/decode:
     post:
       tags:
-        - JWT
+      - JWT
       operationId: decode
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/JwtDecodeRequest'
+              $ref: "#/components/schemas/JwtDecodeRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: OK
           content:
             '*/*':
               schema:
-                $ref: '#/components/schemas/JwtDecodeResponse'
+                $ref: "#/components/schemas/JwtDecodeResponse"
+  /jwt/decode/batch:
+    post:
+      tags:
+      - JWT
+      operationId: decodeBatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JwtDecodeBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/JwtDecodeBatchResponse"
+  /cms/verify:
+    post:
+      tags:
+      - CMS
+      operationId: verify_4
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsVerifyRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsVerificationResponse"
+  /cms/verify/batch:
+    post:
+      tags:
+      - CMS
+      operationId: verifyBatch_4
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsVerifyBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsVerificationBatchResponse"
+  /cms/sign:
+    post:
+      tags:
+      - CMS
+      operationId: sign_3
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsCreateRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsResponse"
+    patch:
+      tags:
+      - CMS
+      operationId: signPatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsCreateRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsResponse"
+  /cms/sign/batch:
+    post:
+      tags:
+      - CMS
+      operationId: signBatch_3
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsCreateBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsBatchResponse"
+  /cms/sign/add:
+    post:
+      tags:
+      - CMS
+      summary: Deprecated alias for PATCH /cms/sign — see signPatch
+      operationId: signAdd
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsCreateRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsResponse"
+      deprecated: true
+  /cms/extract:
+    post:
+      tags:
+      - CMS
+      operationId: extract
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsVerifyRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsDataResponse"
+  /cms/extract/batch:
+    post:
+      tags:
+      - CMS
+      operationId: extractBatch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CmsExtractBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CmsExtractBatchResponse"
   /actuator:
     get:
       tags:
-        - Actuator
+      - Actuator
       summary: Actuator root web endpoint
       operationId: links
       responses:
-        '200':
+        "200":
           description: OK
           content:
             application/vnd.spring-boot.actuator.v3+json:
@@ -330,48 +631,29 @@ paths:
                 additionalProperties:
                   type: object
                   additionalProperties:
-                    $ref: '#/components/schemas/Link'
+                    $ref: "#/components/schemas/Link"
             application/vnd.spring-boot.actuator.v2+json:
               schema:
                 type: object
                 additionalProperties:
                   type: object
                   additionalProperties:
-                    $ref: '#/components/schemas/Link'
+                    $ref: "#/components/schemas/Link"
             application/json:
               schema:
                 type: object
                 additionalProperties:
                   type: object
                   additionalProperties:
-                    $ref: '#/components/schemas/Link'
+                    $ref: "#/components/schemas/Link"
   /actuator/health:
     get:
       tags:
-        - Actuator
+      - Actuator
       summary: Actuator web endpoint 'health'
       operationId: health
       responses:
-        '200':
-          description: OK
-          content:
-            application/vnd.spring-boot.actuator.v3+json:
-              schema:
-                type: object
-            application/vnd.spring-boot.actuator.v2+json:
-              schema:
-                type: object
-            application/json:
-              schema:
-                type: object
-  /actuator/health/**:
-    get:
-      tags:
-        - Actuator
-      summary: Actuator web endpoint 'health-path'
-      operationId: health-path
-      responses:
-        '200':
+        "200":
           description: OK
           content:
             application/vnd.spring-boot.actuator.v3+json:
@@ -386,20 +668,21 @@ paths:
 components:
   schemas:
     XmlVerifyRequest:
-      required:
-        - xml
       type: object
       properties:
         revocationCheck:
-          uniqueItems: true
           type: array
           items:
             type: string
             enum:
-              - OCSP
-              - CRL
+            - OCSP
+            - CRL
+          uniqueItems: true
         xml:
           type: string
+          minLength: 1
+      required:
+      - xml
     CertificateInfo:
       type: object
       properties:
@@ -408,7 +691,7 @@ components:
         revocations:
           type: array
           items:
-            $ref: '#/components/schemas/CertificateRevocationStatus'
+            $ref: "#/components/schemas/CertificateRevocationStatus"
         notBefore:
           type: string
           format: date-time
@@ -418,42 +701,42 @@ components:
         keyUsage:
           type: string
           enum:
-            - UNKNOWN
-            - AUTH
-            - SIGN
+          - UNKNOWN
+          - AUTH
+          - SIGN
         serialNumber:
           type: string
         signAlg:
           type: string
         keyUser:
-          uniqueItems: true
           type: array
           items:
             type: string
             enum:
-              - INDIVIDUAL
-              - ORGANIZATION
-              - CEO
-              - CAN_SIGN
-              - CAN_SIGN_FINANCIAL
-              - HR
-              - EMPLOYEE
-              - NCA_PRIVILEGES
-              - NCA_ADMIN
-              - NCA_MANAGER
-              - NCA_OPERATOR
-              - IDENTIFICATION
-              - IDENTIFICATION_CON
-              - IDENTIFICATION_REMOTE
-              - IDENTIFICATION_REMOTE_DIGITAL_ID
+            - INDIVIDUAL
+            - ORGANIZATION
+            - CEO
+            - CAN_SIGN
+            - CAN_SIGN_FINANCIAL
+            - HR
+            - EMPLOYEE
+            - NCA_PRIVILEGES
+            - NCA_ADMIN
+            - NCA_MANAGER
+            - NCA_OPERATOR
+            - IDENTIFICATION
+            - IDENTIFICATION_CON
+            - IDENTIFICATION_REMOTE
+            - IDENTIFICATION_REMOTE_DIGITAL_ID
+          uniqueItems: true
         publicKey:
           type: string
         signature:
           type: string
         subject:
-          $ref: '#/components/schemas/CertificateSubject'
+          $ref: "#/components/schemas/CertificateSubject"
         issuer:
-          $ref: '#/components/schemas/CertificateSubject'
+          $ref: "#/components/schemas/CertificateSubject"
     CertificateRevocationStatus:
       type: object
       properties:
@@ -462,8 +745,8 @@ components:
         by:
           type: string
           enum:
-            - OCSP
-            - CRL
+          - OCSP
+          - CRL
         revocationTime:
           type: string
           format: date-time
@@ -485,9 +768,9 @@ components:
         gender:
           type: string
           enum:
-            - NONE
-            - MALE
-            - FEMALE
+          - NONE
+          - MALE
+          - FEMALE
         iin:
           type: string
         bin:
@@ -513,37 +796,71 @@ components:
         signers:
           type: array
           items:
-            $ref: '#/components/schemas/CertificateInfo'
-    SignerRequest:
+            $ref: "#/components/schemas/CertificateInfo"
+    XmlVerifyBatchRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
+        xmls:
+          type: array
+          items:
+            type: string
+          minItems: 1
       required:
-        - key
-        - password
+      - xmls
+    XmlVerifyBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerificationResponse"
+    SignerRequest:
       type: object
       properties:
         key:
           type: string
+          minLength: 1
         password:
           type: string
+          minLength: 1
         keyAlias:
           type: string
         referenceUri:
           type: string
-    XmlSignRequest:
       required:
-        - signers
-        - xml
+      - key
+      - password
+    XmlSignRequest:
       type: object
       properties:
         xml:
           type: string
+          minLength: 1
         signers:
           type: array
           items:
-            $ref: '#/components/schemas/SignerRequest'
-        clearSignatures:
-          type: boolean
+            $ref: "#/components/schemas/SignerRequest"
+          minItems: 1
         trimXml:
           type: boolean
+        clearSignatures:
+          type: boolean
+      required:
+      - signers
+      - xml
     XmlSignResponse:
       type: object
       properties:
@@ -554,76 +871,293 @@ components:
           type: string
         xml:
           type: string
-    SbaVerifyRequest:
+    XmlSignBatchRequest:
+      type: object
+      properties:
+        xmls:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        signers:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignerRequest"
+          minItems: 1
+        trimXml:
+          type: boolean
+        clearSignatures:
+          type: boolean
       required:
-        - certificate
+      - signers
+      - xmls
+    Item:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        xml:
+          type: string
+    XmlSignBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+    SbaVerifyRequest:
       type: object
       properties:
         revocationCheck:
-          uniqueItems: true
           type: array
           items:
             type: string
             enum:
-              - OCSP
-              - CRL
+            - OCSP
+            - CRL
+          uniqueItems: true
         certificate:
           type: string
+          minLength: 1
         signature:
           type: string
         data:
           type: string
-    X509InfoRequest:
       required:
-        - certs
+      - certificate
+    SbaVerifyBatchRequest:
       type: object
       properties:
         revocationCheck:
-          uniqueItems: true
           type: array
           items:
             type: string
             enum:
-              - OCSP
-              - CRL
+            - OCSP
+            - CRL
+          uniqueItems: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+          minItems: 1
+      required:
+      - items
+    SbaVerifyBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerificationResponse"
+    X509InfoRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
         certs:
           type: array
           items:
             type: string
-    WsseSignRequest:
       required:
-        - key
-        - password
-        - xml
-      type: object
-      properties:
-        xml:
-          type: string
-        key:
-          type: string
-        password:
-          type: string
-        keyAlias:
-          type: string
-        trimXml:
-          type: boolean
-    Pkcs12InfoRequest:
-      required:
-        - keys
+      - certs
+    X509InfoBatchRequest:
       type: object
       properties:
         revocationCheck:
-          uniqueItems: true
           type: array
           items:
             type: string
             enum:
-              - OCSP
-              - CRL
+            - OCSP
+            - CRL
+          uniqueItems: true
+        certs:
+          type: array
+          items:
+            type: string
+          minItems: 1
+      required:
+      - certs
+    X509InfoBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+    WsseVerifyRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
+        xml:
+          type: string
+          minLength: 1
+      required:
+      - xml
+    WsseVerifyBatchRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
+        xmls:
+          type: array
+          items:
+            type: string
+          minItems: 1
+      required:
+      - xmls
+    WsseVerifyBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerificationResponse"
+    WsseSignRequest:
+      type: object
+      properties:
+        xml:
+          type: string
+          minLength: 1
+        key:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+        keyAlias:
+          type: string
+        trimXml:
+          type: boolean
+      required:
+      - key
+      - password
+      - xml
+    WsseSignBatchRequest:
+      type: object
+      properties:
+        xmls:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        key:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+        keyAlias:
+          type: string
+        trimXml:
+          type: boolean
+      required:
+      - key
+      - password
+      - xmls
+    WsseSignBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+    Pkcs12InfoRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
         keys:
           type: array
           items:
-            $ref: '#/components/schemas/SignerRequest'
+            $ref: "#/components/schemas/SignerRequest"
+          minItems: 1
+      required:
+      - keys
+    Pkcs12InfoBatchRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignerRequest"
+          minItems: 1
+      required:
+      - keys
+    Pkcs12InfoBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
     Pkcs12AliasesResponse:
       type: object
       properties:
@@ -638,26 +1172,47 @@ components:
             type: array
             items:
               type: string
-    PdfVerifyRequest:
+    Pkcs12AliasesBatchRequest:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignerRequest"
+          minItems: 1
       required:
-        - pdf
+      - keys
+    Pkcs12AliasesBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+    PdfVerifyRequest:
       type: object
       properties:
         revocationCheck:
-          uniqueItems: true
           type: array
           items:
             type: string
             enum:
-              - OCSP
-              - CRL
+            - OCSP
+            - CRL
+          uniqueItems: true
         pdf:
           type: string
+          minLength: 1
+      required:
+      - pdf
     PdfSignerInfo:
       type: object
       properties:
-        valid:
-          type: boolean
         reason:
           type: string
         location:
@@ -668,11 +1223,13 @@ components:
           type: string
           format: date-time
         certificate:
-          $ref: '#/components/schemas/CertificateInfo'
+          $ref: "#/components/schemas/CertificateInfo"
         signatureAlgorithm:
           type: string
         digestAlgorithm:
           type: string
+        valid:
+          type: boolean
     PdfVerificationResponse:
       type: object
       properties:
@@ -686,30 +1243,60 @@ components:
         signers:
           type: array
           items:
-            $ref: '#/components/schemas/PdfSignerInfo'
-    PdfSignRequest:
+            $ref: "#/components/schemas/PdfSignerInfo"
+    PdfVerifyBatchRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
+        pdfs:
+          type: array
+          items:
+            type: string
+          minItems: 1
       required:
-        - pdf
-        - signers
+      - pdfs
+    PdfVerifyBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdfVerificationResponse"
+    PdfSignRequest:
       type: object
       properties:
         pdf:
           type: string
+          minLength: 1
         signers:
           type: array
           items:
-            $ref: '#/components/schemas/PdfSigner'
-        withTsp:
-          type: boolean
+            $ref: "#/components/schemas/PdfSigner"
+          minItems: 1
         tsaPolicy:
           type: string
           enum:
-            - TSA_GOST2015_POLICY
-            - TSA_GOST_POLICY
-            - TSA_GOSTGT_POLICY
-    PdfSigner:
+          - TSA_GOST2015_POLICY
+          - TSA_GOST_POLICY
+          - TSA_GOSTGT_POLICY
+        withTsp:
+          type: boolean
       required:
-        - signer
+      - pdf
+      - signers
+    PdfSigner:
       type: object
       properties:
         reason:
@@ -719,7 +1306,9 @@ components:
         contactInfo:
           type: string
         signer:
-          $ref: '#/components/schemas/SignerRequest'
+          $ref: "#/components/schemas/SignerRequest"
+      required:
+      - signer
     PdfSignResponse:
       type: object
       properties:
@@ -730,32 +1319,215 @@ components:
           type: string
         pdf:
           type: string
-    CmsVerifyRequest:
+    PdfSignBatchRequest:
+      type: object
+      properties:
+        pdfs:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        signers:
+          type: array
+          items:
+            $ref: "#/components/schemas/PdfSigner"
+          minItems: 1
+        tsaPolicy:
+          type: string
+          enum:
+          - TSA_GOST2015_POLICY
+          - TSA_GOST_POLICY
+          - TSA_GOSTGT_POLICY
+        withTsp:
+          type: boolean
       required:
-        - cms
+      - pdfs
+      - signers
+    PdfSignBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+    JwtEncodeRequest:
+      type: object
+      properties:
+        jwt:
+          $ref: "#/components/schemas/JwtRequest"
+        key:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+        keyAlias:
+          type: string
+      required:
+      - jwt
+      - key
+      - password
+    JwtHeader:
+      type: object
+      properties:
+        alg:
+          type: string
+          minLength: 1
+        typ:
+          type: string
+          minLength: 1
+      required:
+      - alg
+      - typ
+    JwtPayload:
+      type: object
+      properties:
+        claims:
+          type: object
+          additionalProperties: {}
+    JwtRequest:
+      type: object
+      properties:
+        header:
+          $ref: "#/components/schemas/JwtHeader"
+        payload:
+          $ref: "#/components/schemas/JwtPayload"
+      required:
+      - header
+      - payload
+    JwtEncodeResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        jwt:
+          type: string
+    JwtEncodeBatchRequest:
+      type: object
+      properties:
+        jwts:
+          type: array
+          items:
+            $ref: "#/components/schemas/JwtRequest"
+          minItems: 1
+        key:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+        keyAlias:
+          type: string
+      required:
+      - jwts
+      - key
+      - password
+    JwtEncodeBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+    JwtDecodeRequest:
+      type: object
+      properties:
+        jwt:
+          type: string
+        key:
+          type: string
+          minLength: 1
+      required:
+      - jwt
+      - key
+    Jwt:
+      type: object
+      properties:
+        header:
+          type: object
+          additionalProperties:
+            type: string
+        payload:
+          type: object
+          additionalProperties: {}
+    JwtDecodeResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        valid:
+          type: boolean
+        jwt:
+          $ref: "#/components/schemas/Jwt"
+    JwtDecodeBatchRequest:
+      type: object
+      properties:
+        jwts:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        key:
+          type: string
+          minLength: 1
+      required:
+      - jwts
+      - key
+    JwtDecodeBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/JwtDecodeResponse"
+    CmsVerifyRequest:
       type: object
       properties:
         revocationCheck:
-          uniqueItems: true
           type: array
           items:
             type: string
             enum:
-              - OCSP
-              - CRL
+            - OCSP
+            - CRL
+          uniqueItems: true
         cms:
           type: string
+          minLength: 1
         data:
           type: string
+      required:
+      - cms
     CmsSignerInfo:
       type: object
       properties:
         certificates:
           type: array
           items:
-            $ref: '#/components/schemas/CertificateInfo'
+            $ref: "#/components/schemas/CertificateInfo"
         tsp:
-          $ref: '#/components/schemas/TspInfo'
+          $ref: "#/components/schemas/TspInfo"
     CmsVerificationResponse:
       type: object
       properties:
@@ -769,7 +1541,7 @@ components:
         signers:
           type: array
           items:
-            $ref: '#/components/schemas/CmsSignerInfo'
+            $ref: "#/components/schemas/CmsSignerInfo"
     TspInfo:
       type: object
       properties:
@@ -786,9 +1558,37 @@ components:
           type: string
         hash:
           type: string
-    CmsCreateRequest:
+    CmsVerifyBatchRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
+          minItems: 1
       required:
-        - signers
+      - items
+    CmsVerificationBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/CmsVerificationResponse"
+    CmsCreateRequest:
       type: object
       properties:
         cms:
@@ -798,17 +1598,20 @@ components:
         signers:
           type: array
           items:
-            $ref: '#/components/schemas/SignerRequest'
-        withTsp:
-          type: boolean
+            $ref: "#/components/schemas/SignerRequest"
+          minItems: 1
         tsaPolicy:
           type: string
           enum:
-            - TSA_GOST2015_POLICY
-            - TSA_GOST_POLICY
-            - TSA_GOSTGT_POLICY
+          - TSA_GOST2015_POLICY
+          - TSA_GOST_POLICY
+          - TSA_GOSTGT_POLICY
         detached:
           type: boolean
+        withTsp:
+          type: boolean
+      required:
+      - signers
     CmsResponse:
       type: object
       properties:
@@ -819,6 +1622,44 @@ components:
           type: string
         cms:
           type: string
+    CmsCreateBatchRequest:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        signers:
+          type: array
+          items:
+            $ref: "#/components/schemas/SignerRequest"
+          minItems: 1
+        tsaPolicy:
+          type: string
+          enum:
+          - TSA_GOST2015_POLICY
+          - TSA_GOST_POLICY
+          - TSA_GOSTGT_POLICY
+        detached:
+          type: boolean
+        withTsp:
+          type: boolean
+      required:
+      - data
+      - signers
+    CmsBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
     CmsDataResponse:
       type: object
       properties:
@@ -829,60 +1670,17 @@ components:
           type: string
         data:
           type: string
-    JwtEncodeRequest:
-      required:
-        - jwt
-        - key
-        - password
+    CmsExtractBatchRequest:
       type: object
       properties:
-        jwt:
-          $ref: '#/components/schemas/JwtRequest'
-        key:
-          type: string
-        password:
-          type: string
-        keyAlias:
-          type: string
-    JwtRequest:
+        cms:
+          type: array
+          items:
+            type: string
+          minItems: 1
       required:
-        - header
-        - payload
-      type: object
-      properties:
-        header:
-          $ref: '#/components/schemas/JwtHeader'
-        payload:
-          $ref: '#/components/schemas/JwtPayload'
-    JwtHeader:
-      required:
-        - alg
-        - typ
-      type: object
-      properties:
-        alg:
-          type: string
-          enum:
-            - GG2015
-            - GG2004
-            - ES256
-            - ES384
-            - ES512
-            - RS256
-            - RS384
-            - RS512
-        typ:
-          type: string
-          enum:
-            - JWT
-    JwtPayload:
-      type: object
-      example:
-        cbin: "012345678909"
-        mcheck: "DS"
-        iat: 1631925900
-        exp: 1631929500
-    JwtEncodeResponse:
+      - cms
+    CmsExtractBatchResponse:
       type: object
       properties:
         status:
@@ -890,36 +1688,10 @@ components:
           format: int32
         message:
           type: string
-        jwt:
-          type: string
-    JwtDecodeRequest:
-      required:
-        - jwt
-        - key
-      type: object
-      properties:
-        jwt:
-          type: string
-        key:
-          type: string
-    JwtDecodeResponse:
-      type: object
-      properties:
-        status:
-          type: integer
-          format: int32
-        message:
-          type: string
-        jwt:
-          type: object
-          properties:
-            header:
-              type: object
-              additionalProperties:
-                type: string
-            payload:
-              type: object
-              additionalProperties: true
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
     Link:
       type: object
       properties:
