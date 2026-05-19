@@ -8,12 +8,14 @@ import io.mockk.every
 import io.mockk.mockk
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
+import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.dto.ocsp.OcspResult
 import kz.ncanode.wrapper.KalkanWrapper
-import org.apache.http.client.methods.CloseableHttpResponse
-import org.apache.http.impl.client.CloseableHttpClient
 import java.io.IOException
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 
 /**
  * Negative- и pure-unit покрытие OcspService без HTTP-фикстур.
@@ -33,10 +35,11 @@ class OcspServiceTest : FunSpec({
     val kalkanProvider = KalkanProvider()
     val kalkanWrapper = KalkanWrapper(kalkanProvider)
     val ocspConfig = OcspConfiguration()  // пустой — fallback URL не задан
+    val httpConfig = HttpClientConfiguration()
 
     test("generateOcspNonce returns 16-byte array (RFC 8954)") {
-        val client = mockk<CloseableHttpClient>(relaxed = true)
-        val service = OcspService(kalkanProvider, ocspConfig, client)
+        val client = mockk<HttpClient>(relaxed = true)
+        val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
         val nonce = service.generateOcspNonce()
         nonce.size shouldBe 16
     }
@@ -44,8 +47,8 @@ class OcspServiceTest : FunSpec({
     test("generateOcspNonce produces non-equal nonces on consecutive calls") {
         // Slim entropy-проверка: SecureRandom 16 байт коллизию даёт практически
         // никогда (2^-64). Тест ловит только полный регресс (zero-fill, mock).
-        val client = mockk<CloseableHttpClient>(relaxed = true)
-        val service = OcspService(kalkanProvider, ocspConfig, client)
+        val client = mockk<HttpClient>(relaxed = true)
+        val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
         val a = service.generateOcspNonce()
         val b = service.generateOcspNonce()
         a.contentEquals(b) shouldBe false
@@ -58,8 +61,8 @@ class OcspServiceTest : FunSpec({
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
-        val client = mockk<CloseableHttpClient>(relaxed = true)
-        val service = OcspService(kalkanProvider, ocspConfig, client)
+        val client = mockk<HttpClient>(relaxed = true)
+        val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
 
         val statuses = service.verify(ks.certificate, null)
         statuses shouldHaveSize 1
@@ -76,10 +79,10 @@ class OcspServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         val issuer = ks.certificate  // тот же cert как stub issuer — не должно дойти до подписи
-        val client = mockk<CloseableHttpClient>().apply {
-            every { execute(any()) } throws IOException("network down")
+        val client = mockk<HttpClient>().apply {
+            every { send(any<HttpRequest>(), any<HttpResponse.BodyHandler<ByteArray>>()) } throws IOException("network down")
         }
-        val service = OcspService(kalkanProvider, ocspConfig, client)
+        val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
 
         val statuses = service.verify(ks.certificate, issuer)
         statuses shouldHaveSize 1
@@ -94,13 +97,13 @@ class OcspServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         val issuer = ks.certificate
-        val response = mockk<CloseableHttpResponse>(relaxed = true).apply {
-            every { entity.content } returns "not an OCSP response".byteInputStream()
+        val response = mockk<HttpResponse<ByteArray>>().apply {
+            every { body() } returns "not an OCSP response".toByteArray()
         }
-        val client = mockk<CloseableHttpClient>().apply {
-            every { execute(any()) } returns response
+        val client = mockk<HttpClient>().apply {
+            every { send(any<HttpRequest>(), any<HttpResponse.BodyHandler<ByteArray>>()) } returns response
         }
-        val service = OcspService(kalkanProvider, ocspConfig, client)
+        val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
 
         val statuses = service.verify(ks.certificate, issuer)
         statuses shouldHaveSize 1

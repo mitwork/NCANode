@@ -1,12 +1,10 @@
 package kz.ncanode.service
 
 import kz.ncanode.configuration.CaConfiguration
+import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.exception.CaException
 import kz.ncanode.wrapper.CertificateWrapper
-import org.apache.http.HttpStatus
-import org.apache.http.client.methods.HttpGet
-import org.apache.http.impl.client.CloseableHttpClient
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.ExitCodeGenerator
@@ -16,7 +14,11 @@ import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import java.io.File
 import java.io.IOException
+import java.net.URI
 import java.net.URL
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.util.concurrent.TimeUnit
 
 /**
@@ -26,7 +28,8 @@ import java.util.concurrent.TimeUnit
 class CaService(
     private val applicationContext: ApplicationContext,
     private val caConfiguration: CaConfiguration,
-    private val client: CloseableHttpClient,
+    private val client: HttpClient,
+    private val httpClientConfiguration: HttpClientConfiguration,
     private val directoryService: DirectoryService,
     @param:Qualifier("caCrlService") private val caCrlService: CrlService,
 ) {
@@ -182,15 +185,22 @@ class CaService(
 
     fun download(url: URL, file: File) {
         try {
-            client.execute(HttpGet(url.toString())).use { response ->
-                if (response.statusLine.statusCode != HttpStatus.SC_OK) {
-                    throw CaException("Cannot download file: $url")
-                }
-                val entity = response.entity ?: throw CaException("Got empty request from: $url")
-                file.outputStream().use { out -> entity.writeTo(out) }
+            val request = HttpRequest.newBuilder(URI(url.toString()))
+                .timeout(httpClientConfiguration.requestTimeoutDuration)
+                .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+                .GET()
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofByteArray())
+            if (response.statusCode() != 200) {
+                throw CaException("Cannot download file: $url")
             }
+            val body = response.body() ?: throw CaException("Got empty request from: $url")
+            file.outputStream().use { out -> out.write(body) }
         } catch (e: IOException) {
             throw CaException("Cannot download file: $url", e)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw CaException("Interrupted while downloading: $url", e)
         }
     }
 

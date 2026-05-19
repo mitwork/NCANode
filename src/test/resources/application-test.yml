@@ -19,7 +19,8 @@ ncanode:
       url: http://test.pki.gov.kz/crl/nca_gost2022_d_test.crl
       ttl: 60
   http-client:
-    connectionTtl: 10
+    connectTimeout: 10
+    requestTimeout: 60
   ocsp:
     url: http://test.pki.gov.kz/ocsp/
     parallelEnabled: true

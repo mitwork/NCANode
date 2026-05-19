@@ -5,8 +5,9 @@ import io.kotest.matchers.shouldBe
 import io.mockk.mockk
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedData
 import kz.ncanode.TestResources
-import org.apache.http.impl.client.CloseableHttpClient
+import kz.ncanode.configuration.HttpClientConfiguration
 import java.math.BigInteger
+import java.net.http.HttpClient
 
 /**
  * Pure-unit покрытие TspService — пути, не требующие живого TSA или
@@ -18,7 +19,8 @@ import java.math.BigInteger
 class TspServiceTest : FunSpec({
 
     fun buildService(): TspService = TspService(
-        client = mockk<CloseableHttpClient>(relaxed = true),
+        client = mockk<HttpClient>(relaxed = true),
+        httpClientConfiguration = HttpClientConfiguration(),
         tspConfiguration = mockk(relaxed = true),
         certificateService = mockk(relaxed = true),
     )

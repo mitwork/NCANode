@@ -19,7 +19,8 @@ ncanode:
       url: ${NCANODE_CRL_DELTA_URL:http://crl.pki.gov.kz/nca_d_rsa_2022.crl http://crl.pki.gov.kz/nca_d_gost_2022.crl}
       ttl: ${NCANODE_CRL_DELTA_TTL:60}
   http-client:
-    connectionTtl: ${NCANODE_HTTP_CLIENT_CONNECTION_TTL:10}
+    connectTimeout: ${NCANODE_HTTP_CLIENT_CONNECT_TIMEOUT:5}
+    requestTimeout: ${NCANODE_HTTP_CLIENT_REQUEST_TIMEOUT:30}
     userAgent: ${NCANODE_HTTP_CLIENT_USER_AGENT:}
     proxy:
       url: ${NCANODE_PROXY_URL:}

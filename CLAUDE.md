@@ -28,7 +28,7 @@
 | **Jackson** | 3 (tools.jackson.*) через jackson-module-kotlin — без Jackson 2 fallback'а |
 | **Кriptoprovider** | Kalkan 0.7.5 + kalkancrypt-xmldsig 0.5 (flatDir `lib/`) |
 | **TLS/PKI deps** | BouncyCastle bcprov/bcpkix-jdk18on 1.84, Santuario xmlsec 4.0.3, wss4j 4.0.0 (без OpenSAML), pdfbox 3.0.3, jaxws-rt 4.0.3 (SAAJ runtime для WsseService), springdoc 3.0.3 |
-| **HTTP client** | Apache httpclient 4.5.14 (4.x API — не 5.x) |
+| **HTTP client** | JDK `java.net.http.HttpClient` (Java 11+), без внешней зависимости |
 | **Тесты** | Kotest 5.9 (JUnit 5 runner) + MockK 1.14 + spring-boot-starter-test |
 
 Build clean (zero warnings). `./gradlew bootJar` зелёный.
@@ -319,6 +319,41 @@ NCA публикует отзывы наших test-pack p12 только чер
 не добавлен на top-level: для mass-flow вреднее прятать ошибку в одном
 из item'ов, чем требовать от клиента ручного AND.
 
+### 23. HTTP client — JDK `java.net.http.HttpClient`, не Apache
+В v4 был мигрирован с Apache `httpclient:4.5.14` на JDK-native клиент.
+Конфигурационные особенности:
+- **Redirect policy: `NEVER`.** RFC 5280 запрещает редиректы в URL'ах
+  CRL DP / OCSP / AIA. Видим misconfiguration сразу через 303-error,
+  а не следуем тихо.
+- **HTTP version: forced `HTTP_1_1`.** PKI-серверы (pki.gov.kz, ocsp,
+  tsp) все HTTP/1.1; ALPN-negotiate добавляет latency и иногда фейлится.
+- **`proxy(HttpClient.Builder.NO_PROXY)`** даже если system property
+  установлен — Apache 4.x игнорировал системные настройки, держим
+  совместимость. Свой прокси — через `NCANODE_PROXY_URL`.
+- **Basic-auth через прокси по HTTPS-туннелю.** JDK по дефолту отключён
+  (CVE-fix). При наличии `NCANODE_PROXY_USERNAME` в `configureProxy()`
+  снимаем `jdk.http.auth.tunneling.disabledSchemes` и `proxying.*`
+  через `System.setProperty`.
+- **Total request timeout = `requestTimeout` в секундах.** В Apache 4.x
+  не было — только `socketTimeout` (между чтениями). Теперь
+  `HttpRequest.timeout()` даёт честный бюджет на запрос.
+
+### 24. User-Agent: пустой UA триггерит фильтры IPS на пути к pki.gov.kz
+Наблюдалось: запрос с `User-Agent: ` (header без значения) к
+`test.pki.gov.kz` получает **HTTP 303** с Location на Check Point
+captive portal (`http://192.168.119.249/UserCheck/PortalMain?...`).
+Reproduce: воспроизводилось из Gradle test executor на macOS, **не**
+воспроизводилось из standalone `java` процесса с тем же JDK. Trigger —
+именно пустой UA: с любым непустым значением (`NCANode/null`,
+`curl/8.0`, что угодно) получаем 200.
+
+Фильтр на стороне канала между NIT/Astana IX и pki.gov.kz, не у нас.
+В коде: `HttpClientConfiguration.effectiveUserAgent` возвращает
+`NCANode/<version>` если `userAgent` blank, иначе сам `userAgent`.
+Сервисы (CaService/CrlService/OcspService/TspService) обязаны
+использовать `effectiveUserAgent`, не сырое поле. **Никогда не отправлять
+empty User-Agent.**
+
 ## Что не покрыто тестами (≈494 lines)
 
 | Слой | % | Что осталось |
@@ -377,6 +412,11 @@ OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bi
    15 endpoint'ов в 4 round'а: XML/CMS sign+verify → WSSE/CMS-extract/JWT/PDF
    → X509-info/Pkcs12-info → X509-verify(SBA)/Pkcs12-aliases.
    Покрытие 75% → **76%**, тесты 96 → 163.
+9. **HTTP client → JDK**: миграция с Apache `httpclient:4.5.14` на
+   `java.net.http.HttpClient`. Total request timeout, redirect NEVER,
+   forced HTTP_1_1, NO_PROXY explicit. Все 4 сервиса (Ca/Crl/Ocsp/Tsp)
+   + тесты. Apache deps удалены. Тесты 163 → 164, coverage 76% → 75%
+   (-1% за счёт configureProxy без unit-теста).
 
 Все коммиты подписаны `Co-Authored-By: Claude Opus 4.7`.
 

@@ -50,11 +50,6 @@ dependencies {
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
     // tomcat теперь приходит транзитивно через starter-web; war/providedRuntime убрали.
 
-    // HTTP client. SB BOM поставляет httpclient5, но наш код пока на 4.x API —
-    // оставляем 4.5.x явной зависимостью (совместим с jakarta-stack, т.к. не
-    // касается servlet/web API напрямую).
-    implementation("org.apache.httpcomponents:httpclient:4.5.14")
-
     // KalkanCrypt из flatDir lib/
     implementation(":knca_provider_jce_kalkan-0.7.5")
     implementation(":kalkancrypt-xmldsig-0.5")

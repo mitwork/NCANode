@@ -13,19 +13,21 @@ import kz.gov.pki.kalkan.tsp.TimeStampRequestGenerator
 import kz.gov.pki.kalkan.tsp.TimeStampResponse
 import kz.gov.pki.kalkan.tsp.TimeStampToken
 import kz.gov.pki.kalkan.tsp.TimeStampTokenInfo
+import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.TspConfiguration
 import kz.ncanode.exception.TspException
 import kz.ncanode.util.byteToASN1
 import kz.ncanode.util.getTspHashAlgorithmByOid
 import kz.ncanode.wrapper.CertificateWrapper
-import org.apache.http.HttpStatus
-import org.apache.http.client.methods.HttpPost
-import org.apache.http.entity.ByteArrayEntity
-import org.apache.http.impl.client.CloseableHttpClient
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.math.BigInteger
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.security.GeneralSecurityException
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
@@ -34,7 +36,8 @@ import java.security.cert.X509Certificate
 
 @Service
 class TspService(
-    private val client: CloseableHttpClient,
+    private val client: HttpClient,
+    private val httpClientConfiguration: HttpClientConfiguration,
     private val tspConfiguration: TspConfiguration,
     private val certificateService: CertificateService,
 ) {
@@ -215,21 +218,25 @@ class TspService(
             throw TspException("Invalid tsp url")
         }
 
-        val httpPost = HttpPost(url.toString()).apply {
-            setHeader("Content-Type", "application/timestamp-query")
-            entity = ByteArrayEntity(request)
-        }
+        val httpRequest = HttpRequest.newBuilder(URI(url.toString()))
+            .timeout(httpClientConfiguration.requestTimeoutDuration)
+            .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+            .header("Content-Type", "application/timestamp-query")
+            .POST(HttpRequest.BodyPublishers.ofByteArray(request))
+            .build()
 
         try {
-            client.execute(httpPost).use { response ->
-                val statusCode = response.statusLine.statusCode
-                if (statusCode != HttpStatus.SC_OK) {
-                    log.error("Invalid TSP response status: {}", statusCode)
-                    throw TspException("Invalid TSP response status: $statusCode")
-                }
-                return TimeStampResponse(response.entity.content)
+            val response = client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray())
+            val statusCode = response.statusCode()
+            if (statusCode != 200) {
+                log.error("Invalid TSP response status: {}", statusCode)
+                throw TspException("Invalid TSP response status: $statusCode")
             }
+            return TimeStampResponse(ByteArrayInputStream(response.body()))
         } catch (e: IOException) {
+            throw TspException("TSP request failure.", e)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
             throw TspException("TSP request failure.", e)
         } catch (e: TSPException) {
             throw TspException("TSP request failure.", e)

@@ -8,6 +8,7 @@ import io.mockk.spyk
 import io.mockk.verify
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
+import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.crl.CrlConfiguration
 import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.wrapper.KalkanWrapper
@@ -62,6 +63,7 @@ class CrlServiceTest : FunSpec({
                 directoryService = mockk(relaxed = true),
                 crlConfiguration = crlConfig,
                 client = mockk(relaxed = true),
+                httpClientConfiguration = HttpClientConfiguration(),
                 taskScheduler = mockk(relaxed = true),
                 crlServiceType = "test",
             )
@@ -113,7 +115,7 @@ class CrlServiceTest : FunSpec({
             every { delta } returns null
         }
         val service = spyk(
-            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), mockk(relaxed = true), "test")
+            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), HttpClientConfiguration(), mockk(relaxed = true), "test")
         )
         every { service.getCrlFiles(any()) } answers {
             if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()
@@ -162,7 +164,7 @@ class CrlServiceTest : FunSpec({
             every { delta } returns null
         }
         val service = spyk(
-            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), mockk(relaxed = true), "test")
+            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), HttpClientConfiguration(), mockk(relaxed = true), "test")
         )
         every { service.getCrlFiles(any()) } answers {
             if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()

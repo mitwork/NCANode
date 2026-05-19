@@ -1,6 +1,7 @@
 package kz.ncanode.service
 
 import jakarta.annotation.PostConstruct
+import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.crl.CrlConfiguration
 import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.dto.crl.CrlStatus
@@ -8,15 +9,17 @@ import kz.ncanode.exception.CrlException
 import kz.ncanode.exception.ServerException
 import kz.ncanode.util.sha1
 import kz.ncanode.wrapper.CertificateWrapper
-import org.apache.http.client.methods.HttpGet
-import org.apache.http.impl.client.CloseableHttpClient
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.scheduling.TaskScheduler
 import org.springframework.scheduling.support.PeriodicTrigger
 import java.io.File
 import java.io.IOException
+import java.net.URI
 import java.net.URL
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -37,7 +40,8 @@ import javax.security.auth.x500.X500Principal
 open class CrlService(
     private val directoryService: DirectoryService,
     private val crlConfiguration: CrlConfiguration,
-    private val client: CloseableHttpClient,
+    private val client: HttpClient,
+    private val httpClientConfiguration: HttpClientConfiguration,
     private val taskScheduler: TaskScheduler,
     private val crlServiceType: String,
 ) {
@@ -501,31 +505,35 @@ open class CrlService(
         // и проверки revocation продолжают работать на нём до следующего цикла.
         val tmpPath = path.resolveSibling(path.fileName.toString() + ".tmp")
         try {
-            client.execute(HttpGet(url)).use { response ->
-                val status = response.statusLine.statusCode
-                if (status != HttpStatus.OK.value()) {
-                    throw CrlException("Cannot download file from: $url. Got HTTP status: $status")
-                }
-
-                val entity = response.entity ?: throw CrlException("Got empty request from: $url")
-
-                tmpPath.toFile().outputStream().use { out ->
-                    entity.writeTo(out)
-                }
-
-                try {
-                    Files.move(
-                        tmpPath, path,
-                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE,
-                    )
-                } catch (e: AtomicMoveNotSupportedException) {
-                    Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING)
-                }
-
-                return path.toFile()
+            val request = HttpRequest.newBuilder(URI(url))
+                .timeout(httpClientConfiguration.requestTimeoutDuration)
+                .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+                .GET()
+                .build()
+            // ofFile стримит ответ прямо в tmp-файл — для крупных CRL (десятки MB)
+            // не держим всё в памяти.
+            val response = client.send(request, HttpResponse.BodyHandlers.ofFile(tmpPath))
+            val status = response.statusCode()
+            if (status != HttpStatus.OK.value()) {
+                val location = response.headers().firstValue("location").orElse("<none>")
+                throw CrlException("Cannot download file from: $url. Got HTTP status: $status (location=$location)")
             }
+
+            try {
+                Files.move(
+                    tmpPath, path,
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (e: AtomicMoveNotSupportedException) {
+                Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING)
+            }
+
+            return path.toFile()
         } catch (e: IOException) {
             throw CrlException(e.message, e)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw CrlException("Interrupted while downloading: $url", e)
         } finally {
             // На случай если rename не успел выполниться — чистим хвост.
             try {

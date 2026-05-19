@@ -1,57 +1,100 @@
 package kz.ncanode.configuration
 
 import kz.ncanode.dto.http.HttpProxyConfig
-import org.apache.http.HttpHost
-import org.apache.http.auth.AuthScope
-import org.apache.http.auth.UsernamePasswordCredentials
-import org.apache.http.impl.client.BasicCredentialsProvider
-import org.apache.http.impl.client.CloseableHttpClient
-import org.apache.http.impl.client.HttpClients
-import org.apache.http.impl.client.LaxRedirectStrategy
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Scope
+import java.net.Authenticator
+import java.net.InetSocketAddress
+import java.net.PasswordAuthentication
+import java.net.ProxySelector
 import java.net.URI
-import java.util.concurrent.TimeUnit
+import java.net.http.HttpClient
+import java.time.Duration
 
 @Configuration
 @ConfigurationProperties(prefix = "ncanode.http-client")
 open class HttpClientConfiguration {
     var proxy: HttpProxyConfig? = null
-    var connectionTtl: Int? = null
-    var userAgent: String = "NCANode/${HttpClientConfiguration::class.java.`package`.implementationVersion}"
+    var connectTimeout: Int = 5
+    var requestTimeout: Int = 30
+    var userAgent: String = ""
+
+    /**
+     * Эффективный User-Agent: переопределение из конфига, если задано
+     * непустым; иначе дефолтный `NCANode/<version>`.
+     *
+     * Пустой User-Agent отправлять нельзя — некоторые firewall/IPS
+     * (наблюдалось на трафике к pki.gov.kz через Astana IX) фингерпринтят
+     * `User-Agent: ` как bot/scraper и редиректят на captive portal с 303.
+     */
+    val effectiveUserAgent: String
+        get() = userAgent.takeIf { it.isNotBlank() }
+            ?: "NCANode/${HttpClientConfiguration::class.java.`package`.implementationVersion ?: "dev"}"
 
     @Bean
     @Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE)
-    open fun httpClient(): CloseableHttpClient {
-        val customClient = HttpClients.custom()
+    open fun httpClient(): HttpClient {
+        val builder = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .connectTimeout(Duration.ofSeconds(connectTimeout.toLong()))
+            // Detection: без явного NO_PROXY JDK HttpClient может подхватить
+            // ProxySelector.getDefault() из системных свойств — поведение зависит
+            // от окружения. Apache 4.x игнорировал системные настройки, для
+            // совместимости форсим NO_PROXY. Свой прокси по-прежнему задаётся
+            // через NCANODE_PROXY_URL (см. configureProxy).
+            .proxy(HttpClient.Builder.NO_PROXY)
 
-        val proxyConfig = proxy
-        if (proxyConfig?.url?.isNotBlank() == true) {
-            try {
-                val proxyUrl = URI(proxyConfig.url).toURL()
-                customClient.setProxy(HttpHost(proxyUrl.host, proxyUrl.port, proxyUrl.protocol))
+        configureProxy(builder)
 
-                if (proxyConfig.username?.isNotBlank() == true) {
-                    val credentials = UsernamePasswordCredentials(proxyConfig.username, proxyConfig.password)
-                    val credentialsProvider = BasicCredentialsProvider()
-                    credentialsProvider.setCredentials(AuthScope(proxyUrl.host, proxyUrl.port), credentials)
-                    customClient.setDefaultCredentialsProvider(credentialsProvider)
-                }
-            } catch (e: Exception) {
-                log.error("Invalid proxy url: $proxyConfig", e)
+        return builder.build()
+    }
+
+    /**
+     * Per-request timeout (общий бюджет запроса). Сервисы выставляют его при
+     * сборке HttpRequest через [java.net.http.HttpRequest.Builder.timeout].
+     */
+    val requestTimeoutDuration: Duration
+        get() = Duration.ofSeconds(requestTimeout.toLong())
+
+    private fun configureProxy(builder: HttpClient.Builder) {
+        val proxyConfig = proxy ?: return
+        val urlValue = proxyConfig.url
+        if (urlValue.isNullOrBlank()) return
+
+        try {
+            val proxyUri = URI(urlValue)
+            val host = proxyUri.host ?: throw IllegalArgumentException("missing host")
+            val port = if (proxyUri.port != -1) proxyUri.port else defaultPortForScheme(proxyUri.scheme)
+            builder.proxy(ProxySelector.of(InetSocketAddress(host, port)))
+
+            val user = proxyConfig.username
+            if (!user.isNullOrBlank()) {
+                // Basic-auth для прокси через HTTPS-туннель отключён в JDK
+                // по умолчанию (CVE-2016-5597). Разрешаем явно — наши пользователи
+                // знают что подключают, и у нас единственный сценарий — внутренние
+                // корпоративные прокси с basic.
+                System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "")
+                System.setProperty("jdk.http.auth.proxying.disabledSchemes", "")
+
+                val password = proxyConfig.password?.toCharArray() ?: CharArray(0)
+                builder.authenticator(object : Authenticator() {
+                    override fun getPasswordAuthentication(): PasswordAuthentication =
+                        PasswordAuthentication(user, password)
+                })
             }
+        } catch (e: Exception) {
+            log.error("Invalid proxy url: $proxyConfig", e)
         }
+    }
 
-        connectionTtl?.let { customClient.setConnectionTimeToLive(it.toLong(), TimeUnit.SECONDS) }
-        customClient.setUserAgent(userAgent)
-        customClient.setRedirectStrategy(LaxRedirectStrategy())
-        customClient.disableCookieManagement()
-
-        return customClient.build()
+    private fun defaultPortForScheme(scheme: String?): Int = when (scheme?.lowercase()) {
+        "https" -> 443
+        else -> 80
     }
 
     companion object {

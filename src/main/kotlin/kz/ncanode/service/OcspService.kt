@@ -13,20 +13,20 @@ import kz.gov.pki.kalkan.ocsp.OCSPReq
 import kz.gov.pki.kalkan.ocsp.OCSPReqGenerator
 import kz.gov.pki.kalkan.ocsp.OCSPResp
 import kz.gov.pki.kalkan.ocsp.RevokedStatus
+import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.dto.ocsp.OcspResult
 import kz.ncanode.dto.ocsp.OcspStatus
 import kz.ncanode.wrapper.CertificateWrapper
-import org.apache.http.client.methods.CloseableHttpResponse
-import org.apache.http.client.methods.HttpPost
-import org.apache.http.entity.ByteArrayEntity
-import org.apache.http.impl.client.CloseableHttpClient
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.io.IOException
-import java.io.InputStream
 import java.math.BigInteger
+import java.net.URI
 import java.net.URL
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.security.GeneralSecurityException
 import java.security.NoSuchProviderException
 import java.security.SecureRandom
@@ -41,7 +41,8 @@ import java.util.Hashtable
 class OcspService(
     private val kalkanProvider: KalkanProvider,
     private val ocspConfiguration: OcspConfiguration,
-    private val client: CloseableHttpClient,
+    private val client: HttpClient,
+    private val httpClientConfiguration: HttpClientConfiguration,
 ) {
 
     /**
@@ -73,11 +74,13 @@ class OcspService(
                 val nonce = generateOcspNonce()
                 val request = buildOcspRequest(cert.x509Certificate.serialNumber, issuer.x509Certificate, nonce)
 
-                makeRequest(url, request.encoded).use { response ->
-                    val status = processOcspResponse(response.entity.content, nonce, issuer)
-                    statuses.add(status.copy(url = url))
-                }
+                val response = makeRequest(url, request.encoded)
+                val status = processOcspResponse(response, nonce, issuer)
+                statuses.add(status.copy(url = url))
             } catch (e: IOException) {
+                statuses.add(unknownStatus(url, e.message))
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
                 statuses.add(unknownStatus(url, e.message))
             } catch (e: OCSPException) {
                 statuses.add(unknownStatus(url, e.message))
@@ -141,7 +144,7 @@ class OcspService(
      * с тем, что мы отправили в запросе.
      */
     @Throws(IOException::class, OCSPException::class, NoSuchProviderException::class, GeneralSecurityException::class)
-    private fun processOcspResponse(response: InputStream, sentNonce: ByteArray, issuer: CertificateWrapper): OcspStatus {
+    private fun processOcspResponse(response: ByteArray, sentNonce: ByteArray, issuer: CertificateWrapper): OcspStatus {
         val resp = OCSPResp(response)
 
         if (resp.status != 0) {
@@ -271,13 +274,15 @@ class OcspService(
         return null
     }
 
-    @Throws(IOException::class)
-    private fun makeRequest(url: String, data: ByteArray): CloseableHttpResponse {
-        val httpRequest = HttpPost(url).apply {
-            addHeader("Content-Type", "application/ocsp-request")
-            entity = ByteArrayEntity(data)
-        }
-        return client.execute(httpRequest)
+    @Throws(IOException::class, InterruptedException::class)
+    private fun makeRequest(url: String, data: ByteArray): ByteArray {
+        val httpRequest = HttpRequest.newBuilder(URI(url))
+            .timeout(httpClientConfiguration.requestTimeoutDuration)
+            .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+            .header("Content-Type", "application/ocsp-request")
+            .POST(HttpRequest.BodyPublishers.ofByteArray(data))
+            .build()
+        return client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray()).body()
     }
 
     private fun unknownStatus(url: String? = null, message: String?): OcspStatus =
