@@ -3,6 +3,7 @@ package kz.ncanode.service
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
@@ -61,6 +62,8 @@ class CmsServiceIntegrationTest(
         val verification = cmsService.verify(signed.cms!!, null, checkOcsp = false, checkCrl = false)
         verification.valid shouldBe true
         verification.signers shouldHaveSize 1
+        // Без isWithTsp метка не ставится — tsp-поле должно отсутствовать.
+        verification.signers[0].tsp.shouldBeNull()
     }
 
     test("sign + verify with TSP attaches signature-timestamp (CAdES-T)") {
@@ -76,6 +79,24 @@ class CmsServiceIntegrationTest(
         // tsp-поле должно быть проставлено, genTime — Date'а с TSA.
         val signer = verification.signers[0]
         signer.tsp.shouldNotBeNull().genTime.shouldNotBeNull()
+    }
+
+    test("sign + verify with TSP and OCSP+CRL revocation checks stays valid") {
+        // Production-сценарий: CMS с TSP-меткой верифицируется с включёнными
+        // OCSP и CRL. Строгая CAdES-T проверка (TspService.verify) при этом
+        // гоняет revocation-чеки и по TSA-сертификату — если TSA-цепочка
+        // не резолвится (issuer вне CA bundle, OCSP UNKNOWN), весь CMS
+        // ложно помечается invalid при полностью валидном подписанте.
+        val request = CmsCreateRequest().apply {
+            data = b64("CAdES-T + full revocation")
+            signers = listOf(signerOf("individual_valid.p12"))
+            isWithTsp = true
+        }
+        val signed = cmsService.create(request)
+        val verification = cmsService.verify(signed.cms!!, null, checkOcsp = true, checkCrl = true)
+        verification.signers shouldHaveSize 1
+        verification.signers[0].tsp.shouldNotBeNull()
+        verification.valid shouldBe true
     }
 
     test("verify with OCSP returns invalid for revoked signer") {

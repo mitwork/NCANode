@@ -354,6 +354,27 @@ Reproduce: воспроизводилось из Gradle test executor на macOS
 использовать `effectiveUserAgent`, не сырое поле. **Никогда не отправлять
 empty User-Agent.**
 
+### 25. Production TSA подписывает метки RSA-сертификатом → nca_rsa_2022.cer обязателен в CA bundle
+Реальный кейс (июнь 2026): CMS с GOST2015-512 подписантом, TSP от
+`tsp.pki.gov.kz`, verify с OCSP+CRL → `valid: false`, `tsp: null` при
+полностью валидном подписанте. Причина: TSP-метка в CMS, созданном
+сторонним клиентом (НЕ нашим `/cms/sign`), подписана TSA-сертификатом
+`CN=TIME-STAMPING AUTHORITY` от **НУЦ (RSA) 2022** (sha256RSA, imprint
+SHA-256), а `nca_rsa_2022.cer` отсутствовал в дефолтном `NCANODE_CA_URL`
+(там был только legacy `nca_rsa.crt`). Строгая CAdES-T проверка v4
+(`TspService.verify`, отсутствует в upstream) не нашла issuer'а TSA →
+`isValid=false` → WARN `TSA certificate is not valid at TSP genTime` →
+весь CMS invalid. Upstream NCANode v3 цепочку TSA вообще не проверяет,
+поэтому там «работало».
+
+Нюанс: какой TSA-сертификат вернёт НУЦ — зависит от policy/hash в
+запросе клиента. Наш `/cms/sign` (gost2015 policy + GOST3411-2015-512)
+получает GOST-TSA от НУЦ (GOST) 2022; сторонние клиенты с SHA-256
+получают RSA-TSA от НУЦ (RSA) 2022. Фикс: `nca_rsa_2022.cer` добавлен в
+дефолтный `NCANODE_CA_URL` (application.yml). При диагностике
+`valid:false + tsp:null` — первым делом `grep -E "WARN.*(TSP|TSA)"` в
+логах: каждая ветка отказа в `TspService.verify` пишет свой WARN.
+
 ## Что не покрыто тестами (≈494 lines)
 
 | Слой | % | Что осталось |

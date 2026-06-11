@@ -30,7 +30,7 @@ ncanode:
     url: ${NCANODE_OCSP_URL:http://ocsp.pki.gov.kz/}
     parallelEnabled: ${NCANODE_OCSP_PARALLEL:true}
   ca:
-    url: ${NCANODE_CA_URL:http://pki.gov.kz/cert/nca_rsa.crt http://pki.gov.kz/cert/nca_gost.crt http://pki.gov.kz/cert/root_gost_2022.cer http://root.gov.kz/cert/root_gost_2020.cer http://root.gov.kz/cert/root_rsa_2020.cer http://pki.gov.kz/cert/nca_gost_2022.cer}
+    url: ${NCANODE_CA_URL:http://pki.gov.kz/cert/nca_rsa.crt http://pki.gov.kz/cert/nca_gost.crt http://pki.gov.kz/cert/root_gost_2022.cer http://root.gov.kz/cert/root_gost_2020.cer http://root.gov.kz/cert/root_rsa_2020.cer http://pki.gov.kz/cert/nca_gost_2022.cer http://pki.gov.kz/cert/nca_rsa_2022.cer}
     ttl: ${NCANODE_CA_TTL:1440}
     crl:
       enabled: ${NCANODE_CA_CRL_ENABLED:true}
