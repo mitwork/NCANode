@@ -15,7 +15,6 @@ import kz.ncanode.dto.certificate.CertificateKeyUsage
 import kz.ncanode.dto.certificate.CertificateKeyUser
 import kz.ncanode.dto.certificate.CertificateRevocationStatus
 import kz.ncanode.dto.certificate.CertificateSubject
-import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.dto.crl.CrlStatus
 import kz.ncanode.dto.ocsp.OcspStatus
 import kz.ncanode.util.createNewUrl
@@ -146,6 +145,12 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
 
     /**
      * Валидация сертификата на указанную дату с учётом OCSP/CRL.
+     *
+     * [date] — момент, на который проверяется добропорядочность: для подписи
+     * с доверенной TSP-меткой это её `genTime`, иначе текущее время. Отзыв
+     * проверяется не бинарно «отозван сейчас?», а темпорально относительно
+     * [date]: отзыв, случившийся строго позже [date] по benign-причине, не
+     * обесценивает подпись (CAdES-T, см. [kz.ncanode.dto.certificate.RevocationPolicy]).
      */
     fun isValid(date: Date, checkOcsp: Boolean, checkCrl: Boolean): Boolean {
         if (!isDateValid(date)) return false
@@ -153,11 +158,11 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
         if (!issuer.isDateValid(date)) return false
         if (checkOcsp) {
             val statuses = ocspStatus ?: return false
-            if (!statuses.all { it.isActive }) return false
+            if (!statuses.all { it.isValidAt(date) }) return false
         }
         if (checkCrl) {
             val status = crlStatus ?: return false
-            if (status.result != CrlResult.ACTIVE) return false
+            if (!status.isValidAt(date)) return false
         }
         return true
     }

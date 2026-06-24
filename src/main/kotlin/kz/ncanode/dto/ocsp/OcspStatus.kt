@@ -2,6 +2,7 @@ package kz.ncanode.dto.ocsp
 
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.certificate.CertificateRevocationStatus
+import kz.ncanode.dto.certificate.RevocationPolicy
 import java.security.cert.CRLReason
 import java.util.Date
 
@@ -12,7 +13,23 @@ data class OcspStatus(
     val message: String? = null,
     val url: String? = null,
 ) {
-    val isActive: Boolean get() = result == OcspResult.ACTIVE
+    /**
+     * Был ли сертификат в добропорядочном состоянии на момент [signingTime]
+     * по данным этого OCSP-ответа (CAdES-T).
+     *
+     * `ACTIVE` — да. `REVOKED` — да только если отзыв произошёл строго после
+     * [signingTime] и по benign-причине (см. [RevocationPolicy]). `UNKNOWN`
+     * и отсутствие времени отзыва — консервативно нет.
+     */
+    fun isValidAt(signingTime: Date): Boolean = when (result) {
+        OcspResult.ACTIVE -> true
+        OcspResult.REVOKED -> RevocationPolicy.signatureSurvivesRevocation(
+            revocationTime,
+            RevocationPolicy.reasonFromOcspCode(revocationReason),
+            signingTime,
+        )
+        else -> false
+    }
 
     fun toCertificateRevocationStatus(): CertificateRevocationStatus = CertificateRevocationStatus(
         revoked = result == OcspResult.REVOKED,

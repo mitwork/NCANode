@@ -10,6 +10,10 @@ import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
 import kz.ncanode.dto.certificate.CertificateKeyUsage
 import kz.ncanode.dto.certificate.CertificateKeyUser
+import kz.ncanode.dto.crl.CrlResult
+import kz.ncanode.dto.crl.CrlStatus
+import kz.ncanode.dto.ocsp.OcspResult
+import kz.ncanode.dto.ocsp.OcspStatus
 import java.io.File
 import java.util.Date
 
@@ -156,5 +160,68 @@ class CertificateWrapperTest : FunSpec({
         )
         root.shouldNotBeNull()
         cert.verify(root.publicKey) shouldBe false
+    }
+
+    // --- isValid: темпоральный отзов относительно времени подписи (CAdES-T) ---
+    //
+    // Воспроизводит прод-кейс: подпись поставлена валидным ключом, позже ключ
+    // перевыпущен (старый отозван reason=SUPERSEDED). Проверка с TSP-меткой
+    // ведётся на genTime (момент подписи), а не на "сейчас".
+
+    // Берём реальный cert (валиден в 2026) + реальный CA как issuer; точку
+    // проверки кладём в середину окна валидности, отзыв — на час позже.
+    fun signedCertWithIssuer(): Pair<CertificateWrapper, Date> {
+        val cert = certFromP12("individual_valid.p12")
+        cert.issuerCertificate = CertificateWrapper.fromBytes(
+            TestResources.loadBytes("ca/nca_gost2022_test.cer")
+        )
+        val nb = cert.x509Certificate.notBefore.time
+        val na = cert.x509Certificate.notAfter.time
+        return cert to Date((nb + na) / 2)
+    }
+
+    test("isValid: OCSP revoked SUPERSEDED AFTER signing time stays valid") {
+        val (cert, signingTime) = signedCertWithIssuer()
+        val revokedAfter = Date(signingTime.time + 3_600_000L)
+        cert.ocspStatus = listOf(
+            OcspStatus(result = OcspResult.REVOKED, revocationTime = revokedAfter, revocationReason = 4)
+        )
+        cert.isValid(signingTime, checkOcsp = true, checkCrl = false) shouldBe true
+    }
+
+    test("isValid: OCSP revoked SUPERSEDED BEFORE signing time is invalid") {
+        val (cert, signingTime) = signedCertWithIssuer()
+        val revokedBefore = Date(signingTime.time - 3_600_000L)
+        cert.ocspStatus = listOf(
+            OcspStatus(result = OcspResult.REVOKED, revocationTime = revokedBefore, revocationReason = 4)
+        )
+        cert.isValid(signingTime, checkOcsp = true, checkCrl = false) shouldBe false
+    }
+
+    test("isValid: OCSP revoked keyCompromise after signing is invalid (retroactive)") {
+        val (cert, signingTime) = signedCertWithIssuer()
+        val revokedAfter = Date(signingTime.time + 3_600_000L)
+        cert.ocspStatus = listOf(
+            OcspStatus(result = OcspResult.REVOKED, revocationTime = revokedAfter, revocationReason = 1)
+        )
+        cert.isValid(signingTime, checkOcsp = true, checkCrl = false) shouldBe false
+    }
+
+    test("isValid: CRL revoked SUPERSEDED after signing stays valid") {
+        val (cert, signingTime) = signedCertWithIssuer()
+        val revokedAfter = Date(signingTime.time + 3_600_000L)
+        cert.crlStatus = CrlStatus(
+            result = CrlResult.REVOKED, revocationDate = revokedAfter, reason = "SUPERSEDED"
+        )
+        cert.isValid(signingTime, checkOcsp = false, checkCrl = true) shouldBe true
+    }
+
+    test("isValid: CRL revoked SUPERSEDED before signing is invalid") {
+        val (cert, signingTime) = signedCertWithIssuer()
+        val revokedBefore = Date(signingTime.time - 3_600_000L)
+        cert.crlStatus = CrlStatus(
+            result = CrlResult.REVOKED, revocationDate = revokedBefore, reason = "SUPERSEDED"
+        )
+        cert.isValid(signingTime, checkOcsp = false, checkCrl = true) shouldBe false
     }
 })

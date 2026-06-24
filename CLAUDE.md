@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 163 теста / **76% coverage**.
+- **Состояние v4:** functional + 189 тестов / **76% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -122,7 +122,7 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-163 теста / **76% line coverage**.
+189 тестов / **76% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -149,7 +149,7 @@ REVOKED-ветка покрывается через mock'нутый `X509CRL`, 
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 163 теста + JaCoCo report
+./gradlew test                   # 189 тестов + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -374,6 +374,43 @@ SHA-256), а `nca_rsa_2022.cer` отсутствовал в дефолтном `
 дефолтный `NCANODE_CA_URL` (application.yml). При диагностике
 `valid:false + tsp:null` — первым делом `grep -E "WARN.*(TSP|TSA)"` в
 логах: каждая ветка отказа в `TspService.verify` пишет свой WARN.
+
+### 26. Отзыв проверяется темпорально относительно времени подписи (CAdES-T), а не «отозван сейчас?»
+Реальный кейс (июнь 2026): multi-sign CMS, один подписант поставил подпись
+валидным ключом (TSP genTime 05:48:41), через ~4,5 минуты перевыпустил
+сертификат → старый отозван через OCSP в 05:53:13 с reason **SUPERSEDED**.
+Verify возвращал `valid:false`, потому что `CertificateWrapper.isValid`
+проверял revocation **бинарно** — `ocspStatus.all { isActive }` /
+`crlStatus.result == ACTIVE` — игнорируя и `revocationTime`, и
+`validationDate`. Получалась асимметрия: срок действия проверялся на
+genTime (правильно), а отзыв — на «сейчас», и отзыв, случившийся *после*
+подписи, ретроактивно убивал валидную подпись. Top-level `valid` — AND,
+поэтому падал весь CMS из-за одного подписанта.
+
+Фикс: `OcspStatus.isValidAt(signingTime)` / `CrlStatus.isValidAt(signingTime)`
++ `kz.ncanode.dto.certificate.RevocationPolicy`. Отозванный сертификат
+считается добропорядочным на момент подписи, если отзыв случился **строго
+позже** `signingTime` (= genTime при доверенной TSP-метке, иначе
+currentDate) **и** по benign-причине: `affiliationChanged`, `superseded`,
+`cessationOfOperation`, `privilegeWithdrawn`. Ретроактивно (всегда invalid):
+`keyCompromise` / `caCompromise` / `aaCompromise` (компрометация не доверяема
+и до формального отзыва), а также — консервативно — `unspecified`,
+`certificateHold`, отсутствие причины/времени отзыва.
+
+Важно: без TSP-метки `validationDate = currentDate`, и отзыв в прошлом так
+и остаётся invalid (`revocationTime.after(now)` = false) — нечем доказать,
+что подписал до отзыва. Поэтому фикс «бесплатно» завязан на тот же genTime,
+что уже использовался для срока. OCSP отдаёт причину int-кодом RFC 5280
+§5.3.1 (== ordinal `CRLReason`), CRL — именем enum; `RevocationPolicy`
+нормализует оба в `java.security.cert.CRLReason`. JSON `revocations[]`
+по-прежнему показывает `revoked:true` + reason — это честно; меняется
+только итоговый `valid`. Покрытие: `RevocationTemporalTest` (19 кейсов) +
+5 integration в `CertificateWrapperTest`.
+
+Ограничение остаётся: revocation-данные добираются **вживую** на verify,
+а не вшиты на момент подписи (это был бы CAdES-X-Long/-A, в v4 нет). Если
+OCSP-респондер для истёкшего/перевыпущенного ключа со временем вернёт
+UNKNOWN — `isValid` снова отклонит (UNKNOWN → invalid), и метка не спасёт.
 
 ## Что не покрыто тестами (≈494 lines)
 
