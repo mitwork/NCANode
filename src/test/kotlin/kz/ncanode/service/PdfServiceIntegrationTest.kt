@@ -172,6 +172,38 @@ class PdfServiceIntegrationTest(
         response.results[1].status shouldBe 404
     }
 
+    // --- Audit fix 2.2: PAdES coverage (ISO 32000-1 §12.8.1) ---
+    test("verify: bytes appended after the signed revision → not whole-document, invalid") {
+        val signed = pdfService.sign(PdfSignRequest().apply {
+            pdf = unsignedPdfBase64
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+        val signedBytes = Base64.getDecoder().decode(signed.pdf!!)
+
+        // Подделка: дописываем данные ПОСЛЕ подписанной ревизии. /ByteRange
+        // существующей подписи их не покрывает — incremental-update forgery.
+        val tamperedBytes = signedBytes + "\n% appended after signing\n".toByteArray()
+        val tamperedB64 = Base64.getEncoder().encodeToString(tamperedBytes)
+
+        val verification = pdfService.verify(PdfVerifyRequest().apply { pdf = tamperedB64 })
+        verification.signers shouldHaveSize 1
+        // Подпись криптографически валидна над исходными байтами...
+        verification.signers[0].isValid shouldBe true
+        // ...но больше не покрывает весь документ → весь результат невалиден.
+        verification.signers[0].coversWholeDocument shouldBe false
+        verification.valid shouldBe false
+    }
+
+    test("verify: freshly signed PDF covers the whole document") {
+        val signed = pdfService.sign(PdfSignRequest().apply {
+            pdf = unsignedPdfBase64
+            signers = listOf(signerOf("individual_valid.p12"))
+        })
+        val verification = pdfService.verify(PdfVerifyRequest().apply { pdf = signed.pdf!! })
+        verification.valid shouldBe true
+        verification.signers[0].coversWholeDocument shouldBe true
+    }
+
     test("PdfSignerInfo fields populated: reason/location/contactInfo from request") {
         val signed = pdfService.sign(PdfSignRequest().apply {
             pdf = unsignedPdfBase64

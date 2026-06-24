@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 192 теста / **76% coverage**.
+- **Состояние v4:** functional + 197 тестов / **76% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -122,7 +122,7 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-192 теста / **76% line coverage**.
+197 тестов / **76% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -149,7 +149,7 @@ REVOKED-ветка покрывается через mock'нутый `X509CRL`, 
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 192 теста + JaCoCo report
+./gradlew test                   # 197 тестов + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -439,12 +439,30 @@ Multi-agent аудит всей PKI-логики на соответствие R
   `findVerifiedResponderCertificate` — `checkValidity(producedAt)` + учёт
   `id-pkix-ocsp-nocheck` (1.3.6.1.5.5.7.48.1.5).
 
-Остаётся (см. план): пункт 2 — покрытие документа подписью (XML-DSig
-Reference / PDF ByteRange / WSSE Body, HIGH×2+MED); пункт 3 — LOW
-conformance; пункт 4 — опц. редизайн через JDK `CertPathValidator`/
-`PKIXRevocationChecker` (закрыл бы §6 path-validation + critical-ext +
-intermediate-revocation разом — но §6 это LOW, т.к. operator-pinned bundle
-+ `cert.verify(root)` не даёт подсунуть чужой intermediate).
+Закрыт **пункт 2** — покрытие документа подписью (что именно подписано,
+а не только что подпись крипто-валидна):
+- **XML-DSig XSW** (xmldsig-core): `check()` валидирует дайджесты, но не что
+  Reference покрывает весь документ. Фикс — `XMLSignatureWrapper.coversWholeDocument()`:
+  требуем Reference с пустым URI (whole-document enveloped) + только безопасные
+  transforms (enveloped + c14n; XPath/XSLT сужают node-set → дисквалификация).
+  `XmlService.verify` отвергает подпись без whole-document Reference.
+- **PDF PAdES** (ISO 32000-1 §12.8.1): verify проверял CMS над байтами
+  `/ByteRange`, но не что ByteRange покрывает весь файл → incremental-update
+  forgery. Фикс — `PdfService.signatureCoversWholeDocument()` (0..EOF, дыра только
+  под `/Contents`); на уровне документа требуем, чтобы ХОТЯ БЫ ОДНА подпись
+  покрывала весь файл (multi-sign safe: последняя подписывает предыдущие ревизии).
+  Новый флаг `PdfSignerInfo.coversWholeDocument`.
+- **WSSE XSW** (WSS X.509): verify не проверял, что подпись покрывает реальный
+  SOAP Body. Фикс — регистрируем `wsu:Id` ровно на настоящем Body (Reference `#id`
+  резолвится в него), `secureValidation=true` (блок duplicate-id), явная проверка
+  `signatureReferencesId(body)`; битая подпись → valid=false, не 500.
+
+Остаётся (см. план): пункт 3 — LOW conformance (TSA EKU criticality, NPE на
+cert без keyUsage, critical-ext rejection cert+CRL); пункт 4 — опц. редизайн
+через JDK `CertPathValidator`/`PKIXRevocationChecker` (закрыл бы §6
+path-validation + critical-ext + intermediate-revocation разом — но §6 это
+LOW, т.к. operator-pinned bundle + `cert.verify(root)` не даёт подсунуть
+чужой intermediate).
 
 ## Что не покрыто тестами (≈494 lines)
 

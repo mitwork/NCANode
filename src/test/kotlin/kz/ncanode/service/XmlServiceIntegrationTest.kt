@@ -11,9 +11,12 @@ import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.dto.request.XmlSignBatchRequest
 import kz.ncanode.dto.request.XmlSignRequest
 import kz.ncanode.dto.request.XmlVerifyBatchRequest
+import kz.ncanode.wrapper.DocumentWrapper
+import kz.ncanode.wrapper.XMLSignatureWrapper
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
+import org.w3c.dom.Element
 
 @SpringBootTest
 @ActiveProfiles("test")
@@ -29,6 +32,43 @@ class XmlServiceIntegrationTest(
     fun signerOf(p12: String) = SignerRequest().apply {
         key = TestResources.loadAsBase64("p12/$p12")
         password = TestResources.P12_PASSWORD
+    }
+
+    // Собирает ds:Signature-элемент с заданным URI Reference'а (структура без
+    // валидной крипты — coversWholeDocument смотрит только на SignedInfo).
+    fun signatureElement(referenceUri: String): Element {
+        val xml = """
+            <root xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+              <data>payload</data>
+              <ds:Signature>
+                <ds:SignedInfo>
+                  <ds:CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments"/>
+                  <ds:SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/>
+                  <ds:Reference URI="$referenceUri">
+                    <ds:Transforms>
+                      <ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+                      <ds:Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments"/>
+                    </ds:Transforms>
+                    <ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
+                    <ds:DigestValue>AAAA</ds:DigestValue>
+                  </ds:Reference>
+                </ds:SignedInfo>
+                <ds:SignatureValue>AAAA</ds:SignatureValue>
+              </ds:Signature>
+            </root>
+        """.trimIndent()
+        return DocumentWrapper(xml).document
+            .getElementsByTagNameNS("http://www.w3.org/2000/09/xmldsig#", "Signature")
+            .item(0) as Element
+    }
+
+    // --- Audit fix 2.1: whole-document coverage (anti XML Signature Wrapping) ---
+    test("coversWholeDocument: empty-URI enveloped reference is whole-document") {
+        XMLSignatureWrapper(signatureElement("")).coversWholeDocument() shouldBe true
+    }
+
+    test("coversWholeDocument: sub-element reference (#x) is NOT whole-document") {
+        XMLSignatureWrapper(signatureElement("#x")).coversWholeDocument() shouldBe false
     }
 
     test("sign + verify XML roundtrip (no TSP / no revocation)") {

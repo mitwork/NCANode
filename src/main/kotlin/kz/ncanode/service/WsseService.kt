@@ -24,6 +24,7 @@ import org.apache.wss4j.common.token.SecurityTokenReference
 import org.apache.wss4j.dom.WSConstants
 import org.apache.wss4j.dom.message.WSSecHeader
 import org.apache.xml.security.c14n.Canonicalizer
+import org.apache.xml.security.exceptions.XMLSecurityException
 import org.apache.xml.security.signature.XMLSignature
 import org.apache.xml.security.transforms.Transforms
 import org.slf4j.LoggerFactory
@@ -157,6 +158,16 @@ class WsseService(
                 return VerificationResponse(valid = false, signers = emptyList())
             }
 
+            // SOAP Body, который подпись обязана покрывать. Регистрируем его
+            // wsu:Id как ID-атрибут — чтобы Reference "#id" резолвился именно в
+            // настоящий Body, а не в одноимённый элемент, подсунутый XSW-атакой
+            // (move-original / duplicate-id). Делаем один раз на конверт.
+            val bodyEl = env.body as Element
+            val bodyId = bodyEl.getAttributeNS(WSConstants.WSU_NS, "Id")
+            if (bodyId.isNotEmpty()) {
+                bodyEl.setIdAttributeNS(WSConstants.WSU_NS, "Id", true)
+            }
+
             var valid = true
             val certs = mutableListOf<CertificateWrapper>()
             val currentDate = certificateService.getCurrentDate()
@@ -167,7 +178,9 @@ class WsseService(
             // иначе можно было бы перепутать подпись Alice'а с cert'ом Bob'а.
             for (i in 0 until signaturesLength) {
                 val sigElement = signatures.item(i) as Element
-                val signature = XMLSignature(sigElement, "")
+                // secureValidation=true: блокирует duplicate-id и небезопасные
+                // трансформы при checkSignatureValue (XSW-защита).
+                val signature = XMLSignature(sigElement, "", true)
 
                 val strInSignature = sigElement.getElementsByTagName("wsse:SecurityTokenReference")
                 if (strInSignature.length < 1) {
@@ -186,8 +199,26 @@ class WsseService(
                 val cert = CertificateWrapper(resolved[0])
                 certificateService.attachValidationData(cert, checkOcsp, checkCrl)
 
-                val thisOk = signature.checkSignatureValue(cert.publicKey)
-                    && cert.isValid(currentDate, checkOcsp, checkCrl)
+                // Битая/подложенная подпись (например, неразрешимый Reference
+                // после XSW) должна давать valid=false, а не валить весь запрос
+                // исключением.
+                val thisOk = try {
+                    val cryptoOk = signature.checkSignatureValue(cert.publicKey)
+                    // Подпись обязана ссылаться именно на SOAP Body — иначе
+                    // checkSignatureValue лишь подтверждает целостность какого-то
+                    // под-элемента, а реальный Body может быть неподписан (XSW).
+                    val coversBody = bodyId.isNotEmpty() && signatureReferencesId(signature, bodyId)
+                    if (!coversBody) {
+                        log.warn(
+                            "WSSE signature #{} does not cover the SOAP Body — rejecting (possible XML Signature Wrapping)",
+                            i,
+                        )
+                    }
+                    cryptoOk && coversBody && cert.isValid(currentDate, checkOcsp, checkCrl)
+                } catch (e: XMLSecurityException) {
+                    log.warn("WSSE signature #{} verification failed: {}", i, e.message)
+                    false
+                }
                 if (!thisOk) valid = false
                 certs.add(cert)
             }
@@ -223,6 +254,17 @@ class WsseService(
             }
         }
         return WsseVerifyBatchResponse(results = items)
+    }
+
+    /**
+     * Ссылается ли подпись хотя бы одним Reference'ом на элемент с данным id
+     * (`URI="#id"`). Используется для проверки, что подписан именно SOAP Body.
+     */
+    private fun signatureReferencesId(signature: XMLSignature, id: String): Boolean = try {
+        val signedInfo = signature.signedInfo
+        (0 until signedInfo.length).any { signedInfo.item(it).uri == "#$id" }
+    } catch (e: XMLSecurityException) {
+        false
     }
 
     companion object {

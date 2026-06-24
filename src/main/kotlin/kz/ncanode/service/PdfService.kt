@@ -150,16 +150,36 @@ class PdfService(
                     throw NoSignaturesFoundException("PDF document contains no digital signatures")
                 }
 
+                val fileLength = pdfBytes.size
                 val signerInfos = mutableListOf<PdfSignerInfo>()
                 var allValid = true
+                var wholeDocumentCovered = false
 
                 for (signature in signatures) {
-                    val signerInfo = verifySignature(signature, pdfVerifyRequest, pdfBytes)
+                    // PAdES / ISO 32000-1 §12.8.1: подпись защищает только байты
+                    // своего /ByteRange. Если ByteRange не доходит до EOF —
+                    // после подписанной ревизии дописан incremental update,
+                    // который никто не подписывал.
+                    val coversWhole = signatureCoversWholeDocument(signature, fileLength)
+                    if (coversWhole) wholeDocumentCovered = true
+
+                    val signerInfo = verifySignature(signature, pdfVerifyRequest, pdfBytes, coversWhole)
                     signerInfos.add(signerInfo)
                     if (!signerInfo.isValid) allValid = false
                 }
 
-                return PdfVerificationResponse(valid = allValid, signers = signerInfos)
+                // Документ цел, только если хотя бы одна подпись покрывает его
+                // целиком: для multi-sign это последняя подпись (она подписывает
+                // и предыдущие ревизии). Иначе есть неподписанный хвост — весь
+                // результат верификации обесценивается.
+                if (!wholeDocumentCovered) {
+                    log.warn("PDF has signatures but none covers the whole document — content appended after signing")
+                }
+
+                return PdfVerificationResponse(
+                    valid = allValid && wholeDocumentCovered,
+                    signers = signerInfos,
+                )
             }
         } catch (e: NoSignaturesFoundException) {
             throw e
@@ -169,12 +189,29 @@ class PdfService(
     }
 
     /**
+     * PAdES / ISO 32000-1 §12.8.1: подпись покрывает весь документ, только если
+     * её `/ByteRange` начинается с 0 и доходит до конца файла, оставляя
+     * единственную дыру под `/Contents`. Любой неподписанный хвост (incremental
+     * update после подписания) делает результат false.
+     */
+    private fun signatureCoversWholeDocument(signature: PDSignature, fileLength: Int): Boolean {
+        val byteRange = signature.byteRange ?: return false
+        if (byteRange.size != 4) return false
+        val (start1, len1, start2, len2) = byteRange
+        // Валидный ByteRange: [0, a, b, c], где дыра [a, b) — это /Contents.
+        if (start1 != 0 || len1 < 0 || len2 < 0 || start2 < len1) return false
+        val coveredEnd = start2.toLong() + len2.toLong()
+        return coveredEnd == fileLength.toLong()
+    }
+
+    /**
      * Verifies a single PDSignature using the original PDF bytes and CertificateService.
      */
     private fun verifySignature(
         signature: PDSignature,
         pdfVerifyRequest: PdfVerifyRequest,
         originalPdfBytes: ByteArray,
+        coversWholeDocument: Boolean,
     ): PdfSignerInfo {
         try {
             // 1) Extract raw CMS (the /Contents) and the signed content (ByteRange)
@@ -258,6 +295,7 @@ class PdfService(
                 // - digestAlgorithm shows CMS digest OID (crypto-level)
                 signatureAlgorithm = signature.subFilter,
                 digestAlgorithm = digestAlgReported ?: "unknown",
+                coversWholeDocument = coversWholeDocument,
             )
         } catch (e: Exception) {
             log.error("Error verifying signature", e)

@@ -5,6 +5,7 @@ import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import kz.ncanode.TestResources
 import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
@@ -42,6 +43,25 @@ class WsseServiceIntegrationTest(
         val verification = wsseService.verify(signed.xml!!, checkOcsp = false, checkCrl = false)
         verification.valid shouldBe true
         verification.signers shouldHaveSize 1
+    }
+
+    // --- Audit fix 2.3: signature must cover the SOAP Body (anti-XSW) ---
+    test("verify: signature not bound to the actual SOAP Body → invalid") {
+        val signed = wsseService.sign(WsseSignRequest().apply {
+            xml = sampleSoap
+            key = TestResources.loadAsBase64("p12/individual_valid.p12")
+            password = TestResources.P12_PASSWORD
+        })
+        val signedXml = signed.xml!!
+
+        // Ломаем привязку подписи к Body: меняем wsu:Id на самом Body, оставляя
+        // ds:Reference URI прежним. Подпись больше не покрывает настоящий Body.
+        val signedId = Regex("""URI="#([^"]+)"""").find(signedXml)!!.groupValues[1]
+        val tampered = signedXml.replaceFirst("""wsu:Id="$signedId"""", """wsu:Id="$signedId-moved"""")
+        tampered shouldNotBe signedXml
+
+        val verification = wsseService.verify(tampered, checkOcsp = false, checkCrl = false)
+        verification.valid shouldBe false
     }
 
     test("verify revoked signer returns invalid when OCSP enabled") {

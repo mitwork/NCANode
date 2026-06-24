@@ -12,4 +12,11 @@ data class PdfSignerInfo(
     val certificate: CertificateInfo? = null,
     val signatureAlgorithm: String? = null,
     val digestAlgorithm: String? = null,
+    /**
+     * Покрывает ли `/ByteRange` этой подписи весь документ от 0 до EOF
+     * (PAdES / ISO 32000-1 §12.8.1). `false` означает, что после подписанной
+     * ревизии в файл дописан incremental update — подпись криптографически
+     * валидна, но не защищает текущее содержимое документа.
+     */
+    val coversWholeDocument: Boolean = false,
 )

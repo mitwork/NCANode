@@ -19,15 +19,27 @@
 per-signer; в OCSP — `checkValidity(producedAt)` + учёт `id-pkix-ocsp-nocheck`.
 Тесты: 2 в `CmsServiceIntegrationTest` (zero-signers, cert-stripped). Сьют 192/0.
 
-## Пункт 2 — покрытие документа подписью (отдельный заход на сервис)
+## Пункт 2 — покрытие документа подписью ✅ ГОТОВО
 
 | # | Sev | Находка | Где | Статус |
 |---|---|---|---|---|
-| 2.1 | HIGH | XML-DSig не проверяет, что Reference покрывает документ (XSW) | `XmlService.kt:138-178`, `XMLSignatureWrapper.kt:65-70` | ⬜ |
-| 2.2 | HIGH | PDF не проверяет `/ByteRange` на весь файл (PAdES incremental-update) | `PdfService.kt:174-266` | ⬜ |
-| 2.3 | MED | WSSE не проверяет, что подпись покрывает SOAP Body (move-original XSW) | `WsseService.kt:168-193` | ⬜ |
+| 2.1 | HIGH | XML-DSig не проверяет, что Reference покрывает документ (XSW) | `XMLSignatureWrapper.coversWholeDocument`, `XmlService.kt` | ✅ |
+| 2.2 | HIGH | PDF не проверяет `/ByteRange` на весь файл (PAdES incremental-update) | `PdfService.signatureCoversWholeDocument` | ✅ |
+| 2.3 | MED | WSSE не проверяет, что подпись покрывает SOAP Body (move-original XSW) | `WsseService.signatureReferencesId` | ✅ |
 
-Крупнее: нужен разбор `SignedInfo` References / `ByteRange`, по тесту на каждый.
+Фиксы:
+- **2.1** — `coversWholeDocument()`: требуем Reference с пустым URI + только
+  безопасные transforms (enveloped + c14n); иначе XSW. `PdfSignerInfo`-аналога нет,
+  встроено в `XmlService.verify`.
+- **2.2** — `signatureCoversWholeDocument()`: `/ByteRange` от 0 до EOF; на уровне
+  документа требуем, чтобы хотя бы одна подпись покрывала весь файл (multi-sign
+  safe). Новый флаг `PdfSignerInfo.coversWholeDocument`.
+- **2.3** — регистрируем `wsu:Id` ровно на настоящем Body + `secureValidation=true`
+  + явная проверка, что Reference ссылается на body id; per-signature try/catch
+  (битая подпись → valid=false, не 500).
+
+Тесты: +2 PDF (forgery + whole-doc), +2 XML (coversWholeDocument: ""/`#x`),
++1 WSSE (broken body binding). Сьют 192 → **197**.
 
 ## Пункт 3 — LOW conformance (бэклог)
 

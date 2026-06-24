@@ -15,6 +15,7 @@ import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.DocumentWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.XMLSignatureWrapper
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.w3c.dom.Document
 import org.w3c.dom.Element
@@ -163,7 +164,15 @@ class XmlService(
 
             certificateService.attachValidationData(cert, checkOcsp, checkCrl)
 
-            if (!xmlSignature.check() || !cert.isValid(currentDate, checkOcsp, checkCrl)) {
+            // check() подтверждает только целостность дайджестов Reference'ов.
+            // Дополнительно требуем, чтобы подпись покрывала ВЕСЬ документ
+            // (whole-document enveloped Reference) — иначе blanket valid=true над
+            // присланным XML вводит в заблуждение (XML Signature Wrapping).
+            val coversWhole = xmlSignature.coversWholeDocument()
+            if (!coversWhole) {
+                log.warn("XML signature does not cover the whole document — rejecting (possible XML Signature Wrapping)")
+            }
+            if (!xmlSignature.check() || !coversWhole || !cert.isValid(currentDate, checkOcsp, checkCrl)) {
                 valid = false
             }
             root.removeChild(signature)
@@ -202,5 +211,9 @@ class XmlService(
         val document = read(xml, false)
         removeWhitespace(document.document)
         return document.toString()
+    }
+
+    companion object {
+        private val log = LoggerFactory.getLogger(XmlService::class.java)
     }
 }
