@@ -150,10 +150,20 @@ class TspService(
                 return null
             }
 
-            // 3) EKU id-kp-timeStamping — обязателен для TSA по RFC 3161.
+            // 3) EKU id-kp-timeStamping. RFC 3161 §2.3: должен присутствовать,
+            // быть ЕДИНСТВЕННЫМ EKU и помечен critical — иначе сертификат не
+            // предназначен исключительно для меток времени.
             val eku = tsaCert.extendedKeyUsage
             if (EKU_TIME_STAMPING_OID !in eku) {
                 log.warn("TSA certificate does not declare id-kp-timeStamping EKU")
+                return null
+            }
+            if (eku.size != 1) {
+                log.warn("TSA certificate EKU must contain ONLY id-kp-timeStamping (RFC 3161 §2.3), found: {}", eku)
+                return null
+            }
+            if (EKU_EXTENSION_OID !in (tsaCert.x509Certificate.criticalExtensionOIDs ?: emptySet())) {
+                log.warn("TSA certificate EKU extension is not marked critical (RFC 3161 §2.3)")
                 return null
             }
 
@@ -250,5 +260,8 @@ class TspService(
          * OID id-kp-timeStamping (RFC 3161): сертификат TSA должен содержать его в EKU.
          */
         private const val EKU_TIME_STAMPING_OID = "1.3.6.1.5.5.7.3.8"
+
+        /** OID расширения extendedKeyUsage (RFC 5280 §4.2.1.12) — для проверки criticality. */
+        private const val EKU_EXTENSION_OID = "2.5.29.37"
     }
 }

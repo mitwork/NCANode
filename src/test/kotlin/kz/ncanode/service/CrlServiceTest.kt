@@ -176,6 +176,42 @@ class CrlServiceTest : FunSpec({
         verify(exactly = 0) { foreignCrl.isRevoked(any<java.security.cert.X509Certificate>()) }
     }
 
+    test("verify() skips a CRL carrying an unsupported critical extension (RFC 5280 §5.2)") {
+        // CRL от того же CA, но с critical-расширением, которое мы не
+        // обрабатываем (IssuingDistributionPoint 2.5.29.28). Его охват может
+        // быть ограничен — доверять его isRevoked нельзя, CRL пропускается.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val criticalCrl = mockk<X509CRL>(relaxed = true).apply {
+            every { issuerX500Principal } returns cert.x509Certificate.issuerX500Principal
+            every { criticalExtensionOIDs } returns setOf("2.5.29.28") // IDP, critical
+            // Если бы CRL НЕ пропустили — он бы отозвал cert. Проверяем, что не доходит.
+            every { isRevoked(any<java.security.cert.X509Certificate>()) } returns true
+        }
+        val mockFile = mockCrlFile("idp_critical")
+        val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
+            every { isEnabled } returns true
+            every { isCacheEnabled } returns false
+            every { ttl } returns null
+            every { urlList } returns emptyMap()
+            every { delta } returns null
+        }
+        val service = spyk(
+            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), HttpClientConfiguration(), mockk(relaxed = true), "test")
+        )
+        every { service.getCrlFiles(any()) } answers {
+            if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()
+        }
+        every { service.loadCrl(mockFile) } returns criticalCrl
+
+        service.verify(cert).result shouldBe CrlResult.ACTIVE
+        // CRL пропущен до isRevoked-проверки.
+        verify(exactly = 0) { criticalCrl.isRevoked(any<java.security.cert.X509Certificate>()) }
+    }
+
     test("verify() short-circuits to ACTIVE when CRL feature disabled — no disk reads") {
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_revoked.p12"),

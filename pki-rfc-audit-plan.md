@@ -41,14 +41,30 @@ per-signer; в OCSP — `checkValidity(producedAt)` + учёт `id-pkix-ocsp-noc
 Тесты: +2 PDF (forgery + whole-doc), +2 XML (coversWholeDocument: ""/`#x`),
 +1 WSSE (broken body binding). Сьют 192 → **197**.
 
-## Пункт 3 — LOW conformance (бэклог)
+## Пункт 3 — LOW conformance ✅ ГОТОВО
 
 | # | Находка | Где | Статус |
 |---|---|---|---|
-| 3.1 | TSA EKU: проверять criticality + sole-EKU (RFC 3161 §2.3) | `TspService.kt:153-158` | ⬜ |
-| 3.2 | NPE на cert без keyUsage extension (RFC 5280 §4.2.1.3) | `CertificateWrapper.kt:75`, `CertificateKeyUsage.kt` | ⬜ |
-| 3.3 | Unrecognized critical extensions (cert) не reject'ятся (§4.2) | `CertificateWrapper.kt:155-168` | ⬜ |
-| 3.4 | Unrecognized critical extensions (CRL) не reject'ятся (§5.2) | `CrlService.kt:240-305` | ⬜ |
+| 3.1 | TSA EKU: criticality + sole-EKU (RFC 3161 §2.3) | `TspService.verify` | ✅ |
+| 3.2 | NPE на cert без keyUsage extension (RFC 5280 §4.2.1.3) | `CertificateKeyUsage.fromKeyUsageBits` | ✅ |
+| 3.3 | Unrecognized critical extensions (cert) не reject'ятся (§4.2) | `CertificateWrapper.isValid` | ✅ |
+| 3.4 | Unrecognized critical extensions (CRL) не reject'ятся (§5.2) | `CrlService.verify` | ✅ |
+
+Фиксы:
+- **3.2** — `fromKeyUsageBits(BooleanArray?)`: `null`/короткий массив → UNKNOWN.
+- **3.1** — строго: id-kp-timeStamping ЕДИНСТВЕННЫЙ EKU + помечен critical.
+  Эмпирически: NCA GOST TSA конформен (`TsaCertDiagnosticTest` стережёт это).
+- **3.3** — НЕ `hasUnsupportedCriticalExtension()` (Kalkan/BC ложно браковал
+  critical EKU!), а явный allowlist {keyUsage, basicConstraints, EKU, SAN,
+  certPolicies}; critical вне набора → reject.
+- **3.4** — любой critical-extension в CRL → skip (мы не обрабатываем ни одно).
+
+⚠️ **Ключевой урок**: `X509Certificate/X509CRL.hasUnsupportedCriticalExtension()`
+в Kalkan/BC считает critical extendedKeyUsage «неподдержанным» → отвергал
+конформный TSA-cert и валил CAdES-T. Поэтому только явные allowlist'ы по OID.
+
+Тесты: +4 `CertificateKeyUsageTest`, +1 `CrlServiceTest` (IDP-critical skip),
++1 `TsaCertDiagnosticTest` (NCA TSA conformance guard). Сьют 197 → **203**.
 
 ## Пункт 4 — редизайн через JDK PKIX (большой, опционально)
 

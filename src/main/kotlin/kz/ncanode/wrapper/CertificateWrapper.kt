@@ -154,6 +154,18 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
      */
     fun isValid(date: Date, checkOcsp: Boolean, checkCrl: Boolean): Boolean {
         if (!isDateValid(date)) return false
+        // RFC 5280 §4.2: сертификат с critical-расширением, которое мы не
+        // обрабатываем, обязан отвергаться — иначе игнорировали бы ограничение,
+        // помеченное эмитентом обязательным (nameConstraints/policyConstraints).
+        // НЕ используем X509Certificate.hasUnsupportedCriticalExtension(): Kalkan/BC
+        // считает «неподдержанным» даже critical extendedKeyUsage (которое RFC 3161
+        // ТРЕБУЕТ critical у TSA), ложно браковал бы валидные сертификаты. Поэтому
+        // явный allowlist стандартных расширений, которые мы осознанно понимаем.
+        val unsupportedCritical = (x509Certificate.criticalExtensionOIDs ?: emptySet()) - SUPPORTED_CRITICAL_EXTENSIONS
+        if (unsupportedCritical.isNotEmpty()) {
+            log.warn("Certificate has unhandled critical extension(s) {} — rejecting (RFC 5280 §4.2)", unsupportedCritical)
+            return false
+        }
         val issuer = issuerCertificate ?: return false
         if (!issuer.isDateValid(date)) return false
         if (checkOcsp) {
@@ -201,6 +213,21 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
 
     companion object {
         private val log = LoggerFactory.getLogger(CertificateWrapper::class.java)
+
+        /**
+         * Critical-расширения, которые мы осознанно обрабатываем или которыми
+         * безопасно пренебрегаем. Любое critical-расширение вне набора
+         * (nameConstraints 2.5.29.30, policyConstraints 2.5.29.36,
+         * inhibitAnyPolicy 2.5.29.54 и т.п.) — ограничение, которое мы не
+         * enforce'им, поэтому такой сертификат отвергаем (RFC 5280 §4.2).
+         */
+        private val SUPPORTED_CRITICAL_EXTENSIONS = setOf(
+            "2.5.29.15", // keyUsage
+            "2.5.29.19", // basicConstraints
+            "2.5.29.37", // extendedKeyUsage
+            "2.5.29.17", // subjectAltName
+            "2.5.29.32", // certificatePolicies
+        )
 
         fun fromBase64(encodedCert: String): CertificateWrapper? =
             fromBytes(Base64.getDecoder().decode(encodedCert.replace("\\s".toRegex(), "")))

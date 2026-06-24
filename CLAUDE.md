@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 197 тестов / **76% coverage**.
+- **Состояние v4:** functional + 203 теста / **76% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -122,7 +122,7 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-197 тестов / **76% line coverage**.
+203 теста / **76% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -149,7 +149,7 @@ REVOKED-ветка покрывается через mock'нутый `X509CRL`, 
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 197 тестов + JaCoCo report
+./gradlew test                   # 203 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -457,12 +457,26 @@ Multi-agent аудит всей PKI-логики на соответствие R
   резолвится в него), `secureValidation=true` (блок duplicate-id), явная проверка
   `signatureReferencesId(body)`; битая подпись → valid=false, не 500.
 
-Остаётся (см. план): пункт 3 — LOW conformance (TSA EKU criticality, NPE на
-cert без keyUsage, critical-ext rejection cert+CRL); пункт 4 — опц. редизайн
-через JDK `CertPathValidator`/`PKIXRevocationChecker` (закрыл бы §6
-path-validation + critical-ext + intermediate-revocation разом — но §6 это
-LOW, т.к. operator-pinned bundle + `cert.verify(root)` не даёт подсунуть
-чужой intermediate).
+Закрыт **пункт 3** — LOW conformance:
+- **3.2** NPE на cert без keyUsage: `fromKeyUsageBits(BooleanArray?)` →
+  `null`/короткий → UNKNOWN (RFC 5280 §4.2.1.3, keyUsage OPTIONAL).
+- **3.1** TSA EKU строго (RFC 3161 §2.3): id-kp-timeStamping ЕДИНСТВЕННЫЙ +
+  critical. NCA GOST TSA конформен (`TsaCertDiagnosticTest` это стережёт).
+- **3.3** critical-ext (cert): явный allowlist {keyUsage, basicConstraints,
+  EKU, SAN, certPolicies}; critical вне набора → reject (RFC 5280 §4.2).
+- **3.4** critical-ext (CRL): любое critical-расширение → skip CRL (§5.2).
+
+⚠️ **Грабли пункта 3**: `X509Certificate/X509CRL.hasUnsupportedCriticalExtension()`
+в Kalkan/BC считает **critical extendedKeyUsage** «неподдержанным» — а RFC 3161
+ТРЕБУЕТ critical EKU у TSA. Наивное использование этого флага в 3.3 отвергало
+конформный TSA-cert → `TspService.verify` возвращал null → весь CAdES-T
+ломался (4 CMS + 1 PDF теста красные). Поэтому critical-ext проверки — только
+через явные allowlist'ы по OID, НЕ через BC-флаг.
+
+Остаётся (см. план): пункт 4 — опц. редизайн через JDK `CertPathValidator`/
+`PKIXRevocationChecker` (закрыл бы §6 path-validation + critical-ext +
+intermediate-revocation разом — но §6 это LOW, т.к. operator-pinned bundle +
+`cert.verify(root)` не даёт подсунуть чужой intermediate).
 
 ## Что не покрыто тестами (≈494 lines)
 

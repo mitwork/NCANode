@@ -249,6 +249,19 @@ open class CrlService(
                 // CRL должен быть выпущен тем же CA, что и проверяемый сертификат.
                 if (crl.issuerX500Principal != certIssuer) continue
 
+                // RFC 5280 §5.2: CRL с critical-расширением, которое мы не
+                // обрабатываем, использовать нельзя — его охват/семантика нам
+                // неизвестны (напр. IssuingDistributionPoint, ограничивающий
+                // область действия), доверять revocation-решению небезопасно.
+                // Мы не обрабатываем НИ ОДНО critical CRL-расширение, поэтому
+                // любое присутствие — повод пропустить CRL. (BC-флаг
+                // hasUnsupportedCriticalExtension не используем — он ненадёжен.)
+                val crlCritical = crl.criticalExtensionOIDs
+                if (!crlCritical.isNullOrEmpty()) {
+                    log.warn("CRL {} has critical extension(s) {} we do not process — skipping (RFC 5280 §5.2)", crlFile.name, crlCritical)
+                    continue
+                }
+
                 // RFC 5280 §5.1.2.5: после nextUpdate CRL формально считается
                 // устаревшим. Мы не блокируем его использование (для отозванных
                 // сертификатов хуже false negative, чем false positive — отзывы
