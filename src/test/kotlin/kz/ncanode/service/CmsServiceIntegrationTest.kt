@@ -2,11 +2,15 @@ package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.extensions.spring.SpringExtension
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import kz.gov.pki.kalkan.jce.provider.KalkanProvider
+import kz.gov.pki.kalkan.jce.provider.cms.CMSProcessableByteArray
+import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.ncanode.TestResources
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CmsCreateBatchRequest
@@ -14,6 +18,8 @@ import kz.ncanode.dto.request.CmsCreateRequest
 import kz.ncanode.dto.request.CmsExtractBatchRequest
 import kz.ncanode.dto.request.CmsVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
+import kz.ncanode.wrapper.KalkanWrapper
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
@@ -33,6 +39,7 @@ import java.util.Base64
 class CmsServiceIntegrationTest(
     @param:Autowired private val cmsService: CmsService,
     @param:Autowired private val caService: CaService,
+    @param:Autowired private val kalkanWrapper: KalkanWrapper,
 ) : FunSpec({
 
     extension(SpringExtension)
@@ -426,5 +433,51 @@ class CmsServiceIntegrationTest(
             e
         }
         ex.shouldNotBeNull()
+    }
+
+    // --- Audit fix 1.1: CMS без подписантов не может считаться валидным ---
+    // RFC 5652 §5.1: SignedData с пустым signerInfos ничего не удостоверяет.
+    test("verify: CMS with zero SignerInfos is invalid (RFC 5652 §5.1)") {
+        // Degenerate "certs-only"-style CMS: контент есть, подписантов нет.
+        val signed = CMSSignedDataGenerator().generate(
+            CMSProcessableByteArray("no signers here".toByteArray()),
+            true,
+            KalkanProvider.PROVIDER_NAME,
+        )
+        val b64 = Base64.getEncoder().encodeToString(signed.encoded)
+
+        val result = cmsService.verify(b64, null, checkOcsp = false, checkCrl = false)
+        result.valid shouldBe false
+        result.signers.shouldBeEmpty()
+    }
+
+    // --- Audit fix 1.2: подписант без вложенного сертификата = провал ---
+    // RFC 5652 §5.6: подпись обязана быть криптографически проверена; если
+    // cert подписанта не вложен, проверять нечем — это не "успех".
+    test("verify: CMS signer without embedded certificate is invalid (RFC 5652 §5.6)") {
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null,
+            TestResources.P12_PASSWORD,
+        )
+        val x509 = ks.certificate.x509Certificate
+
+        val generator = CMSSignedDataGenerator().apply {
+            addSigner(ks.privateKey, x509, getDigestAlgorithmOidBYSignAlgorithmOid(x509.sigAlgOID))
+            // НАМЕРЕННО не вызываем addCertificatesAndCRLs — cert подписанта
+            // отсутствует в итоговом CMS, signer.verify() проверять будет нечем.
+        }
+        val signed = generator.generate(
+            CMSProcessableByteArray("signed but cert stripped".toByteArray()),
+            true,
+            KalkanProvider.PROVIDER_NAME,
+        )
+        val b64 = Base64.getEncoder().encodeToString(signed.encoded)
+
+        val result = cmsService.verify(b64, null, checkOcsp = false, checkCrl = false)
+        result.valid shouldBe false
+        // Подписант присутствует в отчёте, но без сертификатов.
+        result.signers shouldHaveSize 1
+        result.signers.first().certificates.shouldBeEmpty()
     }
 })

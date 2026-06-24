@@ -30,6 +30,8 @@ import java.net.http.HttpResponse
 import java.security.GeneralSecurityException
 import java.security.NoSuchProviderException
 import java.security.SecureRandom
+import java.security.cert.CertificateExpiredException
+import java.security.cert.CertificateNotYetValidException
 import java.security.cert.X509Certificate
 import java.util.Date
 import java.util.Hashtable
@@ -269,6 +271,31 @@ class OcspService(
                 continue
             }
 
+            // RFC 6960 §4.2.2.2: cert делегированного responder'а должен быть
+            // валиден на момент producedAt ответа. Без этой проверки протухший
+            // responder-cert принимался бы как авторитетный источник статуса.
+            val producedAt = brep.producedAt
+            try {
+                if (producedAt != null) respCert.checkValidity(producedAt) else respCert.checkValidity()
+            } catch (e: CertificateExpiredException) {
+                log.debug("Delegated OCSP responder cert not valid at producedAt: {}", e.message)
+                continue
+            } catch (e: CertificateNotYetValidException) {
+                log.debug("Delegated OCSP responder cert not valid at producedAt: {}", e.message)
+                continue
+            }
+
+            // RFC 6960 §4.2.2.2.1: краткоживущий delegated responder обычно несёт
+            // id-pkix-ocsp-nocheck — явный отказ CA от проверки его отзыва. Если
+            // расширения нет, отзыв самого responder'а мы независимо не проверяем
+            // (во избежание рекурсии OCSP→OCSP); фиксируем это в логе как
+            // остаточный риск, не блокируя ответ.
+            if (respCert.getExtensionValue(OID_OCSP_NOCHECK) == null) {
+                log.debug(
+                    "Delegated OCSP responder cert lacks id-pkix-ocsp-nocheck; its own revocation is not independently verified",
+                )
+            }
+
             return respCert
         }
         return null
@@ -299,6 +326,12 @@ class OcspService(
          * содержать id-kp-OCSPSigning.
          */
         private const val EKU_OCSP_SIGNING_OID = "1.3.6.1.5.5.7.3.9"
+
+        /**
+         * RFC 6960 §4.2.2.2.1: id-pkix-ocsp-nocheck — CA-waiver на проверку
+         * отзыва самого delegated responder'а (он краткоживущий).
+         */
+        private const val OID_OCSP_NOCHECK = "1.3.6.1.5.5.7.48.1.5"
 
         /** 5 минут на расхождение часов. */
         private const val CLOCK_SKEW_MS = 5L * 60 * 1000

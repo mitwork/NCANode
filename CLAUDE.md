@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 189 тестов / **76% coverage**.
+- **Состояние v4:** functional + 192 теста / **76% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -122,7 +122,7 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-189 тестов / **76% line coverage**.
+192 теста / **76% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -149,7 +149,7 @@ REVOKED-ветка покрывается через mock'нутый `X509CRL`, 
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 189 тестов + JaCoCo report
+./gradlew test                   # 192 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -407,10 +407,44 @@ currentDate) **и** по benign-причине: `affiliationChanged`, `supersede
 только итоговый `valid`. Покрытие: `RevocationTemporalTest` (19 кейсов) +
 5 integration в `CertificateWrapperTest`.
 
-Ограничение остаётся: revocation-данные добираются **вживую** на verify,
-а не вшиты на момент подписи (это был бы CAdES-X-Long/-A, в v4 нет). Если
-OCSP-респондер для истёкшего/перевыпущенного ключа со временем вернёт
-UNKNOWN — `isValid` снова отклонит (UNKNOWN → invalid), и метка не спасёт.
+Про долгосрочную проверку: revocation-данные добираются **вживую** на
+verify, а не вшиты на момент подписи (это был бы CAdES-X-Long/-A, в v4 нет).
+Теоретический риск — OCSP со временем вернёт UNKNOWN по истёкшему ключу, и
+тогда `isValid` отклонит (UNKNOWN → invalid). Эмпирически проверено
+(`OcspExpiredCertDiagnosticTest`): OCSP test.pki.gov.kz по cert'у, истёкшему
+~8 месяцев назад, **всё ещё отдаёт ACTIVE**, не UNKNOWN (RFC 6960 — OCSP про
+отзыв, не про срок). Значит для практического горизонта live-OCSP +
+темпоральный фикс самодостаточны, и X-Long отложен. Тест — канарейка: если
+НУЦ когда-нибудь начнёт purge'ить истёкшие серийники, его вывод покажет
+UNKNOWN. Не проверено на проде (pki.gov.kz) и на горизонте 10+ лет.
+
+### 27. RFC-аудит PKI: verification-contract фиксы (пункт 1)
+Multi-agent аудит всей PKI-логики на соответствие RFC дал **12
+подтверждённых** находок (из 35, 23 отсеяны верификаторами). Отчёт —
+`pki-rfc-audit-report.md`, план остатка — `pki-rfc-audit-plan.md` (оба в
+корне репо, **не** для upstream-PR — рабочие артефакты v4). Корневая
+причина всех HIGH: `VerificationResponse` отдаёт плоский `valid`, не
+сообщая, ЧТО именно покрыто подписью.
+
+Закрыт **пункт 1** (3 находки):
+- **CMS с 0 подписантов** (RFC 5652 §5.1): пустой `signerInfos` проходил
+  цикл вхолостую → `valid=true`. Фикс — `if (signerCerts.isEmpty()) return
+  valid=false` ДО цикла (`CmsService.verify`).
+- **Подписант без cert в store** (RFC 5652 §5.6): если `certStore`
+  .getCertificates(sid) пуст, внутренний `for (cert in certs)` не
+  выполнялся → `signer.verify()` не вызывался → подписант молча ОК. Фикс —
+  guard `if (certs.isEmpty()) valid=false` per-signer.
+- **Delegated OCSP-responder** (RFC 6960 §4.2.2.2): cert responder'а
+  проверялся на цепочку+EKU, но не на validity. Фикс в
+  `findVerifiedResponderCertificate` — `checkValidity(producedAt)` + учёт
+  `id-pkix-ocsp-nocheck` (1.3.6.1.5.5.7.48.1.5).
+
+Остаётся (см. план): пункт 2 — покрытие документа подписью (XML-DSig
+Reference / PDF ByteRange / WSSE Body, HIGH×2+MED); пункт 3 — LOW
+conformance; пункт 4 — опц. редизайн через JDK `CertPathValidator`/
+`PKIXRevocationChecker` (закрыл бы §6 path-validation + critical-ext +
+intermediate-revocation разом — но §6 это LOW, т.к. operator-pinned bundle
++ `cert.verify(root)` не даёт подсунуть чужой intermediate).
 
 ## Что не покрыто тестами (≈494 lines)
 

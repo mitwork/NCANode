@@ -238,6 +238,14 @@ class CmsService(
                 certificateService.prefetchValidationData(allCerts, checkOcsp, checkCrl)
             }
 
+            // RFC 5652 §5.1: SignedData без единого SignerInfo ничего не
+            // удостоверяет. Без этой проверки CMS с пустым signerInfos прошёл
+            // бы цикл ниже вхолостую и вернул valid=true — ложно-положительный
+            // вердикт «документ валидно подписан» при отсутствии подписей.
+            if (signerCerts.isEmpty()) {
+                return CmsVerificationResponse(valid = false, signers = emptyList())
+            }
+
             val signers = mutableListOf<CmsSignerInfo>()
             var valid = true
             val currentDate = certificateService.getCurrentDate()
@@ -294,6 +302,19 @@ class CmsService(
                         log.warn("Signer has TSP timestamp attribute but TSP verification failed — marking CMS as invalid")
                         valid = false
                     }
+                }
+
+                // RFC 5652 §5.6: подпись подписанта обязана быть криптографически
+                // проверена. Если для signer.sid не нашлось сертификата в CMS,
+                // проверять нечем — цикл по certs ниже не выполнится, signer.verify()
+                // не вызовется. Это не «успех по умолчанию», а провал верификации:
+                // иначе подписант, чей cert не вложен, молча засчитывался бы как ОК.
+                if (certs.isEmpty()) {
+                    log.warn(
+                        "CMS signer {} has no matching certificate in the embedded store — signature cannot be verified",
+                        signer.sid,
+                    )
+                    valid = false
                 }
 
                 val certificateInfos = mutableListOf<CertificateInfo>()
