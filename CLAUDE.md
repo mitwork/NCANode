@@ -473,10 +473,15 @@ Multi-agent аудит всей PKI-логики на соответствие R
 ломался (4 CMS + 1 PDF теста красные). Поэтому critical-ext проверки — только
 через явные allowlist'ы по OID, НЕ через BC-флаг.
 
-Остаётся (см. план): пункт 4 — опц. редизайн через JDK `CertPathValidator`/
-`PKIXRevocationChecker` (закрыл бы §6 path-validation + critical-ext +
-intermediate-revocation разом — но §6 это LOW, т.к. operator-pinned bundle +
-`cert.verify(root)` не даёт подсунуть чужой intermediate).
+**Ремедиация завершена**: все HIGH/MEDIUM (пункты 1–2) + значимые LOW
+(пункт 3) закрыты. Пункт 4 (`pki-rfc-audit-plan.md`) — **осознанно отложен**:
+редизайн trust-решения через JDK `CertPathValidator`/`PKIXRevocationChecker`
+закрыл бы две оставшиеся LOW (RFC 5280 §6 path-constraints + revocation
+промежуточных CA), но это архитектурный редизайн с высоким риском GOST-регрессии
+(штатный PKIX-валидатор может не пройти GOST-цепочку НУЦ через Kalkan) ради
+LOW-пунктов без known-эксплойта. Триггер пересмотра — реальное появление
+nameConstraints/policyConstraints у промежуточных CA или требование строгой
+per-request revocation промежуточных CA (см. план, раздел «Триггер пересмотра»).
 
 ## Что не покрыто тестами (≈494 lines)
 

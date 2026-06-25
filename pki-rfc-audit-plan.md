@@ -5,7 +5,10 @@
 `VerificationResponse` отдаёт плоский `valid`, не сообщая, **что именно**
 покрыто подписью.
 
-Легенда статуса: ⬜ TODO · 🔶 в работе · ✅ сделано
+Легенда статуса: ⬜ TODO · 🔶 в работе · ✅ сделано · ⏸️ отложено (с обоснованием)
+
+**Итог ремедиации:** все HIGH/MEDIUM (пункты 1–2) + значимые LOW (пункт 3)
+закрыты. Пункт 4 — осознанно отложен (см. ниже). Сьют 203/0, zero warnings.
 
 ## Пункт 1 — verification-contract в CMS + OCSP responder ✅ ГОТОВО
 
@@ -66,14 +69,52 @@ per-signer; в OCSP — `checkValidity(producedAt)` + учёт `id-pkix-ocsp-noc
 Тесты: +4 `CertificateKeyUsageTest`, +1 `CrlServiceTest` (IDP-critical skip),
 +1 `TsaCertDiagnosticTest` (NCA TSA conformance guard). Сьют 197 → **203**.
 
-## Пункт 4 — редизайн через JDK PKIX (большой, опционально)
+## Пункт 4 — редизайн через JDK PKIX ⏸️ ОТЛОЖЕНО
 
-Прогнать trust-решение через `CertPathValidator` / `PKIXParameters` +
-`PKIXRevocationChecker` с CA-bundle как TrustAnchors. Закрыло бы разом:
-RFC 5280 §6 path validation (basicConstraints/pathLen/nameConstraints,
-LOW), revocation промежуточных CA (LOW), и critical-ext rejection (3.3/3.4).
-Не точечный фикс — отдельное проектное решение.
+**Решение (2026-06): не делаем сейчас.** Это не точечный фикс, а архитектурный
+редизайн с высоким риском регрессии и LOW-выгодой. Оформлено как осознанный
+технический долг.
 
-Подтверждённый нюанс из аудита: §6 — всего LOW, т.к. `getRootCertificateFor`
-требует `cert.verify(root)` против operator-pinned bundle → чужой intermediate
-не подсунуть; не хватает только обработки constraints, а не доверия.
+### Что закрыл бы
+
+Прогон trust-решения через JDK `CertPathValidator` / `PKIXParameters` +
+`PKIXRevocationChecker` (CA-bundle как TrustAnchors) разом закрыл бы две
+оставшиеся **LOW** находки аудита:
+
+| # | Sev | Находка | Где |
+|---|---|---|---|
+| 4.1 | LOW | RFC 5280 §6 path validation не реализован: цепочка не проверяет basicConstraints CA:TRUE / pathLenConstraint / nameConstraints на всех уровнях | `CertificateWrapper.isValid`, `CaService` |
+| 4.2 | LOW | Revocation промежуточных/issuer CA не проверяется per-request (только дата) | `CertificateWrapper.isValid`, `CertificateService.attachValidationData` |
+
+(Critical-ext rejection, которое раньше тоже сюда относили, уже закрыто
+точечно в пункте 3 — для него редизайн не нужен.)
+
+### Почему отложено
+
+1. **Severity — LOW.** Аудит подтвердил: §6 не даёт реальной дыры, потому что
+   `CaService.getRootCertificateFor` уже требует `cert.verify(root)` против
+   **operator-pinned** CA-bundle — чужой/неизвестный intermediate подсунуть
+   нельзя. Не хватает лишь обработки constraints, а не доверия как такового.
+2. **Высокий риск регрессии на GOST.** Стандартный JDK `CertPathValidator`
+   (`PKIX`) опирается на JCA-инфраструктуру алгоритмов. GOST 2015-цепочки НУЦ
+   через Kalkan могут не пройти штатный PKIX-валидатор (algorithm constraints,
+   `AlgorithmId`-маппинги, signature verify через провайдер) — легко получить
+   ложный `valid:false` на полностью валидных подписях. Это переписывает
+   рабочий, протестированный против live test.pki.gov.kz путь верификации.
+3. **Стоимость >> выгода.** Переписать `CertificateWrapper.isValid` + `CaService`
+   на PKIX, аккуратно вживив Kalkan-провайдер и сохранив текущую CAdES-T /
+   темпоральную revocation-логику (#26) — большая работа ради двух LOW-пунктов
+   без known-эксплойта.
+
+### Триггер пересмотра
+
+Браться стоит, только если появится конкретное требование:
+- интеграция с PKI, где реально используются **nameConstraints / policyConstraints**
+  на промежуточных CA (НУЦ РК сейчас их не применяет), **или**
+- требование строгой проверки **отзыва промежуточных CA** на каждый запрос
+  (сейчас покрыто частично через `CaService` CRL-кэш, decoupled от
+  validation-time).
+
+При заходе: делать инкрементально, с feature-flag, прогоняя весь
+integration-сьют против live test.pki.gov.kz на каждом шаге; первым делом —
+PoC, что GOST-цепочка НУЦ вообще проходит JDK `CertPathValidator` с Kalkan.
