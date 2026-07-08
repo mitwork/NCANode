@@ -752,6 +752,13 @@ components:
           format: date-time
         reason:
           type: string
+        result:
+          type: string
+          enum:
+          - ACTIVE
+          - REVOKED
+          - UNKNOWN
+          - UNAVAILABLE
     CertificateSubject:
       type: object
       properties:
@@ -1228,6 +1235,8 @@ components:
           type: string
         digestAlgorithm:
           type: string
+        coversWholeDocument:
+          type: boolean
         valid:
           type: boolean
     PdfVerificationResponse:
