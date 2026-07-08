@@ -15,7 +15,9 @@ import kz.ncanode.dto.certificate.CertificateKeyUsage
 import kz.ncanode.dto.certificate.CertificateKeyUser
 import kz.ncanode.dto.certificate.CertificateRevocationStatus
 import kz.ncanode.dto.certificate.CertificateSubject
+import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.dto.crl.CrlStatus
+import kz.ncanode.dto.ocsp.OcspResult
 import kz.ncanode.dto.ocsp.OcspStatus
 import kz.ncanode.util.createNewUrl
 import kz.ncanode.util.getSignMethodByOID
@@ -151,6 +153,12 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
      * проверяется не бинарно «отозван сейчас?», а темпорально относительно
      * [date]: отзыв, случившийся строго позже [date] по benign-причине, не
      * обесценивает подпись (CAdES-T, см. [kz.ncanode.dto.certificate.RevocationPolicy]).
+     *
+     * Availability: при запрошенных обеих проверках сетевая недоступность всех
+     * OCSP-responder'ов ([OcspResult.UNAVAILABLE]) не роняет верификацию, если
+     * есть свежий CRL-вердикт ACTIVE — OCSP-preferred + CRL-fallback. Ответ
+     * OCSP, которому нельзя верить ([OcspResult.UNKNOWN]), остаётся фатальным.
+     * Деградация видна клиенту через `revocations[].result = UNAVAILABLE`.
      */
     fun isValid(date: Date, checkOcsp: Boolean, checkCrl: Boolean): Boolean {
         if (!isDateValid(date)) return false
@@ -170,11 +178,39 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
         if (!issuer.isDateValid(date)) return false
         if (checkOcsp) {
             val statuses = ocspStatus ?: return false
-            if (!statuses.all { it.isValidAt(date) }) return false
+            // Авторитетный плохой ответ хотя бы от одного responder'а —
+            // fail-closed: REVOKED (непрощённый RevocationPolicy) или UNKNOWN
+            // (ответ есть, но ему нельзя верить: битый nonce/подпись, либо
+            // responder не знает сертификат).
+            if (statuses.any { it.result != OcspResult.UNAVAILABLE && !it.isValidAt(date) }) return false
+            // Хотя бы один responder ответил положительно — OCSP-вердикт есть,
+            // недоступность остальных URL нефатальна.
+            val answered = statuses.any { it.result != OcspResult.UNAVAILABLE }
+            if (!answered) {
+                // Ни одного OCSP-ответа (все URL сетево недоступны, либо URL'ов
+                // не нашлось вовсе). Деградируем на CRL — стандартная модель
+                // OCSP-preferred + CRL-fallback (RFC 5280 §6.3, JDK
+                // PKIXRevocationChecker), но только если клиент запросил и
+                // CRL-проверку, а CRL реально покрывает издателя и актуален
+                // по nextUpdate. Иначе fail-closed, как раньше.
+                val crl = crlStatus
+                val crlRescues = checkCrl && crl != null && crl.result == CrlResult.ACTIVE && crl.fresh
+                if (!crlRescues) return false
+                log.warn(
+                    "OCSP responder(s) unavailable for {}; accepting via fresh CRL fallback",
+                    subjectX500Principal,
+                )
+            }
         }
         if (checkCrl) {
             val status = crlStatus ?: return false
-            if (!status.isValidAt(date)) return false
+            // UNAVAILABLE (нет CRL издателя в кэше / CRL выключен) нефатален:
+            // CA без опубликованного CRL — легитимный случай (легаси-CA), это
+            // сохраняет историческое поведение, когда такой случай молча
+            // проходил как ACTIVE. Но fallback-источником для недоступного
+            // OCSP он быть не может (см. выше — там требуется настоящий
+            // fresh ACTIVE).
+            if (status.result != CrlResult.UNAVAILABLE && !status.isValidAt(date)) return false
         }
         return true
     }

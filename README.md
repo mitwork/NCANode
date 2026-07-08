@@ -23,7 +23,7 @@
 - Подпись WSSE для [SmartBridge](https://sb.egov.kz/)
 - Подпись и верификация PDF (CAdES-T)
 - Кодирование и верификация JWT (алгоритм GG2015)
-- Поддержка OCSP и CRL
+- Поддержка OCSP и CRL (при сетевой недоступности OCSP — автоматический fallback на свежий CRL)
 - Проверка валидности сертификатов (включая цепочку доверия)
 - Поддержка [CMS](https://en.wikipedia.org/wiki/Cryptographic_Message_Syntax)
 - TSP-метки и CAdES-T для CMS / PDF

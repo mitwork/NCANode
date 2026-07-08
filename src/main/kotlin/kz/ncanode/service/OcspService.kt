@@ -80,11 +80,17 @@ class OcspService(
                 val status = processOcspResponse(response, nonce, issuer)
                 statuses.add(status.copy(url = url))
             } catch (e: IOException) {
-                statuses.add(unknownStatus(url, e.message))
+                // Транспортный сбой (сеть/DNS/таймаут) или unparseable body
+                // (OCSPResp тоже кидает IOException на мусоре) — OCSP-ответа
+                // НЕТ ВОВСЕ. Это UNAVAILABLE, а не UNKNOWN: при наличии свежего
+                // CRL верификация может деградировать на него (isValid).
+                statuses.add(unavailableStatus(url, e.message))
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
-                statuses.add(unknownStatus(url, e.message))
+                statuses.add(unavailableStatus(url, e.message))
             } catch (e: OCSPException) {
+                // Ответ был, но обработка/крипто не сошлись — fail-closed,
+                // деградация на CRL не допускается.
                 statuses.add(unknownStatus(url, e.message))
             } catch (e: GeneralSecurityException) {
                 statuses.add(unknownStatus(url, e.message))
@@ -314,6 +320,9 @@ class OcspService(
 
     private fun unknownStatus(url: String? = null, message: String?): OcspStatus =
         OcspStatus(result = OcspResult.UNKNOWN, url = url, message = message)
+
+    private fun unavailableStatus(url: String?, message: String?): OcspStatus =
+        OcspStatus(result = OcspResult.UNAVAILABLE, url = url, message = message)
 
     companion object {
         private val log = LoggerFactory.getLogger(OcspService::class.java)

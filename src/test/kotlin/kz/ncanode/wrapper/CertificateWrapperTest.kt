@@ -224,4 +224,83 @@ class CertificateWrapperTest : FunSpec({
         )
         cert.isValid(signingTime, checkOcsp = false, checkCrl = true) shouldBe false
     }
+
+    // --- isValid: OCSP UNAVAILABLE → CRL fallback (availability-деградация) ---
+    //
+    // Сетевая недоступность OCSP-responder'а (UNAVAILABLE) не роняет верификацию,
+    // если запрошены обе проверки и есть СВЕЖИЙ CRL-вердикт ACTIVE. Любой
+    // авторитетный плохой ответ (UNKNOWN, непрощённый REVOKED) остаётся фатальным.
+
+    test("isValid: OCSP unavailable + fresh CRL ACTIVE falls back to valid") {
+        val (cert, date) = signedCertWithIssuer()
+        cert.ocspStatus = listOf(OcspStatus(result = OcspResult.UNAVAILABLE, message = "network down"))
+        cert.crlStatus = CrlStatus(result = CrlResult.ACTIVE, fresh = true)
+        cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe true
+    }
+
+    test("isValid: OCSP unavailable + stale CRL ACTIVE is invalid") {
+        // Протухший по nextUpdate CRL не может единолично реабилитировать cert:
+        // окно false-valid при долгом падении OCSP должно быть ограничено.
+        val (cert, date) = signedCertWithIssuer()
+        cert.ocspStatus = listOf(OcspStatus(result = OcspResult.UNAVAILABLE))
+        cert.crlStatus = CrlStatus(result = CrlResult.ACTIVE, fresh = false)
+        cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe false
+    }
+
+    test("isValid: OCSP unavailable + CRL UNAVAILABLE is invalid") {
+        // Оба канала недоступны — реабилитировать нечем, fail-closed.
+        val (cert, date) = signedCertWithIssuer()
+        cert.ocspStatus = listOf(OcspStatus(result = OcspResult.UNAVAILABLE))
+        cert.crlStatus = CrlStatus(result = CrlResult.UNAVAILABLE)
+        cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe false
+    }
+
+    test("isValid: OCSP unavailable without CRL check requested is invalid") {
+        // Строгий OCSP-only режим (revocationCheck=[OCSP]): fallback'а некуда,
+        // недоступность фатальна — прежнее поведение.
+        val (cert, date) = signedCertWithIssuer()
+        cert.ocspStatus = listOf(OcspStatus(result = OcspResult.UNAVAILABLE))
+        cert.isValid(date, checkOcsp = true, checkCrl = false) shouldBe false
+    }
+
+    test("isValid: OCSP UNKNOWN is fatal even with fresh CRL ACTIVE") {
+        // UNKNOWN = ответ получен, но доверия нет (nonce/подпись/статус) —
+        // security fail-closed, деградация на CRL запрещена.
+        val (cert, date) = signedCertWithIssuer()
+        cert.ocspStatus = listOf(OcspStatus(result = OcspResult.UNKNOWN))
+        cert.crlStatus = CrlStatus(result = CrlResult.ACTIVE, fresh = true)
+        cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe false
+    }
+
+    test("isValid: mixed OCSP [ACTIVE, UNAVAILABLE] is valid — one answer suffices") {
+        // Один responder ответил положительно, второй недоступен: OCSP-вердикт
+        // есть, недоступность остальных URL нефатальна.
+        val (cert, date) = signedCertWithIssuer()
+        cert.ocspStatus = listOf(
+            OcspStatus(result = OcspResult.ACTIVE),
+            OcspStatus(result = OcspResult.UNAVAILABLE),
+        )
+        cert.isValid(date, checkOcsp = true, checkCrl = false) shouldBe true
+    }
+
+    test("isValid: CRL UNAVAILABLE alone is non-fatal (legacy CA without published CRL)") {
+        // Историческое поведение: cert от CA без опубликованного CRL молча
+        // проходил CRL-проверку. UNAVAILABLE сохраняет это, честно отражаясь
+        // в revocations[] вместо фиктивного ACTIVE.
+        val (cert, date) = signedCertWithIssuer()
+        cert.crlStatus = CrlStatus(result = CrlResult.UNAVAILABLE)
+        cert.isValid(date, checkOcsp = false, checkCrl = true) shouldBe true
+    }
+
+    test("isValid: empty OCSP status list needs CRL fallback (no responder URLs at all)") {
+        // Пустой список = ни одного URL (нет AIA и конфиг пуст) — ответа нет,
+        // как и при недоступности. Раньше пустой список проходил вакуумно
+        // (all{} == true); теперь требуется fallback-основание.
+        val (cert, date) = signedCertWithIssuer()
+        cert.ocspStatus = emptyList()
+        cert.crlStatus = CrlStatus(result = CrlResult.ACTIVE, fresh = true)
+        cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe true
+        cert.crlStatus = CrlStatus(result = CrlResult.UNAVAILABLE)
+        cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe false
+    }
 })

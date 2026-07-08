@@ -25,6 +25,8 @@ import java.util.Date
  * Покрывает:
  *  - REVOKED для отозванного сертификата (`individual_revoked.p12` есть в CRL),
  *  - ACTIVE для валидного (`individual_valid.p12`),
+ *  - UNAVAILABLE, когда проверять нечем (выключен / чужой CA / отброшенные CRL),
+ *  - freshness ACTIVE-вердикта по nextUpdate (основа OCSP→CRL fallback'а),
  *  - short-circuit на `isEnabled=false` — verify не должен трогать диск.
  */
 class CrlServiceTest : FunSpec({
@@ -142,9 +144,10 @@ class CrlServiceTest : FunSpec({
 
     test("verify() ignores CRL issued by a different CA") {
         // Подсовываем CRL под full с правильной структурой, но другим issuer'ом
-        // (не тем, что выпустил cert). CrlService должен его пропустить
-        // и вернуть ACTIVE — иначе бы серийник из чужого CRL мог случайно
-        // совпасть с серийником из нашего CA и ложно отозвать валидный cert.
+        // (не тем, что выпустил cert). CrlService должен его пропустить —
+        // иначе бы серийник из чужого CRL мог случайно совпасть с серийником
+        // из нашего CA и ложно отозвать валидный cert. Раз других CRL нет,
+        // итог — UNAVAILABLE («проверить было нечем»), не фиктивный ACTIVE.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
@@ -171,7 +174,7 @@ class CrlServiceTest : FunSpec({
         }
         every { service.loadCrl(mockFile) } returns foreignCrl
 
-        service.verify(cert).result shouldBe CrlResult.ACTIVE
+        service.verify(cert).result shouldBe CrlResult.UNAVAILABLE
         // isRevoked даже не должен был быть вызван — issuer-фильтр срабатывает раньше.
         verify(exactly = 0) { foreignCrl.isRevoked(any<java.security.cert.X509Certificate>()) }
     }
@@ -207,18 +210,84 @@ class CrlServiceTest : FunSpec({
         }
         every { service.loadCrl(mockFile) } returns criticalCrl
 
-        service.verify(cert).result shouldBe CrlResult.ACTIVE
+        // Единственный CRL отброшен → проверять было нечем → UNAVAILABLE.
+        service.verify(cert).result shouldBe CrlResult.UNAVAILABLE
         // CRL пропущен до isRevoked-проверки.
         verify(exactly = 0) { criticalCrl.isRevoked(any<java.security.cert.X509Certificate>()) }
     }
 
-    test("verify() short-circuits to ACTIVE when CRL feature disabled — no disk reads") {
+    // Хелпер для freshness-тестов: сервис с одним mock-CRL от issuer'а cert'а,
+    // не содержащим его серийник, с управляемым nextUpdate.
+    fun serviceWithSingleCrl(cert: kz.ncanode.wrapper.CertificateWrapper, crlNextUpdate: Date?): CrlService {
+        val crl = mockk<X509CRL>(relaxed = true).apply {
+            every { issuerX500Principal } returns cert.x509Certificate.issuerX500Principal
+            every { isRevoked(any<java.security.cert.X509Certificate>()) } returns false
+            every { nextUpdate } returns crlNextUpdate
+        }
+        val mockFile = mockCrlFile("freshness")
+        val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
+            every { isEnabled } returns true
+            every { isCacheEnabled } returns false
+            every { ttl } returns null
+            every { urlList } returns emptyMap()
+            every { delta } returns null
+        }
+        val service = spyk(
+            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), HttpClientConfiguration(), mockk(relaxed = true), "test")
+        )
+        every { service.getCrlFiles(any()) } answers {
+            if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()
+        }
+        every { service.loadCrl(mockFile) } returns crl
+        return service
+    }
+
+    test("verify() marks ACTIVE as fresh when CRL nextUpdate is in the future") {
+        // Свежий ACTIVE — единственный вердикт, годный как fallback-источник
+        // при недоступном OCSP (CertificateWrapper.isValid).
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val status = serviceWithSingleCrl(ks.certificate, Date(System.currentTimeMillis() + 86_400_000L))
+            .verify(ks.certificate)
+        status.result shouldBe CrlResult.ACTIVE
+        status.fresh shouldBe true
+    }
+
+    test("verify() marks ACTIVE as stale when CRL nextUpdate has passed") {
+        // Протухший CRL остаётся детектором отзыва в AND-режиме, но его
+        // ACTIVE не может единолично реабилитировать cert при упавшем OCSP.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val status = serviceWithSingleCrl(ks.certificate, Date(System.currentTimeMillis() - 86_400_000L))
+            .verify(ks.certificate)
+        status.result shouldBe CrlResult.ACTIVE
+        status.fresh shouldBe false
+    }
+
+    test("verify() marks ACTIVE as stale when CRL has no nextUpdate (nonconforming)") {
+        // RFC 5280 §5.1.2.5 требует nextUpdate; его отсутствие трактуем
+        // консервативно — CRL непригоден как fallback-основание.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val status = serviceWithSingleCrl(ks.certificate, null).verify(ks.certificate)
+        status.result shouldBe CrlResult.ACTIVE
+        status.fresh shouldBe false
+    }
+
+    test("verify() short-circuits to UNAVAILABLE when CRL feature disabled — no disk reads") {
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_revoked.p12"),
             null, TestResources.P12_PASSWORD,
         )
         val service = buildService(crlEnabled = false)
-        service.verify(ks.certificate).result shouldBe CrlResult.ACTIVE
+        // Выключенный CRL — «проверки не было», а не «проверено и чисто».
+        service.verify(ks.certificate).result shouldBe CrlResult.UNAVAILABLE
         // isEnabled=false должен выйти до первого I/O. getCrlFiles не должен
         // быть вызван — иначе мы платим за листинг каталогов в hot path
         // верификации каждого подписанта при выключенной фиче.

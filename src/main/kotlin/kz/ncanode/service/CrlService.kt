@@ -211,14 +211,24 @@ open class CrlService(
      * Проверка сертификата в CRL.
      *
      * Применяются только CRL'и, выпущенные тем же CA, что и проверяемый
-     * сертификат, не истёкшие по `nextUpdate` и с валидной подписью
-     * издателя (если у нас есть его публичный ключ). Без этих фильтров серийник
-     * сертификата мог бы случайно совпасть с серийником из CRL другого CA, или
-     * злонамеренно подложенный CRL ложно отозвал бы валидный сертификат.
+     * сертификат, и с валидной подписью издателя (если у нас есть его
+     * публичный ключ). Без этих фильтров серийник сертификата мог бы случайно
+     * совпасть с серийником из CRL другого CA, или злонамеренно подложенный
+     * CRL ложно отозвал бы валидный сертификат.
+     *
+     * Возможные исходы:
+     *  - [CrlResult.REVOKED] — серийник найден в пригодном CRL издателя;
+     *  - [CrlResult.ACTIVE] — хотя бы один пригодный CRL издателя проверен,
+     *    серийника там нет. `fresh=true`, если среди проверенных был CRL,
+     *    актуальный по `nextUpdate` — только такой ACTIVE годится как
+     *    fallback при недоступном OCSP;
+     *  - [CrlResult.UNAVAILABLE] — проверить было нечем (CRL выключен, нет
+     *    CRL этого издателя, все отброшены фильтрами). Это честное «проверки
+     *    не было» вместо прежнего фиктивного ACTIVE.
      */
     fun verify(cert: CertificateWrapper): CrlStatus {
         if (!crlConfiguration.isEnabled) {
-            return CrlStatus(result = CrlResult.ACTIVE)
+            return CrlStatus(result = CrlResult.UNAVAILABLE, reason = "CRL check is disabled")
         }
 
         val certIssuer = cert.issuerX500Principal
@@ -236,6 +246,13 @@ open class CrlService(
         // тогда основной цикл ниже их подхватит. Конфиг-CRL'и продолжают
         // обслуживаться schedule'ом и тоже остаются в cache (см. updateCache).
         fetchOnDemandCrls(cert)
+
+        // Сколько пригодных CRL издателя реально проверено — отличает честный
+        // ACTIVE от «ни одного CRL не нашлось» (UNAVAILABLE). Отдельно следим,
+        // был ли среди них свежий по nextUpdate — только такой ACTIVE может
+        // служить fallback'ом при недоступном OCSP.
+        var consultedAny = false
+        var consultedFresh = false
 
         for (cacheDirectory in listOf(cacheDeltaDir(), cacheFullDir(), cacheOnDemandDir())) {
             for (crlFile in getCrlFiles(cacheDirectory)) {
@@ -302,6 +319,13 @@ open class CrlService(
                     )
                 }
 
+                consultedAny = true
+                // RFC 5280 §5.1.2.5 требует nextUpdate у conforming CRL;
+                // отсутствие поля трактуем консервативно — как несвежий.
+                if (crl.nextUpdate != null && !crl.nextUpdate.before(now)) {
+                    consultedFresh = true
+                }
+
                 if (crl.isRevoked(cert.x509Certificate)) {
                     val entry = crl.getRevokedCertificate(cert.x509Certificate)
                     return if (entry != null) {
@@ -318,7 +342,14 @@ open class CrlService(
             }
         }
 
-        return CrlStatus(result = CrlResult.ACTIVE)
+        return if (consultedAny) {
+            CrlStatus(result = CrlResult.ACTIVE, fresh = consultedFresh)
+        } else {
+            CrlStatus(
+                result = CrlResult.UNAVAILABLE,
+                reason = "No trusted CRL for certificate issuer in cache",
+            )
+        }
     }
 
     /**

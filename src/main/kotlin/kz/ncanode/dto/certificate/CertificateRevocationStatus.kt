@@ -7,4 +7,5 @@ data class CertificateRevocationStatus(
     val by: CertificateRevocation? = null,
     val revocationTime: Date? = null,
     val reason: String? = null,
+    val result: RevocationResult? = null,
 )

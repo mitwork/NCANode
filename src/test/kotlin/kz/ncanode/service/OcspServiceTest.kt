@@ -23,8 +23,9 @@ import java.net.http.HttpResponse
  * Покрывает:
  *  - generateOcspNonce(): длина (RFC 8954 ≥ 16 байт), entropy.
  *  - verify() с null-issuer'ом — короткий путь UNKNOWN.
- *  - verify() при сетевой ошибке — UNKNOWN, без проброса исключения.
- *  - verify() при мусоре в HTTP-ответе — UNKNOWN, без падения.
+ *  - verify() при сетевой ошибке — UNAVAILABLE (транспортный сбой, допускает
+ *    CRL-fallback), без проброса исключения.
+ *  - verify() при мусоре в HTTP-ответе — UNAVAILABLE, без падения.
  *
  * Положительные ветки (ACTIVE / REVOKED / UNKNOWN на nonce mismatch)
  * требуют валидного OCSP-ответа от test.pki.gov.kz и покрываются
@@ -70,10 +71,11 @@ class OcspServiceTest : FunSpec({
         statuses[0].message!! shouldContain "root certificate"
     }
 
-    test("verify() returns UNKNOWN when HTTP layer throws IOException") {
+    test("verify() returns UNAVAILABLE when HTTP layer throws IOException") {
         // Network outage / responder offline / DNS fail — verify не должен
         // пробрасывать исключение наружу (это сломало бы любой verify-call
-        // CMS/XML/etc.). Ожидаем UNKNOWN со страховочным месседжем.
+        // CMS/XML/etc.). Ожидаем UNAVAILABLE: ответа нет вовсе — в отличие
+        // от UNKNOWN (недоверенный ответ) допускается CRL-fallback.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
@@ -86,12 +88,16 @@ class OcspServiceTest : FunSpec({
 
         val statuses = service.verify(ks.certificate, issuer)
         statuses shouldHaveSize 1
-        statuses[0].result shouldBe OcspResult.UNKNOWN
+        statuses[0].result shouldBe OcspResult.UNAVAILABLE
     }
 
-    test("verify() returns UNKNOWN when HTTP body is malformed OCSP response") {
+    test("verify() returns UNAVAILABLE when HTTP body is malformed OCSP response") {
         // Что-то перехватило HTTP / responder вернул HTML 500 / proxy
-        // подменил body. Парсер OCSPResp бросит, verify должен это поглотить.
+        // подменил body. Парсер OCSPResp бросит IOException, verify должен
+        // это поглотить. Классифицируется как UNAVAILABLE (транспорт/парс =
+        // ответа не было), не UNKNOWN: атакующий, способный подменить body,
+        // способен и просто заблокировать соединение — разницы в модели
+        // угроз нет, а окно fallback'а ограничено freshness CRL.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
@@ -107,6 +113,6 @@ class OcspServiceTest : FunSpec({
 
         val statuses = service.verify(ks.certificate, issuer)
         statuses shouldHaveSize 1
-        statuses[0].result shouldBe OcspResult.UNKNOWN
+        statuses[0].result shouldBe OcspResult.UNAVAILABLE
     }
 })

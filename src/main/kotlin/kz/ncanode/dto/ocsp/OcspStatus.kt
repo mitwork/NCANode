@@ -3,6 +3,7 @@ package kz.ncanode.dto.ocsp
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.certificate.CertificateRevocationStatus
 import kz.ncanode.dto.certificate.RevocationPolicy
+import kz.ncanode.dto.certificate.RevocationResult
 import java.security.cert.CRLReason
 import java.util.Date
 
@@ -18,8 +19,10 @@ data class OcspStatus(
      * по данным этого OCSP-ответа (CAdES-T).
      *
      * `ACTIVE` — да. `REVOKED` — да только если отзыв произошёл строго после
-     * [signingTime] и по benign-причине (см. [RevocationPolicy]). `UNKNOWN`
-     * и отсутствие времени отзыва — консервативно нет.
+     * [signingTime] и по benign-причине (см. [RevocationPolicy]). `UNKNOWN`,
+     * `UNAVAILABLE` и отсутствие времени отзыва — консервативно нет
+     * (возможность деградации UNAVAILABLE→CRL решается уровнем выше,
+     * в `CertificateWrapper.isValid`, а не здесь).
      */
     fun isValidAt(signingTime: Date): Boolean = when (result) {
         OcspResult.ACTIVE -> true
@@ -36,6 +39,14 @@ data class OcspStatus(
         revocationTime = revocationTime,
         by = CertificateRevocation.OCSP,
         reason = mapReason(),
+        result = when (result) {
+            OcspResult.ACTIVE -> RevocationResult.ACTIVE
+            OcspResult.REVOKED -> RevocationResult.REVOKED
+            OcspResult.UNAVAILABLE -> RevocationResult.UNAVAILABLE
+            // null result — ответа не было по неустановленной причине,
+            // консервативно UNKNOWN.
+            else -> RevocationResult.UNKNOWN
+        },
     )
 
     /**

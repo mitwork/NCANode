@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 203 теста / **76% coverage**.
+- **Состояние v4:** functional + 214 тестов / **76% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -122,7 +122,7 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-203 теста / **76% line coverage**.
+214 тестов / **76% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -149,7 +149,7 @@ REVOKED-ветка покрывается через mock'нутый `X509CRL`, 
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 203 теста + JaCoCo report
+./gradlew test                   # 214 тестов + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -482,6 +482,43 @@ Multi-agent аудит всей PKI-логики на соответствие R
 LOW-пунктов без known-эксплойта. Триггер пересмотра — реальное появление
 nameConstraints/policyConstraints у промежуточных CA или требование строгой
 per-request revocation промежуточных CA (см. план, раздел «Триггер пересмотра»).
+
+### 28. OCSP→CRL fallback при сетевой недоступности OCSP (без конфиг-флага)
+Мотивация: реальные проблемы с availability OCSP у пользователя; строгий AND
+(`revocationCheck: [OCSP, CRL]`) ронял verify при упавшем OCSP, хотя валидный
+CRL лежал в кэше. Дизайн (июль 2026):
+
+- **`OcspResult.UNAVAILABLE` ≠ `UNKNOWN`.** UNAVAILABLE — транспортный сбой
+  (IOException/InterruptedException в `OcspService.verify`, включая unparseable
+  body: `OCSPResp(garbage)` кидает IOException) — ответа НЕТ ВОВСЕ. UNKNOWN —
+  ответ есть, но доверия нет (nonce mismatch, битая подпись, статус != 0) —
+  security fail-closed, fallback ЗАПРЕЩЁН (иначе MITM выталкивал бы verify
+  на отстающий CRL).
+- **`CrlResult.UNAVAILABLE`** — «проверять было нечем»: CRL выключен конфигом,
+  нет CRL издателя в кэше, все сматчившиеся отброшены фильтрами. Заменяет
+  прежний фиктивный `ACTIVE` в этих случаях. В AND-режиме НЕфатален
+  (легаси-CA без CRL — легитимный случай, сохранена старая семантика), но
+  fallback-источником быть не может. `CaService` не задет — он сверяет
+  только `== REVOKED`.
+- **`CrlStatus.fresh`** — ACTIVE опирается хотя бы на один CRL с
+  `nextUpdate >= now`. Fallback принимает ТОЛЬКО fresh ACTIVE — протухший CRL
+  остаётся детектором отзыва, но не единоличным основанием валидности.
+  `nextUpdate == null` → не fresh (консервативно, RFC 5280 §5.1.2.5).
+- **Матрица в `CertificateWrapper.isValid`**: любой авторитетный плохой OCSP
+  (UNKNOWN / непрощённый REVOKED) → invalid; хотя бы один ACTIVE → OCSP-вердикт
+  есть (UNAVAILABLE остальных URL нефатален); ВСЕ UNAVAILABLE (или пустой
+  список — раньше проходил вакуумно через `all{}`) → valid только если
+  `checkCrl && crlStatus.result == ACTIVE && fresh`.
+- **Без конфиг-флага, осознанно**: установленной базы v4 нет, поведение —
+  дефолт эталонных реализаций (JDK `PKIXRevocationChecker`); ограничивающий
+  флаг добавить потом обратно-совместимо, менять default — нет. Строгость
+  доступна клиенту: `revocations[].result` (`RevocationResult` enum, новое
+  поле в `CertificateRevocationStatus`) показывает UNAVAILABLE — старый AND =
+  `valid && revocations.none { result == UNAVAILABLE }`; либо
+  `revocationCheck: [OCSP]` (OCSP-only, UNAVAILABLE фатален — некуда падать).
+- Покрытие: fallback-матрица в `CertificateWrapperTest` (8 кейсов), freshness
+  в `CrlServiceTest` (3), реклассификация сетевых ошибок в `OcspServiceTest`.
+  Docs: `docs/_tabs/docs.md`, раздел «Проверка отзыва сертификатов».
 
 ## Что не покрыто тестами (≈494 lines)
 
