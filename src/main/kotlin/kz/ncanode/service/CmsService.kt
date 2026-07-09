@@ -1,7 +1,5 @@
 package kz.ncanode.service
 
-import kz.gov.pki.kalkan.asn1.cms.Attribute
-import kz.gov.pki.kalkan.asn1.pkcs.PKCSObjectIdentifiers
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.gov.pki.kalkan.jce.provider.cms.CMSException
 import kz.gov.pki.kalkan.jce.provider.cms.CMSProcessableByteArray
@@ -46,7 +44,6 @@ import java.security.cert.CollectionCertStoreParameters
 import java.security.cert.X509Certificate
 import java.util.Base64
 import java.util.Date
-import java.util.Vector
 
 @Service
 class CmsService(
@@ -72,28 +69,12 @@ class CmsService(
 
             addSignersToCmsGenerator(generator, data, certificates, cmsCreateRequest.signers)
 
-            val chainStore = CertStore.getInstance(
-                "Collection",
-                // если происходит повторная подпись, сертификаты могут дублироваться.
-                // добавим в chainStore только уникальные сертификаты.
-                CollectionCertStoreParameters(certificates),
-                KalkanProvider.PROVIDER_NAME,
+            val signed = generateSignedCms(
+                generator, cmsData, certificates,
+                detached = cmsCreateRequest.isDetached,
+                withTsp = cmsCreateRequest.isWithTsp,
+                tsaPolicy = cmsCreateRequest.tsaPolicy,
             )
-
-            generator.addCertificatesAndCRLs(chainStore)
-            var signed = generator.generate(cmsData, !cmsCreateRequest.isDetached, KalkanProvider.PROVIDER_NAME)
-
-            // TSP
-            if (cmsCreateRequest.isWithTsp) {
-                val useTsaPolicy = cmsCreateRequest.tsaPolicy?.policyId ?: TsaPolicy.TSA_GOST2015_POLICY.policyId
-
-                val updated = signed.signerInfos.signers.mapIndexed { i, signerObj ->
-                    val cert = certificates[i]
-                    tspService.addTspToSigner(signerObj as SignerInformation, cert, useTsaPolicy)
-                }
-
-                signed = CMSSignedData.replaceSigners(signed, SignerInformationStore(updated))
-            }
 
             return CmsResponse(cms = Base64.getEncoder().encodeToString(signed.encoded))
         } catch (e: ApplicationException) {
@@ -163,29 +144,15 @@ class CmsService(
             val certificates = getCertificatesFromCmsSignedData(cms)
             addSignersToCmsGenerator(generator, decodedData, certificates, cmsCreateRequest.signers)
 
-            val chainStore = CertStore.getInstance(
-                "Collection",
-                CollectionCertStoreParameters(certificates.distinct()),
-                KalkanProvider.PROVIDER_NAME,
+            val signed = generateSignedCms(
+                generator, cmsData, certificates,
+                detached = cmsCreateRequest.isDetached,
+                withTsp = cmsCreateRequest.isWithTsp,
+                tsaPolicy = cmsCreateRequest.tsaPolicy,
+                // Нельзя перезатирать TSP у предыдущих подписантов: старым метку
+                // не ставим, новым ставим.
+                skipTspFor = { signer -> isSignerSameAsPrevious(signer, cms) },
             )
-            generator.addCertificatesAndCRLs(chainStore)
-            var signed = generator.generate(cmsData, !cmsCreateRequest.isDetached, KalkanProvider.PROVIDER_NAME)
-
-            // TSP
-            if (cmsCreateRequest.isWithTsp) {
-                val useTsaPolicy = cmsCreateRequest.tsaPolicy?.policyId ?: TsaPolicy.TSA_GOST2015_POLICY.policyId
-
-                val updated = signed.signerInfos.signers.mapIndexed { i, signerObj ->
-                    val signer = signerObj as SignerInformation
-                    val cert = certificates[i]
-                    // Нельзя перезатирать TSP у предыдущих подписантов: старых
-                    // оставляем без изменений, новым ставим TSP.
-                    if (isSignerSameAsPrevious(signer, cms)) signer
-                    else tspService.addTspToSigner(signer, cert, useTsaPolicy)
-                }
-
-                signed = CMSSignedData.replaceSigners(signed, SignerInformationStore(updated))
-            }
 
             return CmsResponse(cms = Base64.getEncoder().encodeToString(signed.encoded))
         } catch (e: ApplicationException) {
@@ -195,6 +162,43 @@ class CmsService(
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
+    }
+
+    /**
+     * Собирает подписанный CMS: chainStore из [certificates], generate, и (если
+     * [withTsp]) добавляет TSP-метку каждому подписанту, для которого
+     * [skipTspFor] = false. Общая часть [create] и [addSigners]; TSP индексируется
+     * по позиции подписанта в [certificates] (создание/добавление сохраняют
+     * порядок cert ↔ signer).
+     */
+    private fun generateSignedCms(
+        generator: CMSSignedDataGenerator,
+        cmsData: CMSProcessableByteArray,
+        certificates: List<X509Certificate>,
+        detached: Boolean,
+        withTsp: Boolean,
+        tsaPolicy: TsaPolicy?,
+        skipTspFor: (SignerInformation) -> Boolean = { false },
+    ): CMSSignedData {
+        val chainStore = CertStore.getInstance(
+            "Collection",
+            // Уникальные сертификаты: при re-sign они могут дублироваться.
+            CollectionCertStoreParameters(certificates.distinct()),
+            KalkanProvider.PROVIDER_NAME,
+        )
+        generator.addCertificatesAndCRLs(chainStore)
+        var signed = generator.generate(cmsData, !detached, KalkanProvider.PROVIDER_NAME)
+
+        if (withTsp) {
+            val useTsaPolicy = tsaPolicy?.policyId ?: TsaPolicy.TSA_GOST2015_POLICY.policyId
+            val updated = signed.signerInfos.signers.mapIndexed { i, signerObj ->
+                val signer = signerObj as SignerInformation
+                if (skipTspFor(signer)) signer
+                else tspService.addTspToSigner(signer, certificates[i], useTsaPolicy)
+            }
+            signed = CMSSignedData.replaceSigners(signed, SignerInformationStore(updated))
+        }
+        return signed
     }
 
     private fun isSignerSameAsPrevious(signer: SignerInformation, cms: CMSSignedData): Boolean =
@@ -307,22 +311,14 @@ class CmsService(
         // метки, даже если к моменту верификации истёк.
         var validationDate = currentDate
 
-        val unsignedAttrs = signer.unsignedAttributes?.toHashtable()
-        if (unsignedAttrs != null && unsignedAttrs.containsKey(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken)) {
-            val attr = when (val obj = unsignedAttrs[PKCSObjectIdentifiers.id_aa_signatureTimeStampToken]) {
-                is Vector<*> -> obj[0] as Attribute
-                else -> obj as Attribute
-            }
-            if (attr.attrValues.size() != 1) {
-                throw Exception("Too many TSP tokens")
-            }
-            val tspCms = CMSSignedData(attr.attrValues.getObjectAt(0).derObject.encoded)
-
+        if (tspService.hasTimestampAttribute(signer)) {
             // Строгая проверка TSP (подпись TSA, messageImprint, EKU, валидность
-            // цепочки TSA на genTime). Метку добавил подписант — если она не
-            // проходит, откатываться на currentDate нельзя: либо метка подделана,
-            // либо TSA не доверенна — вся подпись невалидна (CAdES-T strict).
-            val tspi = tspService.verify(tspCms, signer.signature, checkOcsp, checkCrl)
+            // цепочки TSA на genTime). Метку добавил подписант — если её не
+            // удалось извлечь (нет ровно одного токена) или она не прошла проверку,
+            // откатываться на currentDate нельзя: вся подпись невалидна (CAdES-T
+            // strict).
+            val tspCms = tspService.extractTimestampToken(signer)
+            val tspi = tspCms?.let { tspService.verify(it, signer.signature, checkOcsp, checkCrl) }
             if (tspi != null) {
                 try {
                     tspInfo = TspInfo(

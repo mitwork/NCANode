@@ -1,7 +1,5 @@
 package kz.ncanode.service
 
-import kz.gov.pki.kalkan.asn1.cms.Attribute
-import kz.gov.pki.kalkan.asn1.pkcs.PKCSObjectIdentifiers
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.gov.pki.kalkan.jce.provider.cms.CMSProcessableByteArray
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedData
@@ -43,7 +41,6 @@ import java.security.cert.X509Certificate
 import java.util.Base64
 import java.util.Calendar
 import java.util.Date
-import java.util.Vector
 
 @Service
 class PdfService(
@@ -222,61 +219,27 @@ class PdfService(
             val signedData = CMSSignedData(CMSProcessableByteArray(signedContent), signatureContent)
             @Suppress("UNCHECKED_CAST")
             val signers = signedData.signerInfos.signers as Collection<SignerInformation>
-
-            var valid = false
-            var certificateWrapper: CertificateWrapper? = null
-            var digestAlgReported: String? = null
-
             val certStore = signedData.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME)
             val withOcsp = pdfVerifyRequest.checkOcsp
             val withCrl = pdfVerifyRequest.checkCrl
             val now = Date()
+
+            // Ищем первого полностью валидного подписанта. Непригодный signer →
+            // пробуем следующего; cert/validationDate ПОСЛЕДНЕЙ попытки (даже
+            // провальной по trust) отражаются в ответе — исходная семантика.
+            var valid = false
+            var certificateWrapper: CertificateWrapper? = null
             var validationDate = now
-
+            var digestAlgReported: String? = null
             for (si in signers) {
-                val certCollection = certStore.getCertificates(si.sid)
-                if (certCollection == null || certCollection.isEmpty()) continue
-
-                val x509 = certCollection.iterator().next() as X509Certificate
-
-                // 3) Cryptographic verification of CMS signature using Kalkan provider
-                if (!si.verify(x509.publicKey, KalkanProvider.PROVIDER_NAME)) continue
-
-                // 3a) CAdES-T: если у подписанта есть signature-timestamp, проверяем его
-                // и используем genTime метки как "момент истины" для проверки срока
-                // действия сертификата (RFC 5126). Иначе подпись с истёкшим cert'ом
-                // и валидной TSP-меткой считалась бы невалидной — что неверно.
-                validationDate = now
-                val verifiedTsp = extractAndVerifyTsp(si, withOcsp, withCrl)
-                when {
-                    verifiedTsp != null && verifiedTsp.genTime != null -> validationDate = verifiedTsp.genTime
-                    hasTspAttribute(si) -> {
-                        // TSP заявлен подписантом, но не прошёл строгую проверку —
-                        // в CAdES-T это делает всю подпись невалидной.
-                        log.warn("PDF signer has TSP attribute but verification failed")
-                        continue
-                    }
+                val attempt = verifyPdfSigner(si, certStore, withOcsp, withCrl, now) ?: continue
+                certificateWrapper = attempt.certificate
+                validationDate = attempt.validationDate
+                if (attempt.valid) {
+                    valid = true
+                    digestAlgReported = attempt.digest
+                    break
                 }
-
-                // 4) Trust + revocation validation via CertificateService
-                certificateWrapper = CertificateWrapper(x509)
-                certificateService.attachValidationData(certificateWrapper, withOcsp, withCrl)
-
-                if (!certificateWrapper.isValid(validationDate, withOcsp, withCrl)) {
-                    // Keep looping if multiple signer infos exist; otherwise report invalid
-                    continue
-                }
-
-                // If we reached here → both CMS signature and trust checks are OK
-                valid = true
-
-                // 5) Record digest OID (if you want to surface it)
-                digestAlgReported = try {
-                    si.digestAlgOID
-                } catch (e: Exception) {
-                    null
-                }
-                break
             }
 
             return PdfSignerInfo(
@@ -299,14 +262,54 @@ class PdfService(
         }
     }
 
+    private data class PdfSignerAttempt(
+        val valid: Boolean,
+        val certificate: CertificateWrapper,
+        val validationDate: Date,
+        val digest: String?,
+    )
+
     /**
-     * Проверяет, есть ли у подписанта прицепленная TSP-метка времени.
-     * Используется чтобы отличить "TSP не было" (валидная BES-подпись)
-     * от "TSP был, но не прошёл проверку" (невалидная T-подпись).
+     * Попытка проверить одного CMS-подписанта PDF. `null` — signer непригоден
+     * (нет cert'а / не прошёл криптопроверку / TSP заявлен, но не прошёл): цикл
+     * пробует следующего. Иначе результат с флагом [PdfSignerAttempt.valid]
+     * (true — крипто+TSP+trust ОК; false — trust не прошёл, но cert записан).
      */
-    private fun hasTspAttribute(si: SignerInformation): Boolean {
-        val unsigned = si.unsignedAttributes ?: return false
-        return unsigned.toHashtable().containsKey(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken)
+    private fun verifyPdfSigner(
+        si: SignerInformation,
+        certStore: CertStore,
+        withOcsp: Boolean,
+        withCrl: Boolean,
+        now: Date,
+    ): PdfSignerAttempt? {
+        val certCollection = certStore.getCertificates(si.sid)
+        if (certCollection == null || certCollection.isEmpty()) return null
+        val x509 = certCollection.iterator().next() as X509Certificate
+
+        // Криптопроверка подписи CMS через Kalkan.
+        if (!si.verify(x509.publicKey, KalkanProvider.PROVIDER_NAME)) return null
+
+        // CAdES-T: при валидной TSP-метке её genTime — "момент истины" для срока
+        // действия cert'а (RFC 5126). TSP заявлен, но не прошёл → подпись невалидна.
+        var validationDate = now
+        val verifiedTsp = extractAndVerifyTsp(si, withOcsp, withCrl)
+        when {
+            verifiedTsp != null && verifiedTsp.genTime != null -> validationDate = verifiedTsp.genTime
+            tspService.hasTimestampAttribute(si) -> {
+                log.warn("PDF signer has TSP attribute but verification failed")
+                return null
+            }
+        }
+
+        // Trust + revocation.
+        val certificateWrapper = CertificateWrapper(x509)
+        certificateService.attachValidationData(certificateWrapper, withOcsp, withCrl)
+        if (!certificateWrapper.isValid(validationDate, withOcsp, withCrl)) {
+            return PdfSignerAttempt(false, certificateWrapper, validationDate, digest = null)
+        }
+
+        val digest = try { si.digestAlgOID } catch (e: Exception) { null }
+        return PdfSignerAttempt(true, certificateWrapper, validationDate, digest)
     }
 
     /**
@@ -315,24 +318,11 @@ class PdfService(
      * проверки прошли (подпись TSA, messageImprint, EKU, валидность цепочки
      * TSA на genTime).
      */
-    private fun extractAndVerifyTsp(si: SignerInformation, checkOcsp: Boolean, checkCrl: Boolean): TimeStampTokenInfo? {
-        if (!hasTspAttribute(si)) return null
-        return try {
-            val obj = si.unsignedAttributes.toHashtable()[PKCSObjectIdentifiers.id_aa_signatureTimeStampToken]
-            val attr = when (obj) {
-                is Vector<*> -> obj[0] as Attribute
-                else -> obj as Attribute
-            }
-            if (attr.attrValues.size() != 1) {
-                log.warn("PDF signer has multiple TSP tokens, rejecting")
-                return null
-            }
-            val tspCms = CMSSignedData(attr.attrValues.getObjectAt(0).derObject.encoded)
-            tspService.verify(tspCms, si.signature, checkOcsp, checkCrl)
-        } catch (e: Exception) {
-            log.warn("Failed to extract TSP from PDF signer: {}", e.message)
-            null
-        }
+    private fun extractAndVerifyTsp(si: SignerInformation, checkOcsp: Boolean, checkCrl: Boolean): TimeStampTokenInfo? = try {
+        tspService.extractTimestampToken(si)?.let { tspService.verify(it, si.signature, checkOcsp, checkCrl) }
+    } catch (e: Exception) {
+        log.warn("Failed to extract/verify TSP from PDF signer: {}", e.message)
+        null
     }
 
     /**

@@ -155,25 +155,25 @@ coverage 76%. Правки только по коду/тестам; upstream-с�
   (опц. инъекция), а не из `implementationVersion` (null в boot-jar → был
   "NCANode/dev"); единый источник версии с MaintenanceService.
 
-### P3 — Качество ✅ (основное; отдельный `refactor:` коммит после ремедиации)
+### P3 — Качество ✅ (полностью; отдельные `refactor:` коммиты после ремедиации)
 
 - [x] **11. Мёртвый код** (S) — ✅ удалено ~400+ строк: `oid/` пакет (336,
   0 ссылок), `AsyncConfiguration` (dead+buggy), `TspService.info`,
   `fromBase64`, `findAllUrls`, `CertificateGender/gender` (+ 2 их теста).
   [в коммите ремедиации]
-- [x] **10. Дедуп** (M) — ✅ `requestBuilder(uri)` (quirk #24 структурный);
-  **`List.mapPartial`** (15 batch-методов, ~130 строк boilerplate убрано);
-  computed `checkOcsp/checkCrl` на `VerifyRequest` (~13 сайтов, 9 файлов);
-  `DirectoryService.deleteOrphans` (Crl/Ca); `catch(GeneralSecurityException)`
-  collapse в `CertificateService` (6+3 catch → 2+2). Отложено (доп. мелочи):
-  `generateSignedCms`, `extractTimestampToken` (Cms/Pdf TSP).
-- [x] **12. God-методы** (M) — ✅ **`CmsService.verify`** 142 → ~40 строк +
-  `parseCms`/`collectSignerCertificates`/`verifySigner` (логика построчно
-  сохранена, CMS-интеграция зелёная). Отложено: `PdfService.verifySignature`.
+- [x] **10. Дедуп** (M) — ✅ `requestBuilder(uri)`; **`List.mapPartial`** (15
+  batch, ~130 строк); computed `checkOcsp/checkCrl` (~13 сайтов, 9 файлов);
+  `DirectoryService.deleteOrphans`; `catch(GeneralSecurityException)` collapse
+  (6+3→2+2); **`TspService.extractTimestampToken`+`hasTimestampAttribute`**
+  (дедуп TSP-распаковки Cms/Pdf — унифицировано на strict: >1 токен для CMS
+  теперь valid=false, не 500); **`generateSignedCms`** (дедуп create/addSigners).
+- [x] **12. God-методы** (M) — ✅ **`CmsService.verify`** 142 → ~40 строк
+  (`parseCms`/`collectSignerCertificates`/`verifySigner`); **`PdfService.
+  verifySignature`** → `verifyPdfSigner` + `PdfSignerAttempt` (логика цикла
+  построчно сохранена; multi-sign путь без тестов — выверен вручную).
 
-Рефактор — отдельным коммитом поверх ремедиации (чистый behavior-preserving,
-покрыт batch+integration тестами). Тесты 233, coverage 76% → **78%** (рефактор
-убрал boilerplate — знаменатель уменьшился).
+Рефактор — **двумя** коммитами поверх ремедиации (чистый behavior-preserving,
+покрыт batch+integration). Тесты 233, coverage 76% → **78%**.
 
 ### P4 — Тесты ✅ (основное)
 

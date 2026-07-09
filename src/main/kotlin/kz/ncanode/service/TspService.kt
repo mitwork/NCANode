@@ -33,6 +33,7 @@ import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
 import java.security.NoSuchProviderException
 import java.security.cert.X509Certificate
+import java.util.Vector
 
 @Service
 class TspService(
@@ -41,6 +42,33 @@ class TspService(
     private val tspConfiguration: TspConfiguration,
     private val certificateService: CertificateService,
 ) {
+
+    /** Есть ли у подписанта атрибут TSP-метки (`id-aa-signatureTimeStampToken`). */
+    fun hasTimestampAttribute(signer: SignerInformation): Boolean {
+        val unsigned = signer.unsignedAttributes ?: return false
+        return unsigned.toHashtable().containsKey(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken)
+    }
+
+    /**
+     * Извлекает TSP-токен ([CMSSignedData]) из unsigned-атрибутов подписанта.
+     * `null` — если атрибута нет ЛИБО в нём не ровно один токен (вырожденный/
+     * подозрительный случай). Вызывающий обязан трактовать `null`-при-наличии-
+     * атрибута как невалидную метку (CAdES-T strict — см. [hasTimestampAttribute]).
+     * Раньше эта распаковка дублировалась в CmsService.verify и PdfService.
+     */
+    fun extractTimestampToken(signer: SignerInformation): CMSSignedData? {
+        val unsigned = signer.unsignedAttributes?.toHashtable() ?: return null
+        val obj = unsigned[PKCSObjectIdentifiers.id_aa_signatureTimeStampToken] ?: return null
+        val attr = when (obj) {
+            is Vector<*> -> obj[0] as Attribute
+            else -> obj as Attribute
+        }
+        if (attr.attrValues.size() != 1) {
+            log.warn("Signer has {} TSP tokens (expected 1) — treating as no valid timestamp", attr.attrValues.size())
+            return null
+        }
+        return CMSSignedData(attr.attrValues.getObjectAt(0).derObject.encoded)
+    }
 
     fun create(data: ByteArray, hashAlg: String, reqPolicy: String): TimeStampToken {
         try {
