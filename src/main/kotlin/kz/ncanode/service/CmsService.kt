@@ -11,7 +11,6 @@ import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.gov.pki.kalkan.util.encoders.Hex
 import kz.ncanode.dto.certificate.CertificateInfo
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.cms.CmsSignerInfo
 import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
@@ -29,9 +28,9 @@ import kz.ncanode.dto.tsp.TspInfo
 import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.ServerException
-import org.springframework.http.HttpStatus
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getHashingAlgorithmByOID
+import kz.ncanode.util.mapPartial
 import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
@@ -112,25 +111,17 @@ class CmsService(
      * не валит остальные (issue malikzh/NCANode#212).
      */
     fun createBatch(request: CmsCreateBatchRequest): CmsBatchResponse {
-        val items = request.data.map { data ->
-            try {
-                val itemRequest = CmsCreateRequest().apply {
-                    this.data = data
-                    this.signers = request.signers
-                    this.isWithTsp = request.isWithTsp
-                    this.tsaPolicy = request.tsaPolicy
-                    this.isDetached = request.isDetached
-                }
-                val response = create(itemRequest)
-                CmsBatchResponse.Item(cms = response.cms)
-            } catch (e: ApplicationException) {
-                CmsBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                CmsBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
+        val items = request.data.mapPartial({ status, message ->
+            CmsBatchResponse.Item(status = status, message = message)
+        }) { data ->
+            val itemRequest = CmsCreateRequest().apply {
+                this.data = data
+                this.signers = request.signers
+                this.isWithTsp = request.isWithTsp
+                this.tsaPolicy = request.tsaPolicy
+                this.isDetached = request.isDetached
             }
+            CmsBatchResponse.Item(cms = create(itemRequest).cms)
         }
         return CmsBatchResponse(results = items)
     }
@@ -220,36 +211,15 @@ class CmsService(
     ): CmsVerificationResponse {
         warnIfRevocationDisabled(checkOcsp, checkCrl)
         try {
-            var cms = CMSSignedData(Base64.getDecoder().decode(signedCms.toByteArray(StandardCharsets.UTF_8)))
-
-            if (detachedData != null && cms.signedContent == null) {
-                cms = CMSSignedData(
-                    CMSProcessableByteArray(Base64.getDecoder().decode(detachedData)),
-                    Base64.getDecoder().decode(signedCms),
-                )
-            }
-
+            val cms = parseCms(signedCms, detachedData)
             val certStore = cms.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME)
-
-            // Pre-collect signers + их сертификаты в Map.
-            // Это нужно чтобы prefetch валидационных данных (OCSP/CRL) сделать
-            // одним батчем для всех cert'ов параллельно, а не последовательно
-            // внутри цикла per-signer. Для CMS с N подписантами OCSP-запросы
-            // уйдут параллельно — ускорение почти N-кратное (при включённом
-            // NCANODE_OCSP_PARALLEL).
-            val signerCerts = LinkedHashMap<SignerInformation, List<CertificateWrapper>>()
-            for (signerObj in cms.signerInfos.signers) {
-                val s = signerObj as SignerInformation
-                val certCollection = certStore.getCertificates(s.sid)
-                val wrapped = certCollection.map { CertificateWrapper(it as X509Certificate) }
-                signerCerts[s] = wrapped
-            }
+            val signerCerts = collectSignerCertificates(cms, certStore)
 
             // Batch-prefetch: параллельный OCSP + последовательный CRL/issuer
-            // для всех cert'ов всех подписантов сразу.
+            // для всех cert'ов всех подписантов сразу (для CMS с N подписантами —
+            // почти N-кратное ускорение при NCANODE_OCSP_PARALLEL).
             if (checkOcsp || checkCrl) {
-                val allCerts = signerCerts.values.flatten()
-                certificateService.prefetchValidationData(allCerts, checkOcsp, checkCrl)
+                certificateService.prefetchValidationData(signerCerts.values.flatten(), checkOcsp, checkCrl)
             }
 
             // RFC 5652 §5.1: SignedData без единого SignerInfo ничего не
@@ -265,89 +235,9 @@ class CmsService(
             val currentDate = certificateService.getCurrentDate()
 
             for ((signer, certs) in signerCerts) {
-                var tspInfo: TspInfo? = null
-
-                // Время, на которое проверяется срок действия сертификата подписанта.
-                // При наличии валидной TSP-метки используем её genTime (CAdES-T):
-                // подпись считается валидной, если сертификат был валиден в момент
-                // постановки метки, даже если к моменту верификации он истёк.
-                var validationDate = currentDate
-
-                val unsignedAttrs = signer.unsignedAttributes?.toHashtable()
-                if (unsignedAttrs != null && unsignedAttrs.containsKey(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken)) {
-                    val attr = when (val obj = unsignedAttrs[PKCSObjectIdentifiers.id_aa_signatureTimeStampToken]) {
-                        is Vector<*> -> obj[0] as Attribute
-                        else -> obj as Attribute
-                    }
-
-                    if (attr.attrValues.size() != 1) {
-                        throw Exception("Too many TSP tokens")
-                    }
-
-                    val tspCms = CMSSignedData(attr.attrValues.getObjectAt(0).derObject.encoded)
-
-                    // Строгая проверка TSP (подпись TSA, messageImprint, EKU,
-                    // валидность цепочки TSA на genTime). Подписант явно добавил
-                    // TSP-метку — это его заявление "верьте этому времени"; если
-                    // метка не проходит проверку, мы не имеем права молча
-                    // откатиться на currentDate: либо метка подделана, либо TSA
-                    // не доверенна — в обоих случаях вся подпись считается
-                    // невалидной (CAdES-T strict).
-                    val tspi = tspService.verify(tspCms, signer.signature, checkOcsp, checkCrl)
-
-                    if (tspi != null) {
-                        try {
-                            tspInfo = TspInfo(
-                                serialNumber = String(Hex.encode(tspi.serialNumber.toByteArray())),
-                                genTime = tspi.genTime,
-                                policy = tspi.policy,
-                                tsa = tspi.tsa?.toString(),
-                                tspHashAlgorithm = getHashingAlgorithmByOID(tspi.messageImprintAlgOID),
-                                hash = String(Hex.encode(tspi.messageImprintDigest)),
-                            )
-
-                            if (tspi.genTime != null) {
-                                validationDate = tspi.genTime
-                            }
-                        } catch (e: Exception) {
-                            log.warn(e.message, e)
-                        }
-                    } else {
-                        log.warn("Signer has TSP timestamp attribute but TSP verification failed — marking CMS as invalid")
-                        valid = false
-                    }
-                }
-
-                // RFC 5652 §5.6: подпись подписанта обязана быть криптографически
-                // проверена. Если для signer.sid не нашлось сертификата в CMS,
-                // проверять нечем — цикл по certs ниже не выполнится, signer.verify()
-                // не вызовется. Это не «успех по умолчанию», а провал верификации:
-                // иначе подписант, чей cert не вложен, молча засчитывался бы как ОК.
-                if (certs.isEmpty()) {
-                    log.warn(
-                        "CMS signer {} has no matching certificate in the embedded store — signature cannot be verified",
-                        signer.sid,
-                    )
-                    valid = false
-                }
-
-                val certificateInfos = mutableListOf<CertificateInfo>()
-                for (cert in certs) {
-                    // attachValidationData идемпотентен: prefetch уже сделал
-                    // тяжёлую часть (OCSP параллельно, CRL с кэшем), здесь
-                    // только выставится issuer если он null.
-                    certificateService.attachValidationData(cert, checkOcsp, checkCrl)
-
-                    if (!signer.verify(cert.publicKey, KalkanProvider.PROVIDER_NAME)
-                        || !cert.isValid(validationDate, checkOcsp, checkCrl)
-                    ) {
-                        valid = false
-                    }
-
-                    certificateInfos.add(cert.toCertificateInfo(validationDate, checkOcsp, checkCrl))
-                }
-
-                signers.add(CmsSignerInfo(certificates = certificateInfos, tsp = tspInfo))
+                val result = verifySigner(signer, certs, checkOcsp, checkCrl, currentDate)
+                if (!result.valid) valid = false
+                signers.add(result.info)
             }
 
             return CmsVerificationResponse(valid = valid, signers = signers)
@@ -367,26 +257,133 @@ class CmsService(
         }
     }
 
+    /** Парсит CMS; для detached (без signedContent) досоединяет [detachedData]. */
+    private fun parseCms(signedCms: String, detachedData: String?): CMSSignedData {
+        val cms = CMSSignedData(Base64.getDecoder().decode(signedCms.toByteArray(StandardCharsets.UTF_8)))
+        if (detachedData != null && cms.signedContent == null) {
+            return CMSSignedData(
+                CMSProcessableByteArray(Base64.getDecoder().decode(detachedData)),
+                Base64.getDecoder().decode(signedCms),
+            )
+        }
+        return cms
+    }
+
+    /**
+     * Pre-collect signer → его сертификаты. Нужно, чтобы prefetch OCSP/CRL сделать
+     * одним батчем для всех cert'ов (параллельный OCSP), а не последовательно
+     * per-signer внутри цикла верификации.
+     */
+    private fun collectSignerCertificates(
+        cms: CMSSignedData,
+        certStore: CertStore,
+    ): LinkedHashMap<SignerInformation, List<CertificateWrapper>> {
+        val result = LinkedHashMap<SignerInformation, List<CertificateWrapper>>()
+        for (signerObj in cms.signerInfos.signers) {
+            val s = signerObj as SignerInformation
+            result[s] = certStore.getCertificates(s.sid).map { CertificateWrapper(it as X509Certificate) }
+        }
+        return result
+    }
+
+    private data class SignerVerification(val valid: Boolean, val info: CmsSignerInfo)
+
+    /**
+     * Проверка одного подписанта: TSP-метка (CAdES-T, задаёт validationDate),
+     * криптопроверка подписи и валидность каждого cert'а. Возвращает вклад в
+     * общий `valid` + [CmsSignerInfo].
+     */
+    private fun verifySigner(
+        signer: SignerInformation,
+        certs: List<CertificateWrapper>,
+        checkOcsp: Boolean,
+        checkCrl: Boolean,
+        currentDate: Date,
+    ): SignerVerification {
+        var valid = true
+        var tspInfo: TspInfo? = null
+        // Время проверки срока действия cert'а подписанта. При валидной TSP-метке —
+        // её genTime (CAdES-T): подпись валидна, если cert был валиден на момент
+        // метки, даже если к моменту верификации истёк.
+        var validationDate = currentDate
+
+        val unsignedAttrs = signer.unsignedAttributes?.toHashtable()
+        if (unsignedAttrs != null && unsignedAttrs.containsKey(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken)) {
+            val attr = when (val obj = unsignedAttrs[PKCSObjectIdentifiers.id_aa_signatureTimeStampToken]) {
+                is Vector<*> -> obj[0] as Attribute
+                else -> obj as Attribute
+            }
+            if (attr.attrValues.size() != 1) {
+                throw Exception("Too many TSP tokens")
+            }
+            val tspCms = CMSSignedData(attr.attrValues.getObjectAt(0).derObject.encoded)
+
+            // Строгая проверка TSP (подпись TSA, messageImprint, EKU, валидность
+            // цепочки TSA на genTime). Метку добавил подписант — если она не
+            // проходит, откатываться на currentDate нельзя: либо метка подделана,
+            // либо TSA не доверенна — вся подпись невалидна (CAdES-T strict).
+            val tspi = tspService.verify(tspCms, signer.signature, checkOcsp, checkCrl)
+            if (tspi != null) {
+                try {
+                    tspInfo = TspInfo(
+                        serialNumber = String(Hex.encode(tspi.serialNumber.toByteArray())),
+                        genTime = tspi.genTime,
+                        policy = tspi.policy,
+                        tsa = tspi.tsa?.toString(),
+                        tspHashAlgorithm = getHashingAlgorithmByOID(tspi.messageImprintAlgOID),
+                        hash = String(Hex.encode(tspi.messageImprintDigest)),
+                    )
+                    if (tspi.genTime != null) {
+                        validationDate = tspi.genTime
+                    }
+                } catch (e: Exception) {
+                    log.warn(e.message, e)
+                }
+            } else {
+                log.warn("Signer has TSP timestamp attribute but TSP verification failed — marking CMS as invalid")
+                valid = false
+            }
+        }
+
+        // RFC 5652 §5.6: подпись обязана быть криптопроверена. Нет cert'а для
+        // signer.sid → цикл ниже пуст → signer.verify() не вызовется. Это провал
+        // верификации (иначе подписант без вложенного cert'а молча = ОК).
+        if (certs.isEmpty()) {
+            log.warn(
+                "CMS signer {} has no matching certificate in the embedded store — signature cannot be verified",
+                signer.sid,
+            )
+            valid = false
+        }
+
+        val certificateInfos = mutableListOf<CertificateInfo>()
+        for (cert in certs) {
+            // attachValidationData идемпотентен: prefetch уже сделал тяжёлую часть
+            // (OCSP параллельно, CRL с кэшем), здесь только issuer если он null.
+            certificateService.attachValidationData(cert, checkOcsp, checkCrl)
+            if (!signer.verify(cert.publicKey, KalkanProvider.PROVIDER_NAME)
+                || !cert.isValid(validationDate, checkOcsp, checkCrl)
+            ) {
+                valid = false
+            }
+            certificateInfos.add(cert.toCertificateInfo(validationDate, checkOcsp, checkCrl))
+        }
+
+        return SignerVerification(valid, CmsSignerInfo(certificates = certificateInfos, tsp = tspInfo))
+    }
+
     /**
      * Batch-верификация: каждая пара (cms, data?) проверяется независимо
      * с общими revocation-флагами. На исключение — item возвращается с
      * `valid=false` и status/message; остальные продолжают.
      */
     fun verifyBatch(request: CmsVerifyBatchRequest): CmsVerificationBatchResponse {
-        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
-        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
-        val items = request.items.map { item ->
-            try {
-                verify(item.cms, item.data, checkOcsp, checkCrl)
-            } catch (e: ApplicationException) {
-                CmsVerificationResponse(valid = false, status = e.status, message = e.message)
-            } catch (e: Exception) {
-                CmsVerificationResponse(
-                    valid = false,
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
-            }
+        val checkOcsp = request.checkOcsp
+        val checkCrl = request.checkCrl
+        val items = request.items.mapPartial({ status, message ->
+            CmsVerificationResponse(valid = false, status = status, message = message)
+        }) { item ->
+            verify(item.cms, item.data, checkOcsp, checkCrl)
         }
         return CmsVerificationBatchResponse(results = items)
     }
@@ -397,18 +394,10 @@ class CmsService(
      * без падения остальных.
      */
     fun extractBatch(request: CmsExtractBatchRequest): CmsExtractBatchResponse {
-        val items = request.cms.map { cms ->
-            try {
-                val response = extract(cms)
-                CmsExtractBatchResponse.Item(data = response.data)
-            } catch (e: ApplicationException) {
-                CmsExtractBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                CmsExtractBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
-            }
+        val items = request.cms.mapPartial({ status, message ->
+            CmsExtractBatchResponse.Item(status = status, message = message)
+        }) { cms ->
+            CmsExtractBatchResponse.Item(data = extract(cms).data)
         }
         return CmsExtractBatchResponse(results = items)
     }

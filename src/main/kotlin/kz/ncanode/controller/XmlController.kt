@@ -2,7 +2,6 @@ package kz.ncanode.controller
 
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.XmlSignBatchRequest
 import kz.ncanode.dto.request.XmlSignRequest
 import kz.ncanode.dto.request.XmlVerifyBatchRequest
@@ -36,8 +35,8 @@ class XmlController(private val xmlService: XmlService) {
         ResponseEntity.ok(
             xmlService.verify(
                 request.xml,
-                CertificateRevocation.OCSP in request.revocationCheck,
-                CertificateRevocation.CRL in request.revocationCheck,
+                request.checkOcsp,
+                request.checkCrl,
             )
         )
 

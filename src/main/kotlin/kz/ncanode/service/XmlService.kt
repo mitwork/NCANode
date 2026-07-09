@@ -1,6 +1,5 @@
 package kz.ncanode.service
 
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.XmlSignBatchRequest
 import kz.ncanode.dto.request.XmlSignRequest
 import kz.ncanode.dto.request.XmlVerifyBatchRequest
@@ -8,9 +7,8 @@ import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.XmlSignBatchResponse
 import kz.ncanode.dto.response.XmlSignResponse
 import kz.ncanode.dto.response.XmlVerifyBatchResponse
-import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
-import org.springframework.http.HttpStatus
+import kz.ncanode.util.mapPartial
 import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.DocumentWrapper
@@ -68,24 +66,16 @@ class XmlService(
      * возможная оптимизация после нагрузочных тестов.
      */
     fun signBatch(request: XmlSignBatchRequest): XmlSignBatchResponse {
-        val items = request.xmls.map { xml ->
-            try {
-                val itemRequest = XmlSignRequest().apply {
-                    this.xml = xml
-                    this.signers = request.signers
-                    this.isClearSignatures = request.isClearSignatures
-                    this.isTrimXml = request.isTrimXml
-                }
-                val response = sign(itemRequest)
-                XmlSignBatchResponse.Item(xml = response.xml)
-            } catch (e: ApplicationException) {
-                XmlSignBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                XmlSignBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
+        val items = request.xmls.mapPartial({ status, message ->
+            XmlSignBatchResponse.Item(status = status, message = message)
+        }) { xml ->
+            val itemRequest = XmlSignRequest().apply {
+                this.xml = xml
+                this.signers = request.signers
+                this.isClearSignatures = request.isClearSignatures
+                this.isTrimXml = request.isTrimXml
             }
+            XmlSignBatchResponse.Item(xml = sign(itemRequest).xml)
         }
         return XmlSignBatchResponse(results = items)
     }
@@ -119,20 +109,12 @@ class XmlService(
      * partial-response'а.
      */
     fun verifyBatch(request: XmlVerifyBatchRequest): XmlVerifyBatchResponse {
-        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
-        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
-        val items = request.xmls.map { xml ->
-            try {
-                verify(xml, checkOcsp, checkCrl)
-            } catch (e: ApplicationException) {
-                VerificationResponse(valid = false, status = e.status, message = e.message)
-            } catch (e: Exception) {
-                VerificationResponse(
-                    valid = false,
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
-            }
+        val checkOcsp = request.checkOcsp
+        val checkCrl = request.checkCrl
+        val items = request.xmls.mapPartial({ status, message ->
+            VerificationResponse(valid = false, status = status, message = message)
+        }) { xml ->
+            verify(xml, checkOcsp, checkCrl)
         }
         return XmlVerifyBatchResponse(results = items)
     }

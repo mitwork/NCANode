@@ -143,25 +143,9 @@ class CaService(
 
                 // Чистим orphan-файлы: записи прошлых конфигов, не привязанные
                 // ни к одному из текущих URL.
-                deleteOrphanCacheFiles(urls.keys)
+                directoryService.deleteOrphans(CA_CACHE_DIR_NAME, CA_FILE_EXTENSION, urls.keys, "CA")
 
                 log.info("CA certificates cache updated: {} entries", certificates.size)
-            }
-        }
-    }
-
-    private fun deleteOrphanCacheFiles(validKeys: Set<String>) {
-        val cacheDir = directoryService.getCachePathFor(CA_CACHE_DIR_NAME) ?: return
-        val files = cacheDir.listFiles() ?: return
-        for (f in files) {
-            if (!f.isFile || !f.name.endsWith(CA_FILE_EXTENSION)) continue
-            val stem = f.name.substring(0, f.name.length - CA_FILE_EXTENSION.length)
-            if (stem !in validKeys) {
-                if (f.delete()) {
-                    log.info("Deleted orphan CA cache file: {}", f.name)
-                } else {
-                    log.warn("Could not delete orphan CA cache file: {}", f)
-                }
             }
         }
     }

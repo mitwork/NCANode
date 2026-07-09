@@ -2,7 +2,6 @@ package kz.ncanode.controller
 
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.SbaVerifyBatchRequest
 import kz.ncanode.dto.request.SbaVerifyRequest
 import kz.ncanode.dto.request.X509InfoBatchRequest
@@ -27,8 +26,8 @@ class X509Controller(private val certificateService: CertificateService) {
         ResponseEntity.ok(
             certificateService.info(
                 request.certs,
-                CertificateRevocation.OCSP in request.revocationCheck,
-                CertificateRevocation.CRL in request.revocationCheck,
+                request.checkOcsp,
+                request.checkCrl,
             )
         )
 
@@ -43,8 +42,8 @@ class X509Controller(private val certificateService: CertificateService) {
                 request.certificate,
                 request.signature,
                 request.data,
-                CertificateRevocation.OCSP in request.revocationCheck,
-                CertificateRevocation.CRL in request.revocationCheck,
+                request.checkOcsp,
+                request.checkCrl,
             )
         )
 

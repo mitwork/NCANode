@@ -4,7 +4,6 @@ import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.constants.MessageConstants
 import kz.ncanode.dto.certificate.CertificateInfo
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.Pkcs12AliasesBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
@@ -17,21 +16,21 @@ import kz.ncanode.dto.response.SbaVerifyBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.X509InfoBatchResponse
 import kz.ncanode.exception.ApplicationException
+import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
-import org.springframework.http.HttpStatus
+import kz.ncanode.util.mapPartial
 import kz.ncanode.util.warnIfRevocationDisabled
+import org.springframework.http.HttpStatus
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import org.springframework.stereotype.Service
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.security.InvalidKeyException
-import java.security.NoSuchAlgorithmException
+import java.security.GeneralSecurityException
 import java.security.NoSuchProviderException
 import java.security.Signature
-import java.security.SignatureException
 import java.security.cert.CertificateException
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
@@ -111,8 +110,8 @@ class CertificateService(
     fun verifyCerts(request: Pkcs12InfoRequest): VerificationResponse {
         var valid = true
         val date = getCurrentDate()
-        val withOcsp = CertificateRevocation.OCSP in request.revocationCheck
-        val withCrl = CertificateRevocation.CRL in request.revocationCheck
+        val withOcsp = request.checkOcsp
+        val withCrl = request.checkCrl
         warnIfRevocationDisabled(withOcsp, withCrl)
 
         val keys = kalkanWrapper.read(request.keys)
@@ -140,29 +139,22 @@ class CertificateService(
      *  - 400/500 — cert не распарсился (плохой base64, не x509, ASN.1-битый).
      */
     fun infoBatch(request: X509InfoBatchRequest): X509InfoBatchResponse {
-        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
-        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
-        val items = request.certs.map { cert ->
-            try {
-                val response = info(listOf(cert), checkOcsp, checkCrl)
-                val signer = response.signers.firstOrNull()
-                if (signer == null) {
-                    // info() возвращает null в позиции с message типа
-                    // "[0]: Invalid certificate given" — это per-cert client error.
-                    X509InfoBatchResponse.Item(
-                        status = HttpStatus.BAD_REQUEST.value(),
-                        message = response.message ?: "Invalid certificate",
-                    )
-                } else {
-                    X509InfoBatchResponse.Item(signer = signer)
-                }
-            } catch (e: ApplicationException) {
-                X509InfoBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
+        val checkOcsp = request.checkOcsp
+        val checkCrl = request.checkCrl
+        val items = request.certs.mapPartial({ status, message ->
+            X509InfoBatchResponse.Item(status = status, message = message)
+        }) { cert ->
+            val response = info(listOf(cert), checkOcsp, checkCrl)
+            val signer = response.signers.firstOrNull()
+            if (signer == null) {
+                // info() возвращает null в позиции с message типа
+                // "[0]: Invalid certificate given" — это per-cert client error.
                 X509InfoBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
+                    status = HttpStatus.BAD_REQUEST.value(),
+                    message = response.message ?: "Invalid certificate",
                 )
+            } else {
+                X509InfoBatchResponse.Item(signer = signer)
             }
         }
         return X509InfoBatchResponse(results = items)
@@ -175,26 +167,18 @@ class CertificateService(
      *  - 4xx/5xx — ошибка чтения (битый p12, неверный пароль и т.п.).
      */
     fun verifyCertsBatch(request: Pkcs12InfoBatchRequest): Pkcs12InfoBatchResponse {
-        val items = request.keys.map { key ->
-            try {
-                val singleRequest = Pkcs12InfoRequest().apply {
-                    keys = listOf(SignerRequest().apply {
-                        this.key = key.key
-                        this.password = key.password
-                        this.keyAlias = key.keyAlias
-                    })
-                    revocationCheck = request.revocationCheck
-                }
-                val response = verifyCerts(singleRequest)
-                Pkcs12InfoBatchResponse.Item(signer = response.signers.firstOrNull())
-            } catch (e: ApplicationException) {
-                Pkcs12InfoBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                Pkcs12InfoBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
+        val items = request.keys.mapPartial({ status, message ->
+            Pkcs12InfoBatchResponse.Item(status = status, message = message)
+        }) { key ->
+            val singleRequest = Pkcs12InfoRequest().apply {
+                keys = listOf(SignerRequest().apply {
+                    this.key = key.key
+                    this.password = key.password
+                    this.keyAlias = key.keyAlias
+                })
+                revocationCheck = request.revocationCheck
             }
+            Pkcs12InfoBatchResponse.Item(signer = verifyCerts(singleRequest).signers.firstOrNull())
         }
         return Pkcs12InfoBatchResponse(results = items)
     }
@@ -205,25 +189,18 @@ class CertificateService(
      * валит остальных — на каждый ключ отдаётся свой status + aliases.
      */
     fun aliasesBatch(request: Pkcs12AliasesBatchRequest): Pkcs12AliasesBatchResponse {
-        val items = request.keys.map { key ->
-            try {
-                val keystore = kalkanWrapper.read(key.key, key.keyAlias, key.password)
-                Pkcs12AliasesBatchResponse.Item(aliases = keystore.aliases)
+        val items = request.keys.mapPartial({ status, message ->
+            Pkcs12AliasesBatchResponse.Item(status = status, message = message)
+        }) { key ->
+            val keystore = try {
+                kalkanWrapper.read(key.key, key.keyAlias, key.password)
             } catch (e: KeyException) {
                 // KeyException — checked, не наследует ApplicationException;
-                // битый p12 / неверный пароль / отсутствующий alias — клиентская ошибка.
-                Pkcs12AliasesBatchResponse.Item(
-                    status = HttpStatus.BAD_REQUEST.value(),
-                    message = e.message,
-                )
-            } catch (e: ApplicationException) {
-                Pkcs12AliasesBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                Pkcs12AliasesBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
+                // битый p12 / неверный пароль — клиентская ошибка. Конвертируем в
+                // ClientException, чтобы mapPartial отдал 400 (а не 500).
+                throw ClientException(e.message, e)
             }
+            Pkcs12AliasesBatchResponse.Item(aliases = keystore.aliases)
         }
         return Pkcs12AliasesBatchResponse(results = items)
     }
@@ -266,9 +243,7 @@ class CertificateService(
             }
 
             return VerificationResponse(valid = valid, signers = certs, message = message)
-        } catch (e: CertificateException) {
-            throw ServerException(e.message, e)
-        } catch (e: NoSuchProviderException) {
+        } catch (e: GeneralSecurityException) {
             throw ServerException(e.message, e)
         } catch (e: IOException) {
             throw ServerException(e.message, e)
@@ -281,20 +256,12 @@ class CertificateService(
      * `valid=false` со status/message — остальные продолжают.
      */
     fun verifyBatch(request: SbaVerifyBatchRequest): SbaVerifyBatchResponse {
-        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
-        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
-        val items = request.items.map { item ->
-            try {
-                verify(item.certificate, item.signature, item.data, checkOcsp, checkCrl)
-            } catch (e: ApplicationException) {
-                VerificationResponse(valid = false, status = e.status, message = e.message)
-            } catch (e: Exception) {
-                VerificationResponse(
-                    valid = false,
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
-            }
+        val checkOcsp = request.checkOcsp
+        val checkCrl = request.checkCrl
+        val items = request.items.mapPartial({ status, message ->
+            VerificationResponse(valid = false, status = status, message = message)
+        }) { item ->
+            verify(item.certificate, item.signature, item.data, checkOcsp, checkCrl)
         }
         return SbaVerifyBatchResponse(results = items)
     }
@@ -341,17 +308,12 @@ class CertificateService(
             certs.add(cert.toCertificateInfo(currentDate, checkOcsp, checkCrl))
 
             return VerificationResponse(valid = valid, signers = certs, message = message)
-        } catch (e: CertificateException) {
-            throw ServerException(e.message, e)
-        } catch (e: NoSuchProviderException) {
+        } catch (e: GeneralSecurityException) {
+            // CertificateException / NoSuchProvider / Signature / NoSuchAlgorithm /
+            // InvalidKey — все наследники GeneralSecurityException, обрабатываются
+            // одинаково (→ 500).
             throw ServerException(e.message, e)
         } catch (e: IOException) {
-            throw ServerException(e.message, e)
-        } catch (e: SignatureException) {
-            throw ServerException(e.message, e)
-        } catch (e: NoSuchAlgorithmException) {
-            throw ServerException(e.message, e)
-        } catch (e: InvalidKeyException) {
             throw ServerException(e.message, e)
         }
     }

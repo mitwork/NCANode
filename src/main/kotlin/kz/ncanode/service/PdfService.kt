@@ -9,7 +9,6 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.gov.pki.kalkan.tsp.TimeStampTokenInfo
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.pdf.PdfSignerInfo
 import kz.ncanode.dto.request.PdfSignBatchRequest
 import kz.ncanode.dto.request.PdfSignRequest
@@ -24,8 +23,8 @@ import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.NoSignaturesFoundException
 import kz.ncanode.exception.ServerException
-import org.springframework.http.HttpStatus
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
+import kz.ncanode.util.mapPartial
 import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
@@ -101,24 +100,16 @@ class PdfService(
      * общим набором signer'ов и одинаковыми TSP/политикой. Partial-response.
      */
     fun signBatch(request: PdfSignBatchRequest): PdfSignBatchResponse {
-        val items = request.pdfs.map { pdf ->
-            try {
-                val itemRequest = PdfSignRequest().apply {
-                    this.pdf = pdf
-                    this.signers = request.signers
-                    this.isWithTsp = request.isWithTsp
-                    this.tsaPolicy = request.tsaPolicy
-                }
-                val response = sign(itemRequest)
-                PdfSignBatchResponse.Item(pdf = response.pdf)
-            } catch (e: ApplicationException) {
-                PdfSignBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                PdfSignBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
+        val items = request.pdfs.mapPartial({ status, message ->
+            PdfSignBatchResponse.Item(status = status, message = message)
+        }) { pdf ->
+            val itemRequest = PdfSignRequest().apply {
+                this.pdf = pdf
+                this.signers = request.signers
+                this.isWithTsp = request.isWithTsp
+                this.tsaPolicy = request.tsaPolicy
             }
+            PdfSignBatchResponse.Item(pdf = sign(itemRequest).pdf)
         }
         return PdfSignBatchResponse(results = items)
     }
@@ -127,22 +118,13 @@ class PdfService(
      * Batch-верификация PDF: каждый PDF проверяется независимо.
      */
     fun verifyBatch(request: PdfVerifyBatchRequest): PdfVerifyBatchResponse {
-        val items = request.pdfs.map { pdf ->
-            try {
-                val itemRequest = PdfVerifyRequest().apply {
-                    this.pdf = pdf
-                    this.revocationCheck = request.revocationCheck
-                }
-                verify(itemRequest)
-            } catch (e: ApplicationException) {
-                PdfVerificationResponse(valid = false, status = e.status, message = e.message)
-            } catch (e: Exception) {
-                PdfVerificationResponse(
-                    valid = false,
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
-            }
+        val items = request.pdfs.mapPartial({ status, message ->
+            PdfVerificationResponse(valid = false, status = status, message = message)
+        }) { pdf ->
+            verify(PdfVerifyRequest().apply {
+                this.pdf = pdf
+                this.revocationCheck = request.revocationCheck
+            })
         }
         return PdfVerifyBatchResponse(results = items)
     }
@@ -152,8 +134,8 @@ class PdfService(
      */
     fun verify(pdfVerifyRequest: PdfVerifyRequest): PdfVerificationResponse {
         warnIfRevocationDisabled(
-            CertificateRevocation.OCSP in pdfVerifyRequest.revocationCheck,
-            CertificateRevocation.CRL in pdfVerifyRequest.revocationCheck,
+            pdfVerifyRequest.checkOcsp,
+            pdfVerifyRequest.checkCrl,
         )
         try {
             val pdfBytes = Base64.getDecoder().decode(pdfVerifyRequest.pdf)
@@ -246,8 +228,8 @@ class PdfService(
             var digestAlgReported: String? = null
 
             val certStore = signedData.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME)
-            val withOcsp = CertificateRevocation.OCSP in pdfVerifyRequest.revocationCheck
-            val withCrl = CertificateRevocation.CRL in pdfVerifyRequest.revocationCheck
+            val withOcsp = pdfVerifyRequest.checkOcsp
+            val withCrl = pdfVerifyRequest.checkCrl
             val now = Date()
             var validationDate = now
 

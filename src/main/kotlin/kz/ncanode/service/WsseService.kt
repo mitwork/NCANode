@@ -2,7 +2,6 @@ package kz.ncanode.service
 
 import jakarta.xml.soap.MessageFactory
 import kz.ncanode.dto.certificate.CertificateInfo
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
 import kz.ncanode.dto.request.WsseVerifyBatchRequest
@@ -14,7 +13,7 @@ import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
-import org.springframework.http.HttpStatus
+import kz.ncanode.util.mapPartial
 import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
@@ -120,25 +119,17 @@ class WsseService(
      * общим ключом. Partial-response: ошибка на N-м item'е не валит остальные.
      */
     fun signBatch(request: WsseSignBatchRequest): WsseSignBatchResponse {
-        val items = request.xmls.map { xml ->
-            try {
-                val itemRequest = WsseSignRequest().apply {
-                    this.xml = xml
-                    this.key = request.key
-                    this.password = request.password
-                    this.keyAlias = request.keyAlias
-                    this.isTrimXml = request.isTrimXml
-                }
-                val response = sign(itemRequest)
-                WsseSignBatchResponse.Item(xml = response.xml)
-            } catch (e: ApplicationException) {
-                WsseSignBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                WsseSignBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
+        val items = request.xmls.mapPartial({ status, message ->
+            WsseSignBatchResponse.Item(status = status, message = message)
+        }) { xml ->
+            val itemRequest = WsseSignRequest().apply {
+                this.xml = xml
+                this.key = request.key
+                this.password = request.password
+                this.keyAlias = request.keyAlias
+                this.isTrimXml = request.isTrimXml
             }
+            WsseSignBatchResponse.Item(xml = sign(itemRequest).xml)
         }
         return WsseSignBatchResponse(results = items)
     }
@@ -242,20 +233,12 @@ class WsseService(
      * получает `valid=false` со status/message.
      */
     fun verifyBatch(request: WsseVerifyBatchRequest): WsseVerifyBatchResponse {
-        val checkOcsp = CertificateRevocation.OCSP in request.revocationCheck
-        val checkCrl = CertificateRevocation.CRL in request.revocationCheck
-        val items = request.xmls.map { xml ->
-            try {
-                verify(xml, checkOcsp, checkCrl)
-            } catch (e: ApplicationException) {
-                VerificationResponse(valid = false, status = e.status, message = e.message)
-            } catch (e: Exception) {
-                VerificationResponse(
-                    valid = false,
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
-            }
+        val checkOcsp = request.checkOcsp
+        val checkCrl = request.checkCrl
+        val items = request.xmls.mapPartial({ status, message ->
+            VerificationResponse(valid = false, status = status, message = message)
+        }) { xml ->
+            verify(xml, checkOcsp, checkCrl)
         }
         return WsseVerifyBatchResponse(results = items)
     }

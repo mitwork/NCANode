@@ -3,7 +3,6 @@ package kz.ncanode.controller
 import io.swagger.v3.oas.annotations.Operation
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
 import kz.ncanode.dto.request.CmsExtractBatchRequest
@@ -67,8 +66,8 @@ class CmsController(private val cmsService: CmsService) {
             cmsService.verify(
                 request.cms,
                 request.data,
-                CertificateRevocation.OCSP in request.revocationCheck,
-                CertificateRevocation.CRL in request.revocationCheck,
+                request.checkOcsp,
+                request.checkCrl,
             )
         )
 

@@ -2,7 +2,6 @@ package kz.ncanode.controller
 
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
-import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.WsseSignBatchRequest
 import kz.ncanode.dto.request.WsseSignRequest
 import kz.ncanode.dto.request.WsseVerifyBatchRequest
@@ -36,8 +35,8 @@ class WsseController(private val wsseService: WsseService) {
         ResponseEntity.ok(
             wsseService.verify(
                 request.xml,
-                CertificateRevocation.OCSP in request.revocationCheck,
-                CertificateRevocation.CRL in request.revocationCheck,
+                request.checkOcsp,
+                request.checkCrl,
             )
         )
 

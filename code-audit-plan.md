@@ -155,25 +155,25 @@ coverage 76%. Правки только по коду/тестам; upstream-с�
   (опц. инъекция), а не из `implementationVersion` (null в boot-jar → был
   "NCANode/dev"); единый источник версии с MaintenanceService.
 
-### P3 — Качество (частично; тяжёлые рефакторы отложены — см. ниже)
+### P3 — Качество ✅ (основное; отдельный `refactor:` коммит после ремедиации)
 
 - [x] **11. Мёртвый код** (S) — ✅ удалено ~400+ строк: `oid/` пакет (336,
   0 ссылок), `AsyncConfiguration` (dead+buggy), `TspService.info`,
   `fromBase64`, `findAllUrls`, `CertificateGender/gender` (+ 2 их теста).
-- [~] **10. Дедуп** (M) — ✅ **`HttpClientConfiguration.requestBuilder(uri)`**
-  (quirk #24 структурный, 4 сервиса). Отложено (тяжёлые/рисковые, чистый
-  рефактор): `List.mapPartial` (15 batch), `generateSignedCms`,
-  `extractTimestampToken`, computed `checkOcsp/checkCrl`, `deleteOrphans`/
-  `isStale`, `catch(GeneralSecurityException)`-collapse.
-- [ ] **12. God-методы** (M) — отложено: `CmsService.verify`,
-  `PdfService.verifySignature` (`CaService.updateCache` частично причёсан в H1).
+  [в коммите ремедиации]
+- [x] **10. Дедуп** (M) — ✅ `requestBuilder(uri)` (quirk #24 структурный);
+  **`List.mapPartial`** (15 batch-методов, ~130 строк boilerplate убрано);
+  computed `checkOcsp/checkCrl` на `VerifyRequest` (~13 сайтов, 9 файлов);
+  `DirectoryService.deleteOrphans` (Crl/Ca); `catch(GeneralSecurityException)`
+  collapse в `CertificateService` (6+3 catch → 2+2). Отложено (доп. мелочи):
+  `generateSignedCms`, `extractTimestampToken` (Cms/Pdf TSP).
+- [x] **12. God-методы** (M) — ✅ **`CmsService.verify`** 142 → ~40 строк +
+  `parseCms`/`collectSignerCertificates`/`verifySigner` (логика построчно
+  сохранена, CMS-интеграция зелёная). Отложено: `PdfService.verifySignature`.
 
-**Решение по остатку P3:** оставшиеся дедупы + god-методы — чистый
-behavior-preserving рефактор без багфиксов, но с реальной regression-поверхностью
-(15 batch-методов, разбор god-методов). Бандлить их в один «audit remediation»
-коммит с багфиксами/security = нечитаемый диф + смешение забот. Лучше — отдельным
-`refactor:` коммитом/PR после того как ремедиация ляжет. Рекомендация вынесена
-в финал.
+Рефактор — отдельным коммитом поверх ремедиации (чистый behavior-preserving,
+покрыт batch+integration тестами). Тесты 233, coverage 76% → **78%** (рефактор
+убрал boilerplate — знаменатель уменьшился).
 
 ### P4 — Тесты ✅ (основное)
 

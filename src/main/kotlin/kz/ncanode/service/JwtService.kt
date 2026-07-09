@@ -17,7 +17,7 @@ import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
-import org.springframework.http.HttpStatus
+import kz.ncanode.util.mapPartial
 import kz.ncanode.wrapper.KalkanWrapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -77,24 +77,16 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
      * подписывается общим ключом. Partial-response per item.
      */
     fun encodeBatch(request: JwtEncodeBatchRequest): JwtEncodeBatchResponse {
-        val items = request.jwts.map { jwt ->
-            try {
-                val itemRequest = JwtEncodeRequest().apply {
-                    this.jwt = jwt
-                    this.key = request.key
-                    this.password = request.password
-                    this.keyAlias = request.keyAlias
-                }
-                val response = encode(itemRequest)
-                JwtEncodeBatchResponse.Item(jwt = response.jwt)
-            } catch (e: ApplicationException) {
-                JwtEncodeBatchResponse.Item(status = e.status, message = e.message)
-            } catch (e: Exception) {
-                JwtEncodeBatchResponse.Item(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
+        val items = request.jwts.mapPartial({ status, message ->
+            JwtEncodeBatchResponse.Item(status = status, message = message)
+        }) { jwt ->
+            val itemRequest = JwtEncodeRequest().apply {
+                this.jwt = jwt
+                this.key = request.key
+                this.password = request.password
+                this.keyAlias = request.keyAlias
             }
+            JwtEncodeBatchResponse.Item(jwt = encode(itemRequest).jwt)
         }
         return JwtEncodeBatchResponse(results = items)
     }
@@ -105,22 +97,13 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
      * не валит остальных.
      */
     fun decodeBatch(request: JwtDecodeBatchRequest): JwtDecodeBatchResponse {
-        val items = request.jwts.map { token ->
-            try {
-                val itemRequest = JwtDecodeRequest().apply {
-                    this.jwt = token
-                    this.key = request.key
-                }
-                decode(itemRequest)
-            } catch (e: ApplicationException) {
-                JwtDecodeResponse(valid = false, status = e.status, message = e.message)
-            } catch (e: Exception) {
-                JwtDecodeResponse(
-                    valid = false,
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    message = e.message,
-                )
-            }
+        val items = request.jwts.mapPartial({ status, message ->
+            JwtDecodeResponse(valid = false, status = status, message = message)
+        }) { token ->
+            decode(JwtDecodeRequest().apply {
+                this.jwt = token
+                this.key = request.key
+            })
         }
         return JwtDecodeBatchResponse(results = items)
     }

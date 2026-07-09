@@ -489,7 +489,7 @@ open class CrlService(
 
             // Удаляем orphan-файлы: записи прошлых конфигов, которых больше нет
             // в списке URL'ов.
-            deleteOrphanCrlFiles(crlConfiguration.urlList.keys, cacheDirectory)
+            directoryService.deleteOrphans(cacheDirectory, CRL_FILE_EXTENSION, crlConfiguration.urlList.keys, "CRL")
 
             if (updatedCount == 0) {
                 log.info("Nothing to update in CRL cache for '{}'", cacheDirectory)
@@ -571,22 +571,6 @@ open class CrlService(
         val ok = scheme.equals("http", ignoreCase = true) || scheme.equals("https", ignoreCase = true)
         if (!ok) log.warn("Refusing CRL URL with disallowed scheme: {}", url)
         return ok
-    }
-
-    private fun deleteOrphanCrlFiles(validKeys: Set<String>, cacheDirName: String) {
-        val cacheDir = directoryService.getCachePathFor(cacheDirName) ?: return
-        val files = cacheDir.listFiles() ?: return
-        for (f in files) {
-            if (!f.isFile || !f.name.endsWith(CRL_FILE_EXTENSION)) continue
-            val stem = f.name.substring(0, f.name.length - CRL_FILE_EXTENSION.length)
-            if (stem !in validKeys) {
-                if (f.delete()) {
-                    log.info("Deleted orphan CRL cache file: {}", f.name)
-                } else {
-                    log.warn("Could not delete orphan CRL cache file: {}", f)
-                }
-            }
-        }
     }
 
     /**
