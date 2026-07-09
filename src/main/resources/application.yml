@@ -45,6 +45,18 @@ ncanode:
   tsp:
     url: ${NCANODE_TSP_URL:http://tsp.pki.gov.kz/}
     retries: ${NCANODE_TSP_RETRIES:3}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${NCANODE_ACTUATOR_ENDPOINTS:health,info,prometheus}
+  endpoint:
+    prometheus:
+      access: read-only
+  prometheus:
+    metrics:
+      export:
+        enabled: ${NCANODE_PROMETHEUS_ENABLED:true}
 springdoc:
   show-actuator: true
   swagger-ui:

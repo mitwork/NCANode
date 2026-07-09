@@ -43,6 +43,8 @@ dependencies {
     // Spring Boot 4.x (jakarta namespace).
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // Prometheus scrape endpoint (/actuator/prometheus). Версия из SB BOM.
+    implementation("io.micrometer:micrometer-registry-prometheus")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     // AspectJ starter — нужен для AOP-прокси @Async / @Scheduled
     // (spring-aop + spring-aspects + aspectjweaver runtime).

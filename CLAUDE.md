@@ -520,6 +520,33 @@ CRL лежал в кэше. Дизайн (июль 2026):
   в `CrlServiceTest` (3), реклассификация сетевых ошибок в `OcspServiceTest`.
   Docs: `docs/_tabs/docs.md`, раздел «Проверка отзыва сертификатов».
 
+### 29. Actuator + Prometheus endpoint (exposure = health,info,prometheus)
+Actuator был подключён и раньше (`starter-actuator` + кастомный
+`CrlWarmupHealthIndicator` → `/actuator/health`), но метрик наружу не было.
+Добавлено:
+- `io.micrometer:micrometer-registry-prometheus` (версия из SB BOM →
+  `1.17.0`) в `build.gradle.kts`.
+- Блок `management` в `application.yml`: наружу выставлены ровно
+  `health,info,prometheus` (env `NCANODE_ACTUATOR_ENDPOINTS` переопределяет
+  список; `NCANODE_PROMETHEUS_ENABLED` выключает экспорт). Не открываем
+  весь actuator — env/beans/… остаются 404.
+
+Грабли SB4/наблюдения:
+- **`endpoint.prometheus.access: read-only`**, НЕ устаревший `enabled: true`
+  (SB 3.4+ заменил `enabled` на `access: none|read-only|unrestricted`).
+- **Путь экспортёра `management.prometheus.metrics.export.enabled`** — в
+  SB 3.4+ переехал из `management.metrics.export.prometheus.enabled`.
+- **`TestRestTemplate` УДАЛЁН в Spring Boot 4** (`spring-boot-test` его
+  больше не содержит; `LocalServerPort` остался). В `ActuatorEndpointTest`
+  ходим по HTTP через JDK `HttpClient` (как и прод), порт — из
+  `Environment.getRequiredProperty("local.server.port")`. Плюс: JDK-клиент
+  не бросает на 4xx — удобно проверять 404 на невыставленный эндпойнт.
+- `/actuator/*` уже исключён из request-log (`RequestLoggingFilter`), скрейп
+  Prometheus лог не засоряет.
+- Покрытие: `ActuatorEndpointTest` (5 кейсов, `@SpringBootTest` RANDOM_PORT):
+  health UP / info / prometheus text-формат / discovery-листинг / env→404.
+  Сети не требует (actuator не зависит от CA/OCSP/TSP).
+
 ## Что не покрыто тестами (≈494 lines)
 
 | Слой | % | Что осталось |
