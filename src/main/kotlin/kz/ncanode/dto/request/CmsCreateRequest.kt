@@ -1,5 +1,6 @@
 package kz.ncanode.dto.request
 
+import jakarta.validation.Valid
 import jakarta.validation.constraints.NotEmpty
 import kz.ncanode.dto.tsp.TsaPolicy
 
@@ -8,6 +9,7 @@ class CmsCreateRequest {
     var data: String? = null
 
     @NotEmpty
+    @Valid
     var signers: List<SignerRequest> = emptyList()
 
     var isWithTsp: Boolean = false

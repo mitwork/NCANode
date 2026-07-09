@@ -2,8 +2,10 @@ package kz.ncanode.configuration
 
 import kz.ncanode.dto.http.HttpProxyConfig
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.boot.context.properties.ConfigurationProperties
+import org.springframework.boot.info.BuildProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Scope
@@ -13,6 +15,7 @@ import java.net.PasswordAuthentication
 import java.net.ProxySelector
 import java.net.URI
 import java.net.http.HttpClient
+import java.net.http.HttpRequest
 import java.time.Duration
 
 @Configuration
@@ -22,6 +25,14 @@ open class HttpClientConfiguration {
     var connectTimeout: Int = 5
     var requestTimeout: Int = 30
     var userAgent: String = ""
+
+    // Версия для дефолтного User-Agent берётся из build-info (тот же источник,
+    // что и MaintenanceService) — `package.implementationVersion` в boot-jar
+    // равен null (классы в BOOT-INF/classes), из-за чего UA всегда был
+    // "NCANode/dev". Опционально: если build-info нет (напр. голый unit-контекст),
+    // остаётся fallback "dev".
+    @Autowired(required = false)
+    private var buildProperties: BuildProperties? = null
 
     /**
      * Эффективный User-Agent: переопределение из конфига, если задано
@@ -33,7 +44,7 @@ open class HttpClientConfiguration {
      */
     val effectiveUserAgent: String
         get() = userAgent.takeIf { it.isNotBlank() }
-            ?: "NCANode/${HttpClientConfiguration::class.java.`package`.implementationVersion ?: "dev"}"
+            ?: "NCANode/${buildProperties?.version ?: "dev"}"
 
     @Bean
     @Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE)
@@ -60,6 +71,18 @@ open class HttpClientConfiguration {
      */
     val requestTimeoutDuration: Duration
         get() = Duration.ofSeconds(requestTimeout.toLong())
+
+    /**
+     * Заготовка исходящего запроса с уже выставленными total-timeout и
+     * непустым User-Agent. Делает инвариант quirk #24 (никогда не слать
+     * пустой UA) СТРУКТУРНЫМ: сервисы (Ca/Crl/Ocsp/Tsp) строят запросы через
+     * неё и не могут случайно забыть заголовок. Вызывающий добавляет метод
+     * (`.GET()` / `.POST(...)`) и, при необходимости, `Content-Type`.
+     */
+    fun requestBuilder(uri: URI): HttpRequest.Builder =
+        HttpRequest.newBuilder(uri)
+            .timeout(requestTimeoutDuration)
+            .header("User-Agent", effectiveUserAgent)
 
     private fun configureProxy(builder: HttpClient.Builder) {
         val proxyConfig = proxy ?: return

@@ -52,11 +52,6 @@ class UtilTest : FunSpec({
         urlMap("   ", log).shouldBeEmpty()
     }
 
-    test("findAllUrls extracts http and https from arbitrary text") {
-        val urls = findAllUrls("Visit http://x.test and also https://y.test/path now.")
-        urls shouldContainExactlyInAnyOrder listOf("http://x.test", "https://y.test/path")
-    }
-
     test("getDigestAlgorithmOidBYSignAlgorithmOid maps GOST 2015 signature OIDs to digest OIDs") {
         // GOST 2015-256 sig (.2.3.1) -> Streebog-256 digest
         getDigestAlgorithmOidBYSignAlgorithmOid("1.2.398.3.10.1.1.2.3.1") shouldBe "1.2.398.3.10.1.3.2"
@@ -66,5 +61,18 @@ class UtilTest : FunSpec({
 
     test("getDigestAlgorithmOidBYSignAlgorithmOid falls back to legacy GOST 34.11-95 for unknown OIDs") {
         getDigestAlgorithmOidBYSignAlgorithmOid("9.9.9.9.9.9") shouldBe "1.2.398.3.10.1.3.1"
+    }
+
+    test("isInternalHost blocks loopback / link-local / any-local, allows public and RFC1918") {
+        // SSRF-барьер для URL из сертификата. Литеральные IP — без DNS-резолва.
+        fun u(s: String) = java.net.URI(s).toURL()
+        isInternalHost(u("http://127.0.0.1/a.crl")) shouldBe true            // loopback
+        isInternalHost(u("http://169.254.169.254/latest/meta-data/")) shouldBe true // link-local / cloud metadata
+        isInternalHost(u("http://0.0.0.0/a.crl")) shouldBe true              // any-local
+        isInternalHost(u("http://8.8.8.8/a.crl")) shouldBe false             // публичный
+        // Site-local (RFC1918) НЕ блокируется в default-режиме — легитимный
+        // внутренний PKI. Для его отсечения есть strict-режим.
+        isInternalHost(u("http://10.0.0.5/a.crl")) shouldBe false
+        isInternalHost(u("http://192.168.1.10/a.crl")) shouldBe false
     }
 })

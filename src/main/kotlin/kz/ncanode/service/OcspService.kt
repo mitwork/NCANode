@@ -17,6 +17,7 @@ import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.dto.ocsp.OcspResult
 import kz.ncanode.dto.ocsp.OcspStatus
+import kz.ncanode.util.isInternalHost
 import kz.ncanode.wrapper.CertificateWrapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -77,7 +78,7 @@ class OcspService(
                 val request = buildOcspRequest(cert.x509Certificate.serialNumber, issuer.x509Certificate, nonce)
 
                 val response = makeRequest(url, request.encoded)
-                val status = processOcspResponse(response, nonce, issuer)
+                val status = processOcspResponse(response, nonce, issuer, cert.x509Certificate.serialNumber)
                 statuses.add(status.copy(url = url))
             } catch (e: IOException) {
                 // Транспортный сбой (сеть/DNS/таймаут) или unparseable body
@@ -105,15 +106,25 @@ class OcspService(
      * Приоритет: AIA-extension cert'а → config fallback.
      */
     private fun resolveOcspUrls(cert: CertificateWrapper): List<URL> {
-        val aiaUrls = cert.ocspUrls.filter { isAllowedScheme(it) }
+        val configUrls = ocspConfiguration.urlList.values.filter { isAllowedScheme(it) }
+
+        // Strict-режим (SSRF): игнорируем AIA серта, ходим только на
+        // сконфигурированный responder. Серт не выбирает, куда мы обратимся.
+        if (ocspConfiguration.isStrict) {
+            log.debug("OCSP strict mode: ignoring cert AIA, using {} configured URL(s)", configUrls.size)
+            return configUrls
+        }
+
+        // Non-strict: AIA-first, но URL из серта проходят минимальный SSRF-барьер
+        // (loopback/link-local отсекаются — см. isInternalHost).
+        val aiaUrls = cert.ocspUrls.filter { isAllowedScheme(it) && !isInternalHost(it) }
         if (aiaUrls.isNotEmpty()) {
             log.debug("Using OCSP URLs from cert AIA: {}", aiaUrls)
             return aiaUrls
         }
 
-        val configUrls = ocspConfiguration.urlList.values.filter { isAllowedScheme(it) }
         if (configUrls.isNotEmpty()) {
-            log.debug("Cert has no AIA OCSP URLs, falling back to {} configured URL(s)", configUrls.size)
+            log.debug("Cert has no usable AIA OCSP URLs, falling back to {} configured URL(s)", configUrls.size)
         }
         return configUrls
     }
@@ -152,7 +163,12 @@ class OcspService(
      * с тем, что мы отправили в запросе.
      */
     @Throws(IOException::class, OCSPException::class, NoSuchProviderException::class, GeneralSecurityException::class)
-    private fun processOcspResponse(response: ByteArray, sentNonce: ByteArray, issuer: CertificateWrapper): OcspStatus {
+    private fun processOcspResponse(
+        response: ByteArray,
+        sentNonce: ByteArray,
+        issuer: CertificateWrapper,
+        expectedSerial: BigInteger,
+    ): OcspStatus {
         val resp = OCSPResp(response)
 
         if (resp.status != 0) {
@@ -191,6 +207,17 @@ class OcspService(
             return unknownStatus(message = "OCSP response has no single responses")
         }
         val singleResp = singleResps[0]
+
+        // RFC 6960 §3.2: ответ обязан относиться к ЗАПРОШЕННОМУ сертификату.
+        // Сверяем serial из CertID ответа с запрошенным — иначе responder (или
+        // подделка) вернул бы статус чужого серийника в позиции [0], и мы бы его
+        // приняли. Nonce+подпись это уже во многом закрывают, но проверка
+        // серийника — прямое требование RFC и защита в глубину.
+        if (singleResp.certID?.serialNumber != expectedSerial) {
+            return unknownStatus(
+                message = "OCSP response CertID serial does not match the requested certificate",
+            )
+        }
 
         val now = Date()
 
@@ -309,9 +336,7 @@ class OcspService(
 
     @Throws(IOException::class, InterruptedException::class)
     private fun makeRequest(url: String, data: ByteArray): ByteArray {
-        val httpRequest = HttpRequest.newBuilder(URI(url))
-            .timeout(httpClientConfiguration.requestTimeoutDuration)
-            .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+        val httpRequest = httpClientConfiguration.requestBuilder(URI(url))
             .header("Content-Type", "application/ocsp-request")
             .POST(HttpRequest.BodyPublishers.ofByteArray(data))
             .build()

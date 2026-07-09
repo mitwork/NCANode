@@ -1,5 +1,6 @@
 package kz.ncanode.dto.request
 
+import jakarta.validation.Valid
 import jakarta.validation.constraints.NotEmpty
 
 class XmlSignRequest {
@@ -7,6 +8,7 @@ class XmlSignRequest {
     var xml: String = ""
 
     @NotEmpty
+    @Valid
     var signers: List<SignerRequest> = emptyList()
 
     var isClearSignatures: Boolean = false

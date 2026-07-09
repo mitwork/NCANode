@@ -32,6 +32,7 @@ import kz.ncanode.exception.ServerException
 import org.springframework.http.HttpStatus
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getHashingAlgorithmByOID
+import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import org.slf4j.LoggerFactory
@@ -60,8 +61,13 @@ class CmsService(
      */
     fun create(cmsCreateRequest: CmsCreateRequest): CmsResponse {
         try {
+            // data обязателен для create (в отличие от addSigners, где он опционален
+            // для attached-CMS). Без явной проверки null-data уходил в Base64.decode(null)
+            // → NPE → 500 message:null вместо честного 400.
+            val dataBase64 = cmsCreateRequest.data
+                ?: throw ClientException("Data argument not specified")
             val generator = CMSSignedDataGenerator()
-            val data = Base64.getDecoder().decode(cmsCreateRequest.data)
+            val data = Base64.getDecoder().decode(dataBase64)
             val cmsData = CMSProcessableByteArray(data)
             val certificates = mutableListOf<X509Certificate>()
 
@@ -91,6 +97,9 @@ class CmsService(
             }
 
             return CmsResponse(cms = Base64.getEncoder().encodeToString(signed.encoded))
+        } catch (e: ApplicationException) {
+            // Намеренный 400 (напр. null data) не заворачиваем в 500.
+            throw e
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
@@ -188,6 +197,10 @@ class CmsService(
             }
 
             return CmsResponse(cms = Base64.getEncoder().encodeToString(signed.encoded))
+        } catch (e: ApplicationException) {
+            // Намеренно классифицированные ошибки (400 «CMS/data not specified»)
+            // не заворачиваем в 500 — раньше свой же ClientException глотался.
+            throw e
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }
@@ -205,6 +218,7 @@ class CmsService(
         checkOcsp: Boolean,
         checkCrl: Boolean,
     ): CmsVerificationResponse {
+        warnIfRevocationDisabled(checkOcsp, checkCrl)
         try {
             var cms = CMSSignedData(Base64.getDecoder().decode(signedCms.toByteArray(StandardCharsets.UTF_8)))
 
@@ -337,8 +351,19 @@ class CmsService(
             }
 
             return CmsVerificationResponse(valid = valid, signers = signers)
-        } catch (e: Exception) {
+        } catch (e: ApplicationException) {
+            throw e
+        } catch (e: CMSException) {
+            // Битая CMS-структура — ошибка входа клиента.
             throw ClientException(e.message, e)
+        } catch (e: IllegalArgumentException) {
+            // Невалидный base64 в signedCms/detachedData — тоже клиентский вход.
+            throw ClientException(e.message, e)
+        } catch (e: Exception) {
+            // Всё остальное (сбой OCSP/CA-цепочки, NPE в Kalkan) — ВНУТРЕННЯЯ
+            // ошибка: 500, а не 400. Раньше всё маппилось в ClientException,
+            // и клиент думал, что его CMS битый, при упавшей инфраструктуре.
+            throw ServerException(e.message, e)
         }
     }
 
@@ -441,6 +466,10 @@ class CmsService(
                 generator.addSigner(privateKey, x509, getDigestAlgorithmOidBYSignAlgorithmOid(x509.sigAlgOID))
                 certificates.add(x509)
             }
+        } catch (e: ApplicationException) {
+            // ClientException от KalkanWrapper.read (плохой пароль p12) — 400,
+            // не заворачиваем в 500 (иначе /cms/sign отдавал бы 500 на плохой ключ).
+            throw e
         } catch (e: Exception) {
             throw ServerException(e.message, e)
         }

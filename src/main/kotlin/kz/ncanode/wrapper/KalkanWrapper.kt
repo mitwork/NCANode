@@ -3,8 +3,8 @@ package kz.ncanode.wrapper
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.constants.MessageConstants
 import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
-import kz.ncanode.exception.ServerException
 import kz.ncanode.util.getAliases
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -89,15 +89,17 @@ class KalkanWrapper(val kalkanProvider: KalkanProvider) {
         signers.mapIndexed { index, request -> tryReadKey(request, index) }
 
     /**
-     * Пытается прочитать ключ. Если ничего не получилось, оборачивает в
-     * ServerException с индексом подписанта.
+     * Пытается прочитать ключ. `KeyException` (неверный пароль p12, битый
+     * base64, не-p12) — это ошибка ВХОДА клиента → [ClientException] (400),
+     * а не 500. Совпадает с задокументированной per-item семантикой batch
+     * (CLAUDE.md: «400 — плохой p12 пароль»).
      */
     private fun tryReadKey(request: SignerRequest, index: Int): KeyStoreWrapper = try {
         read(request.key, request.keyAlias, request.password)
     } catch (e: KeyException) {
         val errorMessage = "signers[$index]: ${e.message}"
-        log.error(errorMessage, e.cause)
-        throw ServerException(errorMessage, e.cause)
+        log.warn(errorMessage)
+        throw ClientException(errorMessage, e.cause)
     }
 
     /**

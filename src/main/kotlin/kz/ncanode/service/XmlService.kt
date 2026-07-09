@@ -11,6 +11,7 @@ import kz.ncanode.dto.response.XmlVerifyBatchResponse
 import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
 import org.springframework.http.HttpStatus
+import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.DocumentWrapper
 import kz.ncanode.wrapper.KalkanWrapper
@@ -41,11 +42,14 @@ class XmlService(
         val document = DocumentWrapper(xml)
 
         if (removeSignatures) {
-            val root = document.documentElement
-            val signatures = root.getElementsByTagName("ds:Signature")
-            for (i in 0 until signatures.length) {
-                root.removeChild(signatures.item(i))
-            }
+            val signatures = document.documentElement.getElementsByTagName("ds:Signature")
+            // Снимок узлов ДО удаления: getElementsByTagName отдаёт live NodeList,
+            // который переиндексируется при removeChild. Итерация `0 until length`
+            // фиксирует границу один раз, список укорачивается → на ≥2 подписях
+            // item(i) становится null → падение (+ удаление не тех узлов). Удаляем
+            // через parentNode, а не root — подпись может быть не прямым потомком.
+            val toRemove = (0 until signatures.length).mapNotNull { signatures.item(it) }
+            toRemove.forEach { it.parentNode?.removeChild(it) }
         }
 
         return document
@@ -137,6 +141,7 @@ class XmlService(
      * Проверяет XML-подписи.
      */
     fun verify(xml: String, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
+        warnIfRevocationDisabled(checkOcsp, checkCrl)
         val document = read(xml, false)
         val root = document.documentElement
         val initial = root.getElementsByTagName("ds:Signature").length
@@ -158,7 +163,7 @@ class XmlService(
             if (cert == null) {
                 valid = false
                 certs.add(null)
-                root.removeChild(signature)
+                signature.parentNode?.removeChild(signature)
                 continue
             }
 
@@ -175,7 +180,10 @@ class XmlService(
             if (!xmlSignature.check() || !coversWhole || !cert.isValid(currentDate, checkOcsp, checkCrl)) {
                 valid = false
             }
-            root.removeChild(signature)
+            // Удаляем через parentNode: подпись может быть вложена не в корень
+            // (enveloped внутри контейнера) — root.removeChild тогда бросал
+            // DOMException → 500 вместо честного valid=false.
+            signature.parentNode?.removeChild(signature)
 
             certs.add(cert)
         }

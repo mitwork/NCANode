@@ -20,6 +20,7 @@ import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
 import org.springframework.http.HttpStatus
+import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import org.springframework.stereotype.Service
@@ -112,6 +113,7 @@ class CertificateService(
         val date = getCurrentDate()
         val withOcsp = CertificateRevocation.OCSP in request.revocationCheck
         val withCrl = CertificateRevocation.CRL in request.revocationCheck
+        warnIfRevocationDisabled(withOcsp, withCrl)
 
         val keys = kalkanWrapper.read(request.keys)
         val certs = mutableListOf<CertificateInfo>()
@@ -227,6 +229,7 @@ class CertificateService(
     }
 
     fun info(certsBase64: List<String>, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
+        warnIfRevocationDisabled(checkOcsp, checkCrl)
         try {
             var valid = true
             val currentDate = getCurrentDate()
@@ -303,6 +306,7 @@ class CertificateService(
         checkOcsp: Boolean,
         checkCrl: Boolean,
     ): VerificationResponse {
+        warnIfRevocationDisabled(checkOcsp, checkCrl)
         try {
             var valid = true
             val currentDate = getCurrentDate()

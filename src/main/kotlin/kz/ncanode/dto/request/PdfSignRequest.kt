@@ -1,6 +1,8 @@
 package kz.ncanode.dto.request
 
+import jakarta.validation.Valid
 import jakarta.validation.constraints.NotEmpty
+import jakarta.validation.constraints.NotNull
 import kz.ncanode.dto.tsp.TsaPolicy
 
 class PdfSignRequest {
@@ -8,6 +10,7 @@ class PdfSignRequest {
     var pdf: String = ""
 
     @NotEmpty
+    @Valid
     var signers: List<PdfSigner> = emptyList()
 
     var isWithTsp: Boolean = false
@@ -19,7 +22,12 @@ class PdfSignRequest {
         var location: String? = null
         var contactInfo: String? = null
 
-        @NotEmpty
-        lateinit var signer: SignerRequest
+        // Было `@NotEmpty lateinit var signer`: @NotEmpty на объекте — невалидный
+        // target (мёртв), а отсутствие поля → lateinit не инициализирован →
+        // UninitializedPropertyAccessException → 500. Теперь nullable + @NotNull
+        // @Valid: отсутствие/невалидный signer ловится валидацией как 400.
+        @NotNull
+        @Valid
+        var signer: SignerRequest? = null
     }
 }

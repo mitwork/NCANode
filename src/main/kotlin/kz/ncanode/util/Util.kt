@@ -8,16 +8,18 @@ import kz.gov.pki.kalkan.asn1.pkcs.PKCSObjectIdentifiers
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.net.InetAddress
 import java.net.MalformedURLException
 import java.net.URI
 import java.net.URISyntaxException
 import java.net.URL
+import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
-import java.util.regex.Pattern
 
 private val log: Logger = LoggerFactory.getLogger("kz.ncanode.util.Util")
+private val revocationLog: Logger = LoggerFactory.getLogger("kz.ncanode.revocation")
 private val HEX_CHARS = "0123456789ABCDEF".toCharArray()
 
 fun sha1(data: String): String = try {
@@ -96,12 +98,40 @@ fun getDigestAlgorithmOidBYSignAlgorithmOid(signOid: String): String = when (sig
     else -> CMSSignedDataGenerator.DIGEST_GOST34311_95
 }
 
-fun findAllUrls(str: String): List<String> {
-    val p = Pattern.compile("https?://[^\\s]+", Pattern.CASE_INSENSITIVE)
-    val matcher = p.matcher(str)
-    val urls = mutableListOf<String>()
-    while (matcher.find()) {
-        urls.add(str.substring(matcher.start(), matcher.end()))
+/**
+ * Минимальный SSRF-барьер для URL, взятых ИЗ сертификата (CRL DP / OCSP AIA):
+ * блокирует хосты, которые не бывают легитимными revocation-эндпойнтами —
+ * loopback (127/8, ::1), link-local (169.254/16, включая cloud-metadata
+ * 169.254.169.254, и fe80::/10), wildcard (0.0.0.0). Site-local/RFC1918
+ * НЕ блокируем: приватный внутренний PKI — легитимный кейс (для его отсечения
+ * есть strict-режим).
+ *
+ * Резолвит хост один раз; это best-effort — от DNS-rebinding (хост резолвится
+ * в публичный IP здесь, но в приватный на этапе соединения) полноценно не
+ * защищает. Для гарантий используйте strict-режим (только конфиг-URL).
+ * Если хост не резолвится — не блокируем: последующий запрос сам упадёт
+ * с IOException (→ UNAVAILABLE).
+ */
+fun isInternalHost(url: URL): Boolean = try {
+    val addr = InetAddress.getByName(url.host)
+    addr.isLoopbackAddress || addr.isLinkLocalAddress || addr.isAnyLocalAddress
+} catch (e: UnknownHostException) {
+    false
+}
+
+/**
+ * Пишет WARN, если верификация выполняется БЕЗ проверки отзыва (клиент не
+ * передал `revocationCheck`). Отозванный, но в остальном валидный сертификат
+ * в этом случае пройдёт как valid — оператор должен видеть это в логах.
+ * revocationCheck намеренно opt-in (upstream-совместимость), поэтому это
+ * WARN-предупреждение, а не отказ.
+ */
+fun warnIfRevocationDisabled(checkOcsp: Boolean, checkCrl: Boolean) {
+    if (!checkOcsp && !checkCrl) {
+        revocationLog.warn(
+            "Verification performed WITHOUT revocation check (revocationCheck is empty): " +
+                "a revoked certificate will still pass as valid. " +
+                "Pass revocationCheck=[\"OCSP\",\"CRL\"] to enable revocation checking.",
+        )
     }
-    return urls
 }

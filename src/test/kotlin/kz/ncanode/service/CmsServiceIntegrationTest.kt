@@ -17,7 +17,9 @@ import kz.ncanode.dto.request.CmsCreateBatchRequest
 import kz.ncanode.dto.request.CmsCreateRequest
 import kz.ncanode.dto.request.CmsExtractBatchRequest
 import kz.ncanode.dto.request.CmsVerifyBatchRequest
+import kz.ncanode.dto.certificate.RevocationResult
 import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.exception.ClientException
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.wrapper.KalkanWrapper
 import org.springframework.beans.factory.annotation.Autowired
@@ -115,6 +117,11 @@ class CmsServiceIntegrationTest(
 
         val verification = cmsService.verify(signed.cms!!, null, checkOcsp = true, checkCrl = false)
         verification.valid shouldBe false
+        // Контракт revocations[].result (quirk #28): отзыв виден явно per-channel,
+        // а не только в top-level valid — иначе клиент не отличит «поймали отзыв»
+        // от «OCSP упал». OCSP-канал должен показать REVOKED.
+        val revocations = verification.signers.first().certificates.first().revocations.orEmpty()
+        revocations.any { it.result == RevocationResult.REVOKED } shouldBe true
     }
 
     test("extract returns the original data from attached CMS") {
@@ -144,6 +151,25 @@ class CmsServiceIntegrationTest(
         val verification = cmsService.verify(signed.cms!!, payloadB64, checkOcsp = false, checkCrl = false)
         verification.valid shouldBe true
         verification.signers shouldHaveSize 1
+    }
+
+    test("verify: detached CMS with WRONG data is rejected (signature must be checked)") {
+        // Крипто-негатив: без реальной проверки подписи это прошло бы как
+        // valid=true. Подпись detached-CMS стоит над "correct", проверяем с
+        // другими данными. Реализация отвергает несовпадение дайджеста — либо
+        // valid=false, либо ClientException("content hash ... different").
+        // Главное — вход НЕ принимается как valid=true.
+        val signed = cmsService.create(CmsCreateRequest().apply {
+            data = b64("correct payload")
+            signers = listOf(signerOf("individual_valid.p12"))
+            isDetached = true
+        })
+        val accepted = try {
+            cmsService.verify(signed.cms!!, b64("tampered payload"), checkOcsp = false, checkCrl = false).valid
+        } catch (e: ClientException) {
+            false // дайджест не сошёлся → отвергнуто на этапе проверки подписи
+        }
+        accepted shouldBe false
     }
 
     test("multi-signer CMS: two valid signers both verified") {

@@ -15,6 +15,7 @@ import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
 import org.springframework.http.HttpStatus
+import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.XMLSignatureWrapper
@@ -105,6 +106,8 @@ class WsseService(
                 transformer.transform(DOMSource(doc), StreamResult(os))
                 XmlSignResponse(xml = os.toString())
             }
+        } catch (e: ApplicationException) {
+            throw e
         } catch (e: KeyException) {
             throw ClientException(e.message, e)
         } catch (e: Exception) {
@@ -144,6 +147,7 @@ class WsseService(
      * Проверяет подписанный SOAP-конверт.
      */
     fun verify(xml: String, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
+        warnIfRevocationDisabled(checkOcsp, checkCrl)
         try {
             val xmlBytes = xmlService.prepare(xml, false).toByteArray(StandardCharsets.UTF_8)
             val msg = MessageFactory.newInstance().createMessage(null, xmlBytes.inputStream())

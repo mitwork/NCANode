@@ -7,6 +7,7 @@ import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.dto.crl.CrlStatus
 import kz.ncanode.exception.CrlException
 import kz.ncanode.exception.ServerException
+import kz.ncanode.util.isInternalHost
 import kz.ncanode.util.sha1
 import kz.ncanode.wrapper.CertificateWrapper
 import org.bouncycastle.asn1.ASN1Integer
@@ -22,7 +23,6 @@ import java.math.BigInteger
 import java.net.URI
 import java.net.URL
 import java.net.http.HttpClient
-import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
@@ -509,6 +509,11 @@ open class CrlService(
      * SSRF через подконтрольный атакующему cert.
      */
     private fun fetchOnDemandCrls(cert: CertificateWrapper) {
+        // Strict-режим (SSRF): on-demand загрузка по CRL DP серта отключена —
+        // используем только scheduled конфиг-CRL. Серт не может заставить нас
+        // скачать CRL с произвольного (внутреннего) URL.
+        if (crlConfiguration.isStrict) return
+
         val crlUrls = cert.crlList
         if (crlUrls.isEmpty()) return
 
@@ -519,7 +524,9 @@ open class CrlService(
         val cacheDir = directoryService.getCachePathFor(dirName) ?: return
 
         for (url in crlUrls) {
-            if (!isAllowedCrlScheme(url)) continue
+            // Минимальный SSRF-барьер: URL из серта не должен указывать на
+            // loopback/link-local (cloud-metadata) — см. isInternalHost.
+            if (!isAllowedCrlScheme(url) || isInternalHost(url)) continue
             val fileName = sha1(url.toString()) + CRL_FILE_EXTENSION
 
             // Дедуп: если URL уже покрывается scheduled-flow'ом (т.е. файл
@@ -635,9 +642,7 @@ open class CrlService(
         // и проверки revocation продолжают работать на нём до следующего цикла.
         val tmpPath = path.resolveSibling(path.fileName.toString() + ".tmp")
         try {
-            val request = HttpRequest.newBuilder(URI(url))
-                .timeout(httpClientConfiguration.requestTimeoutDuration)
-                .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+            val request = httpClientConfiguration.requestBuilder(URI(url))
                 .GET()
                 .build()
             // ofFile стримит ответ прямо в tmp-файл — для крупных CRL (десятки MB)

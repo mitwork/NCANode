@@ -34,11 +34,24 @@ class KeyStoreWrapperTest : FunSpec({
         ks.aliases shouldContain ks.alias
     }
 
-    test("private key public-key roundtrip — derived public matches cert public") {
+    test("private/public keypair roundtrip — privateKey signs, cert publicKey verifies") {
+        // Раньше тут было `x509Certificate.publicKey shouldBe cert.publicKey` —
+        // тавтология (cert.publicKey = get() = x509Certificate.publicKey, X==X).
+        // Настоящая проверка: приватный ключ keystore и публичный ключ его cert'а
+        // — пара. Подписываем приватным, проверяем публичным cert'а.
         val ks = read("individual_valid.p12")
-        // Не сравниваем PrivateKey напрямую (опасно), но проверяем, что
-        // cert и keystore возвращают cert одного и того же alias'а.
         val cert = ks.certificate
-        cert.x509Certificate.publicKey shouldBe cert.publicKey
+        val data = "ncanode-keypair-roundtrip".toByteArray()
+        val algName = cert.x509Certificate.sigAlgName
+
+        val signer = java.security.Signature.getInstance(algName, KalkanProvider.PROVIDER_NAME)
+        signer.initSign(ks.privateKey)
+        signer.update(data)
+        val signature = signer.sign()
+
+        val verifier = java.security.Signature.getInstance(algName, KalkanProvider.PROVIDER_NAME)
+        verifier.initVerify(cert.publicKey)
+        verifier.update(data)
+        verifier.verify(signature) shouldBe true
     }
 })

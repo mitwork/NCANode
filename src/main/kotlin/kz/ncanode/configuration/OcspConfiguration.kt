@@ -20,6 +20,15 @@ open class OcspConfiguration {
      */
     var isParallelEnabled: Boolean = true
 
+    /**
+     * Strict-режим (SSRF-защита). Если true — OCSP-проверка ИГНОРИРУЕТ AIA
+     * сертификата и ходит только на сконфигурированный `NCANODE_OCSP_URL`.
+     * Так серт злоумышленника не может заставить сервер обратиться к
+     * произвольному (внутреннему) хосту. Default false — текущее поведение
+     * (AIA-first, config-fallback).
+     */
+    var isStrict: Boolean = false
+
     val urlList: Map<String, URL>
         get() = urlMap(url, log)
 

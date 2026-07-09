@@ -53,6 +53,7 @@ docker run -p 14579:14579 -v ncanode_cache:/app/cache -d malikzh/ncanode
   * https://crl.pki.gov.kz/nca_d_gost_2022.crl
   * https://crl.pki.gov.kz/nca_d_rsa_2022.crl
 * `NCANODE_CRL_DELTA_TTL` - Время жизни Delta-CRL в кэше (по умолчанию 1440 минут)
+* `NCANODE_CRL_STRICT` - Строгий режим CRL (SSRF-защита). Если `true`, on-demand загрузка CRL по адресу из проверяемого сертификата (`cRLDistributionPoints`) отключена — используются только сконфигурированные CRL (`NCANODE_CRL_URL` / `NCANODE_CA_CRL_URL`). Так сертификат злоумышленника не заставит сервер обратиться к произвольному (внутреннему) хосту. По умолчанию: `false`. Независимо от флага, адреса из сертификата, указывающие на loopback/link-local (напр. 169.254.169.254), всегда блокируются.
 * `NCANODE_HTTP_CLIENT_CONNECT_TIMEOUT` - Таймаут установления TCP-соединения для исходящих HTTP-запросов в секундах (по умолчанию: 5)
 * `NCANODE_HTTP_CLIENT_REQUEST_TIMEOUT` - Общий бюджет на исходящий HTTP-запрос (включая отдачу тела) в секундах. Влияет на скачивание крупных CRL (по умолчанию: 30)
 * `NCANODE_HTTP_CLIENT_USER_AGENT` - HTTP заголовок User-Agent у клиента
@@ -60,6 +61,7 @@ docker run -p 14579:14579 -v ncanode_cache:/app/cache -d malikzh/ncanode
 * `NCANODE_PROXY_USERNAME` - Имя пользователя в прокси
 * `NCANODE_PROXY_PASSWORD` - Пароль прокси
 * `NCANODE_OCSP_URL` - OCSP-сервер куда будут происходить запросы. По умолчанию: http://ocsp.pki.gov.kz/
+* `NCANODE_OCSP_STRICT` - Строгий режим OCSP (SSRF-защита). Если `true`, OCSP-проверка игнорирует адрес responder'а из AIA сертификата и ходит только на сконфигурированный `NCANODE_OCSP_URL`. По умолчанию: `false` (AIA-first, config-fallback).
 * `NCANODE_CA_URL` - URL-ы корневых сертификатов. Они скачиваются автоматически при запуске NCANode. По умолчанию:
   * https://pki.gov.kz/cert/nca_rsa.crt
   * https://pki.gov.kz/cert/nca_gost.crt
@@ -77,6 +79,11 @@ docker run -p 14579:14579 -v ncanode_cache:/app/cache -d malikzh/ncanode
 * `NCANODE_TSP_RETRIES` - Количество неудачных попыток обращения к TSP-серверу, по умолчанию: 3
 
 ## Проверка отзыва сертификатов (OCSP / CRL)
+
+Проверка отзыва — **opt-in**: если `revocationCheck` в запросе не указан, отзыв
+**не проверяется**, и отозванный (но в остальном валидный) сертификат пройдёт
+как `valid: true`. В этом случае в логах пишется предупреждение (WARN). Чтобы
+включить проверку, передайте `revocationCheck: ["OCSP", "CRL"]`.
 
 Если в запросе верификации указаны обе проверки (`revocationCheck: ["OCSP", "CRL"]`),
 выполняются **обе**, и отзыв, найденный любым из каналов, делает сертификат

@@ -187,22 +187,6 @@ class TspService(
         }
     }
 
-    fun info(data: CMSSignedData): TimeStampTokenInfo? = try {
-        val tspt = TimeStampToken(data)
-        val certs = data.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME)
-        val certCollection = certs.getCertificates(tspt.sid)
-        val cert = certCollection.firstOrNull() as? X509Certificate
-        if (cert == null) {
-            null
-        } else {
-            tspt.validate(cert, KalkanProvider.PROVIDER_NAME)
-            tspt.timeStampInfo
-        }
-    } catch (e: Exception) {
-        log.error("TSP verification error.", e)
-        null
-    }
-
     fun generateNonce(): BigInteger = BigInteger.valueOf(System.currentTimeMillis())
 
     @Throws(NoSuchAlgorithmException::class, NoSuchProviderException::class, TSPException::class, IOException::class)
@@ -228,9 +212,7 @@ class TspService(
             throw TspException("Invalid tsp url")
         }
 
-        val httpRequest = HttpRequest.newBuilder(URI(url.toString()))
-            .timeout(httpClientConfiguration.requestTimeoutDuration)
-            .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+        val httpRequest = httpClientConfiguration.requestBuilder(URI(url.toString()))
             .header("Content-Type", "application/timestamp-query")
             .POST(HttpRequest.BodyPublishers.ofByteArray(request))
             .build()

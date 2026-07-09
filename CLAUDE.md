@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 223 теста / **77% coverage**.
+- **Состояние v4:** functional + 233 теста / **76% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -122,7 +122,17 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-223 теста / **77% line coverage**.
+⏰ **ДЕДЛАЙН: valid-ключи истекают 2027-05-07** (период валидности
+2026-05-08…2027-05-07). После этой даты КАЖДЫЙ roundtrip-тест (CMS/XML/WSSE/
+JWT/PDF/X509/PKCS12) начнёт возвращать `valid=false` из-за `isDateValid`, и
+`CertificateWrapperTest` («…valid period in 2026») тоже упадёт — это
+детерминированная поломка всей интеграционной части. Плюс `*_revoked.p12`
+зависят от того, что OCSP test.pki.gov.kz продолжает отдавать REVOKED по их
+серийникам (после ротации SDK-пака слетит). Процедура обновления: перекачать
+NCA SDK 2.0 test pack, заменить p12 в `p12/`, сверить новый период валидности,
+обновить эту дату.
+
+233 теста / **76% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -149,7 +159,7 @@ REVOKED-ветка покрывается через mock'нутый `X509CRL`, 
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 223 теста + JaCoCo report
+./gradlew test                   # 233 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -252,8 +262,9 @@ API `jakarta.xml.soap-api`, реализацию SAAJ нужно дать явн
 
 ### 8. Spring AspectJ starter
 SB 4 переименовал `spring-boot-starter-aop` → `spring-boot-starter-aspectj`.
-Нужен для `@EnableScheduling` + `@EnableAsync` (которые включены
-в NCANode.kt).
+Нужен для `@EnableScheduling` (в NCANode.kt). `@EnableAsync`/`AsyncConfiguration`
+удалены в аудите P2 (quirk #32): `@Async` нигде не использовался, а executor
+был неинициализирован.
 
 ### 9. @EnableCaching, @EnableRetry, spring-retry, starter-cache — УДАЛЕНЫ
 Нет `@Cacheable` / `@Retryable` использования в коде.
@@ -636,6 +647,76 @@ coverage 76% → **77%**.
 — лишь pre-warm-список, который дрейфовал. Отсюда следствие: `crl.root.gov.kz`
 — живая зависимость и в тестах (через on-demand при загрузке CA-бандла), правки
 конфига новых хостов не добавили.
+
+### 32. Аудит кода (P0/P1): гонка CA, HTTP-статусы, SSRF strict-режим
+Многоагентный аудит (5 областей) + верификация → отчёт/план в
+`code-audit-plan.md` (рабочий артефакт v4, **не** для upstream). Крипто-ядро
+признано корректным (подделка не проходит); баги — в сторону «ложный отказ /
+неверный HTTP-код / 500». Закрыты P0 (корректность) + P1 (безопасность):
+
+**P0:**
+- **Гонка `CaService`** (H1): геттер `rootCertificates` отдавал живой
+  `mutableList`, который `updateCache` мутировал `clear()+addAll()` — lock-free
+  читатель ловил CME либо транзиентно пустой список → issuer=null → ложный
+  `valid:false`. Фикс: `@Volatile var certificates: List` + атомарная замена
+  снапшота + `certificatesLock`; геттер lock-free. `CaServiceConcurrencyTest`.
+- **HTTP-статусы** (H2/H3/M1/M6/M7): advice ловил `HttpMessageNotReadableException`
+  (RuntimeException) → битый JSON давал 500; `MethodArgumentNotValidException`
+  (не RuntimeException) шёл мимо `ErrorResponse`. Фикс: специфичные хендлеры
+  (parse/validation→400 с полями), catch-all на `RuntimeException` (НЕ
+  `Exception` — иначе съесть 405/415), обобщённый message. Единая политика
+  исключений: guard `catch(ApplicationException){throw e}` в одиночных
+  verify/sign (Cms/Pdf/Jwt/Wsse) — раньше свой же 400 глотался в 500;
+  `KalkanWrapper.tryReadKey`: `KeyException→ClientException` (плохой пароль p12 =
+  400, quirk #22); `CmsService.verify` таксономия (битый CMS→400, внутренние→500).
+- **XML DOM** (M2/M3): `clearSignatures`/`verify` — снимок узлов +
+  `parentNode.removeChild` (было: live NodeList → 500 на ≥2/вложенных подписях).
+- **Валидация** (M4/M5): `PdfSigner.signer` `@NotNull @Valid` nullable (было
+  `lateinit`→500); `@Valid`-каскад на 8 sign/info DTO.
+
+**P1 (security):**
+- **SSRF** (M9): URL берутся ИЗ серта (OCSP AIA — priority, CRL DP — on-demand),
+  фильтр был только по схеме. Решение (согласовано): **strict-режим**
+  `NCANODE_OCSP_STRICT`/`NCANODE_CRL_STRICT` (default false) — только конфиг-URL,
+  игнор cert-URL. **Плюс** минимальный host-block `isInternalHost` в default:
+  loopback/link-local(169.254 cloud-metadata)/any-local отсекаются для cert-URL;
+  RFC1918 НЕ блокируется (легит. внутренний PKI — для него strict). Оба CRL-конфига
+  на один `NCANODE_CRL_STRICT`. Синергия с quirk #31: strict не теряет покрытие
+  НУЦ (всё в конфиге).
+- **OCSP CertID** (RFC 6960 §3.2): сверка `singleResp.certID.serialNumber` с
+  запрошенным — responder не может подсунуть статус чужого серийника в [0].
+- **crlList/ocspUrls**: broaden `catch(Exception)` — крафт-серт с URI-тегом не
+  на IA5String (`DERIA5String.getInstance`→`IllegalArgumentException`) больше не
+  даёт 500, просто нет URL.
+- **revocationCheck default**: оставлен opt-in (upstream-совместимость), но
+  `warnIfRevocationDisabled` пишет WARN в 6 verify-методах, когда отзыв не
+  запрошен (отозванный серт молча проходит — оператор должен видеть).
+
+Грабли аудита: (1) M1 (`KeyException→ClientException`) сам по себе даёт 400 для
+плохого пароля (verify-методы без catch отдают ClientException в advice); мог бы
+регрессировать Jwt/Wsse (полагались на `catch(KeyException)`), но они на
+single-overload `read` — не задеты. (2) 2 теста кодировали старое 500-поведение
+плохого пароля — обновлены на 400. (3) OCSP serial-check валидируется живой
+интеграцией (ответы test.pki.gov.kz имеют совпадающий serial).
+
+**P2 (ресурсы):** `CertificateWrapper.fromFile` — `FileInputStream.use{}` (был
+FD-leak); удалена `AsyncConfiguration` (@Async нигде не использовался, executor
+неинициализирован); `effectiveUserAgent` — версия из `BuildProperties` (был
+"NCANode/dev", т.к. `implementationVersion` = null в boot-jar).
+
+**P3 (качество, частично):** удалено ~400+ строк мёртвого кода — пакет `oid/`
+(336, 0 ссылок), `TspService.info`, `fromBase64`, `findAllUrls`,
+`CertificateGender/gender`. `HttpClientConfiguration.requestBuilder(uri)` делает
+инвариант quirk #24 (непустой UA) структурным (4 сервиса). Тяжёлые рефакторы
+(mapPartial на 15 batch, generateSignedCms, god-методы) осознанно отложены как
+отдельный `refactor:`-заход — чистое behavior-preserving изменение с
+regression-поверхностью, нечего мешать с багфиксами. См. `code-audit-plan.md`.
+
+**P4 (тесты):** crypto-негативы для JWT/CMS/XML (tamper/чужой cert → verify
+отвергает — раньше прошли бы при полностью сломанной проверке подписи);
+`revocations[].result == REVOKED` (контракт quirk #28); `KeyStoreWrapperTest` —
+реальный sign/verify пары ключей вместо тавтологии; ⏰ дедлайн 2027-05-07
+задокументирован. Суть **233**, coverage 76%.
 
 ## Что не покрыто тестами (≈494 lines)
 

@@ -5,6 +5,7 @@ import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import kz.ncanode.TestResources
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.SignerRequest
@@ -82,6 +83,19 @@ class XmlServiceIntegrationTest(
         val verification = xmlService.verify(signed.xml!!, checkOcsp = false, checkCrl = false)
         verification.valid shouldBe true
         verification.signers shouldHaveSize 1
+    }
+
+    test("verify: tampered content after signing → valid=false (digest must be checked)") {
+        // Крипто-негатив: без реальной проверки дайджеста Reference'а этот тест
+        // прошёл бы как valid=true. Подписываем, затем портим содержимое <data>.
+        val signed = xmlService.sign(XmlSignRequest().apply {
+            xml = """<?xml version="1.0" encoding="UTF-8"?><root><data>hello</data></root>"""
+            signers = listOf(signerOf("individual_valid.p12"))
+        }).xml!!
+        val tampered = signed.replace("hello", "haxed")
+        tampered shouldNotBe signed // замена реально произошла — иначе тест пуст
+
+        xmlService.verify(tampered, checkOcsp = false, checkCrl = false).valid shouldBe false
     }
 
     test("multi-signer XML: two signers, two ds:Signature elements, both verify") {

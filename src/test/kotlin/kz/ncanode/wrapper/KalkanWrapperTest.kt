@@ -9,7 +9,7 @@ import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.exception.KeyException
-import kz.ncanode.exception.ServerException
+import kz.ncanode.exception.ClientException
 
 class KalkanWrapperTest : FunSpec({
 
@@ -75,7 +75,7 @@ class KalkanWrapperTest : FunSpec({
         keyStores.forEach { it.certificate shouldNotBe null }
     }
 
-    test("read(List) wraps single signer failure with index-aware ServerException") {
+    test("read(List) wraps single signer failure with index-aware ClientException (400)") {
         val keys = listOf(
             SignerRequest().apply {
                 key = TestResources.loadAsBase64("p12/individual_valid.p12")
@@ -86,7 +86,9 @@ class KalkanWrapperTest : FunSpec({
                 password = "wrong"
             },
         )
-        val ex = shouldThrow<ServerException> { wrapper.read(keys) }
+        // Неверный пароль p12 — ошибка ВХОДА клиента → ClientException (400),
+        // не 500 (аудит M1 / CLAUDE.md quirk #22 «400 — плохой p12 пароль»).
+        val ex = shouldThrow<ClientException> { wrapper.read(keys) }
         // Сообщение должно включать индекс сломанного signer'а — без него
         // оператор не понимает, какой ключ невалидный в multi-signer запросе.
         ex.message shouldContain "signers[1]"

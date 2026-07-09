@@ -41,6 +41,18 @@ class JwtServiceIntegrationTest(
         }
     }
 
+    // cert-base64 из p12 (нужен для decode). JDK KeyStore через KalkanProvider.
+    fun certBase64Of(p12Name: String): String {
+        val ks = java.security.KeyStore.getInstance(
+            "PKCS12", kz.gov.pki.kalkan.jce.provider.KalkanProvider.PROVIDER_NAME,
+        )
+        java.io.ByteArrayInputStream(
+            java.util.Base64.getDecoder().decode(TestResources.loadAsBase64("p12/$p12Name"))
+        ).use { ks.load(it, TestResources.P12_PASSWORD.toCharArray()) }
+        val cert = ks.getCertificate(ks.aliases().nextElement())
+        return java.util.Base64.getEncoder().encodeToString(cert.encoded)
+    }
+
     test("encode GG2015 + decode roundtrip — valid signature, payload preserved") {
         val encoded = jwtService.encode(
             encodeRequest("individual_valid.p12", mapOf("sub" to "ncanode-test", "n" to 42))
@@ -49,27 +61,9 @@ class JwtServiceIntegrationTest(
         // JWT — три base64-url-safe сегмента через точку, начинается с header.
         encoded.jwt!! shouldStartWith "eyJ"
 
-        // Извлекаем cert из p12 (через KalkanWrapper побочно — но для decode нам нужен
-        // именно cert-base64). Проще: тот же KalkanWrapper читает p12 и отдаёт cert,
-        // его кодируем в base64 и передаём в decode.
-        val ks = jwtService.javaClass.getDeclaredField("kalkanWrapper").apply { isAccessible = true }
-        // Альтернативный путь без reflection — но он короче: используем
-        // certBase64 из toCertificateInfo().publicKey? Нет, нужен сам cert PEM/DER.
-        // Прямо через KalkanWrapper.read недоступно; берём cert из p12 через
-        // встроенный JDK KeyStore — приоритет читаемости.
-        val raw = java.io.ByteArrayInputStream(
-            java.util.Base64.getDecoder().decode(TestResources.loadAsBase64("p12/individual_valid.p12"))
-        )
-        val keyStore = java.security.KeyStore.getInstance("PKCS12",
-            kz.gov.pki.kalkan.jce.provider.KalkanProvider.PROVIDER_NAME)
-        keyStore.load(raw, TestResources.P12_PASSWORD.toCharArray())
-        val alias = keyStore.aliases().nextElement()
-        val cert = keyStore.getCertificate(alias)
-        val certBase64 = java.util.Base64.getEncoder().encodeToString(cert.encoded)
-
         val decoded = jwtService.decode(JwtDecodeRequest().apply {
             jwt = encoded.jwt!!
-            key = certBase64
+            key = certBase64Of("individual_valid.p12")
         })
 
         decoded.valid shouldBe true
@@ -143,6 +137,35 @@ class JwtServiceIntegrationTest(
         // Маршрут "не валидный JWT" — ClientException(400) внутри decode → ловится → valid=false + 400.
         response.results[1].valid shouldBe false
         response.results[1].status shouldBe 400
+    }
+
+    test("decode: tampered payload → valid=false (signature must be checked)") {
+        // Крипто-негатив: без реальной проверки подписи этот тест бы прошёл как
+        // valid=true. Берём валидный JWT, подменяем его payload на payload из
+        // другого валидного JWT (тот же ключ) — структура корректна (JWT.decode
+        // проходит), но подпись стоит над СТАРЫМ payload → verify обязан упасть.
+        val a = jwtService.encode(encodeRequest("individual_valid.p12", mapOf("sub" to "alpha"))).jwt!!
+        val b = jwtService.encode(encodeRequest("individual_valid.p12", mapOf("sub" to "beta"))).jwt!!
+        val (ha, _, sa) = a.split(".")
+        val pb = b.split(".")[1]
+        val tampered = "$ha.$pb.$sa" // header+подпись от A, payload от B → mismatch
+
+        val decoded = jwtService.decode(JwtDecodeRequest().apply {
+            jwt = tampered
+            key = certBase64Of("individual_valid.p12")
+        })
+        decoded.valid shouldBe false
+    }
+
+    test("decode: valid JWT verified with a DIFFERENT cert → valid=false") {
+        // Крипто-негатив: JWT подписан individual_valid, проверяем cert'ом
+        // legal_ceo_valid — подпись не должна сойтись.
+        val token = jwtService.encode(encodeRequest("individual_valid.p12", mapOf("sub" to "x"))).jwt!!
+        val decoded = jwtService.decode(JwtDecodeRequest().apply {
+            jwt = token
+            key = certBase64Of("legal_ceo_valid.p12")
+        })
+        decoded.valid shouldBe false
     }
 
     test("decode with malformed JWT throws ClientException") {

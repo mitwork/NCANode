@@ -9,7 +9,6 @@ data class CertificateSubject(
     val surName: String? = null,
     val email: String? = null,
     val organization: String? = null,
-    val gender: CertificateGender? = null,
     val iin: String? = null,
     val bin: String? = null,
     val country: String? = null,

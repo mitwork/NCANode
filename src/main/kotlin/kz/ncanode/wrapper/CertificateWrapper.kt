@@ -93,25 +93,28 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             val crlDistributionPoint = x509Certificate.getExtensionValue(Extension.cRLDistributionPoints.id)
                 ?: return emptyList()
 
-            val distPoint = try {
-                CRLDistPoint.getInstance(X509ExtensionUtil.fromExtensionValue(crlDistributionPoint))
-            } catch (e: IOException) {
-                return emptyList()
-            }
-
-            val urls = mutableListOf<String>()
-            for (dp in distPoint.distributionPoints) {
-                val dpn = dp.distributionPoint ?: continue
-                if (dpn.type != DistributionPointName.FULL_NAME) continue
-                val genNames = GeneralNames.getInstance(dpn.name).names
-                for (gn in genNames) {
-                    if (gn.tagNo == GeneralName.uniformResourceIdentifier) {
-                        urls.add(DERIA5String.getInstance(gn.name).string)
+            return try {
+                val distPoint = CRLDistPoint.getInstance(X509ExtensionUtil.fromExtensionValue(crlDistributionPoint))
+                val urls = mutableListOf<String>()
+                for (dp in distPoint.distributionPoints) {
+                    val dpn = dp.distributionPoint ?: continue
+                    if (dpn.type != DistributionPointName.FULL_NAME) continue
+                    val genNames = GeneralNames.getInstance(dpn.name).names
+                    for (gn in genNames) {
+                        if (gn.tagNo == GeneralName.uniformResourceIdentifier) {
+                            urls.add(DERIA5String.getInstance(gn.name).string)
+                        }
                     }
                 }
+                urls.mapNotNull { createNewUrl(it, log) }
+            } catch (e: Exception) {
+                // Битое/нестандартное cRLDistributionPoints не должно ронять
+                // verify в 500. Напр. URI-тег с не-IA5String → DERIA5String.getInstance
+                // кидает IllegalArgumentException (раньше был вне try → уходил в 500
+                // на крафт-серте). Любой сбой парсинга → просто нет CRL-URL.
+                log.warn("Failed to parse cRLDistributionPoints extension: {}", e.message)
+                emptyList()
             }
-
-            return urls.mapNotNull { createNewUrl(it, log) }
         }
 
     /**
@@ -139,8 +142,11 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
                     }
                     .mapNotNull { createNewUrl(it, log) }
                     .toList()
-            } catch (e: IOException) {
-                log.warn("Failed to parse AuthorityInformationAccess extension", e)
+            } catch (e: Exception) {
+                // IOException при разборе AIA либо IllegalArgumentException из
+                // DERIA5String на URI-теге с не-IA5String — оба не должны давать 500
+                // на крафт-серте; просто нет OCSP-URL из AIA.
+                log.warn("Failed to parse AuthorityInformationAccess extension: {}", e.message)
                 emptyList()
             }
         }
@@ -265,9 +271,6 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             "2.5.29.32", // certificatePolicies
         )
 
-        fun fromBase64(encodedCert: String): CertificateWrapper? =
-            fromBytes(Base64.getDecoder().decode(encodedCert.replace("\\s".toRegex(), "")))
-
         fun fromBytes(encodedCert: ByteArray): CertificateWrapper? = try {
             ByteArrayInputStream(encodedCert).use { fromInputStream(it) }
         } catch (e: IOException) {
@@ -282,7 +285,10 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
           catch (e: NoSuchProviderException) { null }
 
         fun fromFile(file: File): CertificateWrapper? = try {
-            fromInputStream(FileInputStream(file))
+            // .use — иначе FileInputStream не закрывается (fromInputStream его не
+            // закрывает), и каждый вызов fromFile течёт файловым дескриптором
+            // (CaService грузит каждый CA-серт с диска за цикл обновления).
+            FileInputStream(file).use { fromInputStream(it) }
         } catch (e: FileNotFoundException) {
             null
         }

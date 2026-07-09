@@ -13,6 +13,7 @@ ncanode:
     enabled: ${NCANODE_CRL_ENABLED:true}
     cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
     warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:true}
+    strict: ${NCANODE_CRL_STRICT:false}
     ttl: ${NCANODE_CRL_TTL:1440}
     url: ${NCANODE_CRL_URL:http://crl.pki.gov.kz/nca_rsa_2022.crl http://crl.pki.gov.kz/nca_gost_2022.crl}
     delta:
@@ -29,6 +30,7 @@ ncanode:
   ocsp:
     url: ${NCANODE_OCSP_URL:http://ocsp.pki.gov.kz/}
     parallelEnabled: ${NCANODE_OCSP_PARALLEL:true}
+    strict: ${NCANODE_OCSP_STRICT:false}
   ca:
     url: ${NCANODE_CA_URL:http://pki.gov.kz/cert/nca_rsa.crt http://pki.gov.kz/cert/nca_gost.crt http://pki.gov.kz/cert/root_gost_2022.cer http://root.gov.kz/cert/root_gost_2020.cer http://root.gov.kz/cert/root_rsa_2020.cer http://pki.gov.kz/cert/nca_gost_2022.cer http://pki.gov.kz/cert/nca_rsa_2022.cer}
     ttl: ${NCANODE_CA_TTL:1440}
@@ -36,6 +38,7 @@ ncanode:
       enabled: ${NCANODE_CA_CRL_ENABLED:true}
       cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
       warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:false}
+      strict: ${NCANODE_CRL_STRICT:false}
       ttl: ${NCANODE_CA_CRL_TTL:1440}
       url: ${NCANODE_CA_CRL_URL:http://crl.root.gov.kz/gost.crl http://crl.root.gov.kz/rsa.crl http://crl.root.gov.kz/gost2015_2022.crl http://crl.root.gov.kz/rsa2020.crl}
       delta:

@@ -61,6 +61,10 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
             )
 
             return JwtEncodeResponse(jwt = builder.sign(algorithm))
+        } catch (e: ApplicationException) {
+            // ClientException из resolveAlgorithm (unsupported alg / не тот тип
+            // ключа) — 400, а не 500.
+            throw e
         } catch (e: KeyException) {
             throw ClientException(e.message, e)
         } catch (e: Exception) {

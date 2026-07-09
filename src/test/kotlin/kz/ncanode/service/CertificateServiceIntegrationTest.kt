@@ -211,10 +211,10 @@ class CertificateServiceIntegrationTest(
         response.results shouldHaveSize 2
         response.results[0].status shouldBe 200
         response.results[0].signer.shouldNotBeNull()
-        // Неверный пароль → KalkanWrapper.tryReadKey оборачивает в
-        // ServerException (status=500). На batch-уровне попадает в catch
-        // и пишет per-item status=500.
-        response.results[1].status shouldBe 500
+        // Неверный пароль p12 — ошибка входа клиента → KalkanWrapper.tryReadKey
+        // бросает ClientException (400), batch-обвязка пишет per-item status=400
+        // (аудит M1 / CLAUDE.md quirk #22 «400 — плохой p12 пароль»).
+        response.results[1].status shouldBe 400
         response.results[1].signer.shouldBeNull()
     }
 

@@ -21,10 +21,12 @@ import kz.ncanode.dto.response.PdfVerificationResponse
 import kz.ncanode.dto.response.PdfVerifyBatchResponse
 import kz.ncanode.dto.tsp.TsaPolicy
 import kz.ncanode.exception.ApplicationException
+import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.NoSignaturesFoundException
 import kz.ncanode.exception.ServerException
 import org.springframework.http.HttpStatus
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
+import kz.ncanode.util.warnIfRevocationDisabled
 import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.KeyStoreWrapper
@@ -59,7 +61,11 @@ class PdfService(
 
         Loader.loadPDF(pdfBytes).use { document ->
             for (pdfSigner in pdfSignRequest.signers) {
-                val keyStoreWrapper = kalkanWrapper.read(listOf(pdfSigner.signer))[0]
+                // Валидация (@NotNull @Valid) отсекает null раньше, но тип
+                // nullable — оставляем защитный null-check как 400, не как NPE.
+                val signerRequest = pdfSigner.signer
+                    ?: throw ClientException("signer must be specified")
+                val keyStoreWrapper = kalkanWrapper.read(listOf(signerRequest))[0]
 
                 val signature = PDSignature().apply {
                     setFilter(PDSignature.FILTER_ADOBE_PPKLITE)
@@ -81,6 +87,10 @@ class PdfService(
             document.saveIncremental(outputStream)
             PdfSignResponse(pdf = Base64.getEncoder().encodeToString(outputStream.toByteArray()))
         }
+    } catch (e: ApplicationException) {
+        // Намеренный 400 (пустой ключ/пароль из KalkanWrapper, отсутствующий
+        // signer) не заворачиваем в 500.
+        throw e
     } catch (e: Exception) {
         log.error("Error signing PDF", e)
         throw ServerException("Error signing PDF: ${e.message}", e)
@@ -141,6 +151,10 @@ class PdfService(
      * Verifies digital signatures in a PDF document.
      */
     fun verify(pdfVerifyRequest: PdfVerifyRequest): PdfVerificationResponse {
+        warnIfRevocationDisabled(
+            CertificateRevocation.OCSP in pdfVerifyRequest.revocationCheck,
+            CertificateRevocation.CRL in pdfVerifyRequest.revocationCheck,
+        )
         try {
             val pdfBytes = Base64.getDecoder().decode(pdfVerifyRequest.pdf)
 

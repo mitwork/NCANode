@@ -26,6 +26,13 @@ open class CrlBaseConfiguration : CrlConfiguration {
      */
     override var isWarmupEnabled: Boolean = false
 
+    /**
+     * SSRF strict-режим: on-demand fetch по CRL DP серта отключён (см.
+     * [CrlConfiguration.isStrict]). Оба конфига (`ncanode.crl.*` и
+     * `ncanode.ca.crl.*`) мапятся на один env `NCANODE_CRL_STRICT`.
+     */
+    override var isStrict: Boolean = false
+
     override var ttl: Int? = null
     override var url: String? = null
     override var delta: CrlBaseConfiguration? = null

@@ -2,7 +2,9 @@ package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.spyk
 import io.mockk.verify
@@ -444,6 +446,35 @@ class CrlServiceTest : FunSpec({
         val status = serviceWith(base, delta).verify(cert)
         status.result shouldBe CrlResult.ACTIVE
         status.fresh shouldBe true
+    }
+
+    test("strict mode skips on-demand CRL fetch (SSRF: cert-supplied CRL DP ignored)") {
+        // individual_valid несёт cRLDistributionPoints (crl.root.gov.kz). В
+        // strict-режиме on-demand загрузка по URL из серта отключена — сервер
+        // не ходит на URL, который выбрал серт (в т.ч. внутренний). ttl задан,
+        // так что без strict on-demand бы сработал.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
+            every { isEnabled } returns true
+            every { isCacheEnabled } returns false
+            every { isStrict } returns true
+            every { ttl } returns 1440
+            every { urlList } returns emptyMap()
+            every { delta } returns null
+        }
+        val service = spyk(
+            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), HttpClientConfiguration(), mockk(relaxed = true), "test")
+        )
+        every { service.getCrlFiles(any()) } returns emptyList()
+        // Стабим на всякий случай — если strict-гард сломан и downloadCrl всё же
+        // вызовется, тест упадёт на verify(exactly=0), но без реальной сети.
+        every { service.downloadCrl(any(), any()) } just Runs
+
+        service.verify(ks.certificate)
+
+        verify(exactly = 0) { service.downloadCrl(any(), any()) }
     }
 
     test("verify() returns ACTIVE for cert from different CA (CRL issuer mismatch)") {

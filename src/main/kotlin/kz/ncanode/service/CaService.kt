@@ -17,7 +17,6 @@ import java.io.IOException
 import java.net.URI
 import java.net.URL
 import java.net.http.HttpClient
-import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.concurrent.TimeUnit
 
@@ -34,7 +33,18 @@ class CaService(
     @param:Qualifier("caCrlService") private val caCrlService: CrlService,
 ) {
 
-    private val certificates: MutableList<CertificateWrapper> = mutableListOf()
+    // Неизменяемый снапшот, публикуемый атомарной заменой ссылки. Читатели
+    // (getRootCertificateFor / rootCertificates) берут ссылку и итерируют её
+    // БЕЗ блокировки — не видят промежуточного состояния во время updateCache.
+    // Раньше это был живой mutableList, а updateCache делал clear()+addAll():
+    // lock-free читатель мог поймать ConcurrentModificationException либо
+    // транзиентно пустой список → issuer=null → ложный valid:false.
+    @Volatile
+    private var certificates: List<CertificateWrapper> = emptyList()
+
+    // Монитор сериализации писателей (updateCache + ленивая загрузка в геттере).
+    // Отдельный объект: на переприсваиваемом `certificates` синхронизоваться нельзя.
+    private val certificatesLock = Any()
 
     @Scheduled(fixedRateString = "\${ncanode.ca.ttl}", initialDelay = 0, timeUnit = TimeUnit.MINUTES)
     fun updateCache() {
@@ -44,7 +54,7 @@ class CaService(
 
     fun updateCache(force: Boolean) {
         synchronized(directoryService) {
-            synchronized(certificates) {
+            synchronized(certificatesLock) {
                 val urls = caConfiguration.urlList
 
                 if (urls.isEmpty()) {
@@ -85,10 +95,17 @@ class CaService(
                     loadedUrls.add(url)
                 }
 
-                // Атомарно подменяем список: с этого момента getRootCertificates()
-                // и getRootCertificateFor() видят актуальный набор.
-                certificates.clear()
-                certificates.addAll(loaded)
+                // Публикуем снапшот атомарной заменой ссылки: с этого момента
+                // getRootCertificateFor() (в т.ч. из Pass 2 ниже) и
+                // rootCertificates видят актуальную цепочку целиком. Не
+                // clear()+addAll() — это давало окно перестройки для lock-free
+                // читателей.
+                certificates = loaded.toList()
+
+                // Pass 2 может заменить отдельные записи (отозван/протух →
+                // перекачка), поэтому работаем на локальной изменяемой копии и
+                // публикуем финальный снапшот в конце.
+                val revalidated = loaded.toMutableList()
 
                 // Pass 2: для каждого сертификата выставляем issuer (теперь
                 // доступен по всему списку) и проверяем срок + CA-CRL.
@@ -116,10 +133,13 @@ class CaService(
                     if (dateInvalid || revoked) {
                         val refreshed = downloadCert(loadedUrls[i], loadedFiles[i])
                         if (refreshed != null) {
-                            certificates[i] = refreshed
+                            revalidated[i] = refreshed
                         }
                     }
                 }
+
+                // Публикуем финальный снапшот (с учётом перекачанных в Pass 2).
+                certificates = revalidated.toList()
 
                 // Чистим orphan-файлы: записи прошлых конфигов, не привязанные
                 // ни к одному из текущих URL.
@@ -168,26 +188,33 @@ class CaService(
     }
 
     val rootCertificates: List<CertificateWrapper>
-        get() = synchronized(directoryService) {
-            synchronized(certificates) {
-                if (certificates.isNotEmpty()) {
-                    return certificates
+        get() {
+            // Быстрый lock-free путь: снапшот неизменяем, безопасно отдать и
+            // итерировать без блокировки.
+            val snapshot = certificates
+            if (snapshot.isNotEmpty()) return snapshot
+            // Пусто — лениво загружаем с диска под локом (double-checked).
+            return synchronized(directoryService) {
+                synchronized(certificatesLock) {
+                    val current = certificates
+                    if (current.isNotEmpty()) {
+                        current
+                    } else {
+                        val cacheDir = directoryService.getCachePathFor(CA_CACHE_DIR_NAME)
+                        val loaded = (cacheDir?.listFiles() ?: emptyArray())
+                            .filter { it.isFile && it.canRead() && it.name.endsWith(CA_FILE_EXTENSION) }
+                            .mapNotNull { CertificateWrapper.fromFile(it) }
+                            .toList()
+                        certificates = loaded
+                        loaded
+                    }
                 }
-                val cacheDir = directoryService.getCachePathFor(CA_CACHE_DIR_NAME) ?: return emptyList()
-                val files = cacheDir.listFiles() ?: return emptyList()
-                val loaded = files
-                    .filter { it.isFile && it.canRead() && it.name.endsWith(CA_FILE_EXTENSION) }
-                    .mapNotNull { CertificateWrapper.fromFile(it) }
-                certificates.addAll(loaded)
-                loaded
             }
         }
 
     fun download(url: URL, file: File) {
         try {
-            val request = HttpRequest.newBuilder(URI(url.toString()))
-                .timeout(httpClientConfiguration.requestTimeoutDuration)
-                .header("User-Agent", httpClientConfiguration.effectiveUserAgent)
+            val request = httpClientConfiguration.requestBuilder(URI(url.toString()))
                 .GET()
                 .build()
             val response = client.send(request, HttpResponse.BodyHandlers.ofByteArray())

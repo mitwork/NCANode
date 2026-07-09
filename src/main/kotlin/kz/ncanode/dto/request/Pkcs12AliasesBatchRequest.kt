@@ -1,5 +1,6 @@
 package kz.ncanode.dto.request
 
+import jakarta.validation.Valid
 import jakarta.validation.constraints.NotEmpty
 
 /**
@@ -12,5 +13,6 @@ import jakarta.validation.constraints.NotEmpty
  */
 class Pkcs12AliasesBatchRequest {
     @NotEmpty
+    @Valid
     var keys: List<SignerRequest> = emptyList()
 }
