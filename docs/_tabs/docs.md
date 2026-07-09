@@ -71,7 +71,7 @@ docker run -p 14579:14579 -v ncanode_cache:/app/cache -d malikzh/ncanode
 * `NCANODE_CA_CRL_URL` - Список URL-ов откуда скачивать CRL. По умолчанию:
   * http://crl.root.gov.kz/gost.crl
   * http://crl.root.gov.kz/rsa.crl
-  * http://crl.root.gov.kz/gost2020.crl
+  * http://crl.root.gov.kz/gost2015_2022.crl
   * http://crl.root.gov.kz/rsa2020.crl
 * `NCANODE_TSP_URL` - URL TSP-сервера. По умолчанию: http://tsp.pki.gov.kz/
 * `NCANODE_TSP_RETRIES` - Количество неудачных попыток обращения к TSP-серверу, по умолчанию: 3
@@ -93,6 +93,13 @@ docker run -p 14579:14579 -v ncanode_cache:/app/cache -d malikzh/ncanode
 * **CRL издателя нет в кэше** (CA не публикует CRL, или он не сконфигурирован) —
   CRL-канал помечается `"result": "UNAVAILABLE"`; это не мешает валидности при
   живом OCSP, но такой CRL не может служить fallback-источником.
+
+CRL-проверка учитывает delta-CRL по RFC 5280 §5.2.4: если для издателя есть
+и полный (base), и применимая к нему delta (`NCANODE_CRL_DELTA_URL`), они
+объединяются — delta авторитетна для изменений после base (включая снятие
+отзыва `removeFromCRL`). Delta обновляется чаще (меньший `nextUpdate`),
+поэтому картина отзывов, а значит и свежесть CRL-fallback'а, актуальнее,
+чем по одному полному CRL.
 
 Каждый элемент `revocations[]` в ответе несёт поле `result`
 (`ACTIVE` / `REVOKED` / `UNKNOWN` / `UNAVAILABLE`). Клиент, которому нужна

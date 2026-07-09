@@ -9,12 +9,16 @@ import kz.ncanode.exception.CrlException
 import kz.ncanode.exception.ServerException
 import kz.ncanode.util.sha1
 import kz.ncanode.wrapper.CertificateWrapper
+import org.bouncycastle.asn1.ASN1Integer
+import org.bouncycastle.asn1.ASN1OctetString
+import org.bouncycastle.asn1.x509.Extension
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.scheduling.TaskScheduler
 import org.springframework.scheduling.support.PeriodicTrigger
 import java.io.File
 import java.io.IOException
+import java.math.BigInteger
 import java.net.URI
 import java.net.URL
 import java.net.http.HttpClient
@@ -26,9 +30,11 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.GeneralSecurityException
 import java.security.PublicKey
+import java.security.cert.CRLReason
 import java.security.cert.CertificateException
 import java.security.cert.CertificateFactory
 import java.security.cert.X509CRL
+import java.security.cert.X509CRLEntry
 import java.time.Duration
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
@@ -208,7 +214,23 @@ open class CrlService(
     }
 
     /**
-     * Проверка сертификата в CRL.
+     * Пригодный для проверки CRL этого издателя: распарсен, подпись проверена
+     * (если был ключ издателя), critical-расширения приемлемы. `baseCrlNumber`
+     * != null ⇒ это delta-CRL (присутствует deltaCRLIndicator). `fresh` —
+     * актуален ли CRL по `nextUpdate` на момент проверки.
+     */
+    private data class UsableCrl(
+        val crl: X509CRL,
+        val fileName: String,
+        val crlNumber: BigInteger?,
+        val baseCrlNumber: BigInteger?,
+        val fresh: Boolean,
+    ) {
+        val isDelta: Boolean get() = baseCrlNumber != null
+    }
+
+    /**
+     * Проверка сертификата в CRL с поддержкой delta-CRL (RFC 5280 §5.2.4).
      *
      * Применяются только CRL'и, выпущенные тем же CA, что и проверяемый
      * сертификат, и с валидной подписью издателя (если у нас есть его
@@ -216,15 +238,23 @@ open class CrlService(
      * совпасть с серийником из CRL другого CA, или злонамеренно подложенный
      * CRL ложно отозвал бы валидный сертификат.
      *
+     * Delta-CRL (с critical `deltaCRLIndicator`) больше не отбрасывается, а
+     * накладывается поверх базового (full) CRL: берётся самый свежий по
+     * `CRLNumber` base и применимая к нему delta (`baseCRLNumber <=
+     * base.CRLNumber < delta.CRLNumber`). Итог = base ∪ delta, где delta
+     * авторитетна для изменений после base, включая `removeFromCRL` (снятие
+     * отзыва). Это даёт актуальную картину отзывов между перевыпусками
+     * полного CRL — критично для OCSP→CRL fallback'а, который принимает
+     * только `fresh`-вердикт (см. [CertificateWrapper.isValid]).
+     *
      * Возможные исходы:
-     *  - [CrlResult.REVOKED] — серийник найден в пригодном CRL издателя;
-     *  - [CrlResult.ACTIVE] — хотя бы один пригодный CRL издателя проверен,
-     *    серийника там нет. `fresh=true`, если среди проверенных был CRL,
-     *    актуальный по `nextUpdate` — только такой ACTIVE годится как
-     *    fallback при недоступном OCSP;
+     *  - [CrlResult.REVOKED] — серийник отозван по объединённой картине;
+     *  - [CrlResult.ACTIVE] — base издателя проверен, серийник не отозван.
+     *    `fresh` берётся от применённой delta (если есть), иначе от base —
+     *    только `fresh` ACTIVE годится как fallback при недоступном OCSP;
      *  - [CrlResult.UNAVAILABLE] — проверить было нечем (CRL выключен, нет
-     *    CRL этого издателя, все отброшены фильтрами). Это честное «проверки
-     *    не было» вместо прежнего фиктивного ACTIVE.
+     *    base CRL этого издателя, все отброшены фильтрами). Это честное
+     *    «проверки не было» вместо прежнего фиктивного ACTIVE.
      */
     fun verify(cert: CertificateWrapper): CrlStatus {
         if (!crlConfiguration.isEnabled) {
@@ -243,112 +273,169 @@ open class CrlService(
         // On-demand fetch: cert указывает в своём cRLDistributionPoints, откуда
         // качать CRL. Это primary-источник по RFC 5280 §4.2.1.13. Если URL'ы
         // ещё не закэшированы или протухли по TTL — синхронно докачиваем,
-        // тогда основной цикл ниже их подхватит. Конфиг-CRL'и продолжают
-        // обслуживаться schedule'ом и тоже остаются в cache (см. updateCache).
+        // тогда сбор ниже их подхватит. Конфиг-CRL'и продолжают обслуживаться
+        // schedule'ом и тоже остаются в cache (см. updateCache).
         fetchOnDemandCrls(cert)
 
-        // Сколько пригодных CRL издателя реально проверено — отличает честный
-        // ACTIVE от «ни одного CRL не нашлось» (UNAVAILABLE). Отдельно следим,
-        // был ли среди них свежий по nextUpdate — только такой ACTIVE может
-        // служить fallback'ом при недоступном OCSP.
-        var consultedAny = false
-        var consultedFresh = false
-
-        for (cacheDirectory in listOf(cacheDeltaDir(), cacheFullDir(), cacheOnDemandDir())) {
+        // Собираем все пригодные CRL этого издателя из всех кэш-каталогов и
+        // делим на base (full) и delta по наличию deltaCRLIndicator.
+        val usable = ArrayList<UsableCrl>()
+        for (cacheDirectory in listOf(cacheFullDir(), cacheDeltaDir(), cacheOnDemandDir())) {
             for (crlFile in getCrlFiles(cacheDirectory)) {
-                val crl: X509CRL = try {
-                    loadCachedCrl(crlFile)
-                } catch (e: ServerException) {
-                    log.warn("Skipping unreadable CRL file: {}", crlFile.name)
-                    continue
-                }
-
-                // CRL должен быть выпущен тем же CA, что и проверяемый сертификат.
-                if (crl.issuerX500Principal != certIssuer) continue
-
-                // RFC 5280 §5.2: CRL с critical-расширением, которое мы не
-                // обрабатываем, использовать нельзя — его охват/семантика нам
-                // неизвестны (напр. IssuingDistributionPoint, ограничивающий
-                // область действия), доверять revocation-решению небезопасно.
-                // Мы не обрабатываем НИ ОДНО critical CRL-расширение, поэтому
-                // любое присутствие — повод пропустить CRL. (BC-флаг
-                // hasUnsupportedCriticalExtension не используем — он ненадёжен.)
-                val crlCritical = crl.criticalExtensionOIDs
-                if (!crlCritical.isNullOrEmpty()) {
-                    log.warn("CRL {} has critical extension(s) {} we do not process — skipping (RFC 5280 §5.2)", crlFile.name, crlCritical)
-                    continue
-                }
-
-                // RFC 5280 §5.1.2.5: после nextUpdate CRL формально считается
-                // устаревшим. Мы не блокируем его использование (для отозванных
-                // сертификатов хуже false negative, чем false positive — отзывы
-                // не отменяются). DEBUG, а не WARN: либо CA сам перестал
-                // публиковать новые CRL (легаси-инфраструктура), либо у нас
-                // отстаёт TTL — оба случая операционно нормальные, не повод
-                // спамить WARN'ом в каждый цикл обновления.
-                if (crl.nextUpdate != null && crl.nextUpdate.before(now)) {
-                    log.debug(
-                        "CRL {} is past its nextUpdate={}, still using for revocation check",
-                        crlFile.name, crl.nextUpdate,
-                    )
-                }
-
-                // Подпись CRL должна быть подтверждена ключом издателя.
-                if (issuerKey != null) {
-                    try {
-                        verifyCachedSignature(crlFile, crl, issuerKey)
-                    } catch (e: GeneralSecurityException) {
-                        // Это уже реальная проблема — подпись CRL не сходится,
-                        // либо ключ от другого CA. Такой CRL пропускаем.
-                        log.warn(
-                            "CRL {} signature does not verify against issuer key: {}",
-                            crlFile.name, e.message,
-                        )
-                        continue
-                    }
-                } else {
-                    // Issuer'а нет в trust store (типично для легаси-CA,
-                    // чьи корни выведены из активного обслуживания и в
-                    // NCANODE_CA_URL не лежат). Криптопроверку CRL пропускаем,
-                    // но сам CRL используем для проверки серийных номеров.
-                    // DEBUG, потому что состояние стабильное и регулярного
-                    // внимания оператора не требует.
-                    log.debug(
-                        "Issuer certificate not available for {}, using CRL {} without signature verification",
-                        cert.subjectX500Principal, crlFile.name,
-                    )
-                }
-
-                consultedAny = true
-                // RFC 5280 §5.1.2.5 требует nextUpdate у conforming CRL;
-                // отсутствие поля трактуем консервативно — как несвежий.
-                if (crl.nextUpdate != null && !crl.nextUpdate.before(now)) {
-                    consultedFresh = true
-                }
-
-                if (crl.isRevoked(cert.x509Certificate)) {
-                    val entry = crl.getRevokedCertificate(cert.x509Certificate)
-                    return if (entry != null) {
-                        CrlStatus(
-                            result = CrlResult.REVOKED,
-                            file = crlFile.name,
-                            revocationDate = entry.revocationDate,
-                            reason = entry.revocationReason?.toString() ?: "",
-                        )
-                    } else {
-                        CrlStatus(result = CrlResult.REVOKED)
-                    }
-                }
+                loadUsableCrl(crlFile, certIssuer, issuerKey, now)?.let { usable.add(it) }
             }
         }
 
-        return if (consultedAny) {
-            CrlStatus(result = CrlResult.ACTIVE, fresh = consultedFresh)
-        } else {
-            CrlStatus(
+        // Самый свежий base по CRLNumber (null CRLNumber сортируется как самый
+        // старый). Без base полную картину отзывов не построить — UNAVAILABLE.
+        val base = usable.filter { !it.isDelta }.maxWithOrNull(compareBy { it.crlNumber })
+            ?: return CrlStatus(
                 result = CrlResult.UNAVAILABLE,
                 reason = "No trusted CRL for certificate issuer in cache",
             )
+
+        // Применимая к base delta с наибольшим CRLNumber (RFC 5280 §5.2.4).
+        val delta = usable
+            .filter { it.isDelta && isDeltaApplicable(base, it) }
+            .maxWithOrNull(compareBy { it.crlNumber })
+
+        val x509 = cert.x509Certificate
+
+        // Delta авторитетна для изменений после base. Её запись про наш серийник
+        // либо отзывает (любой reason кроме removeFromCRL), либо снимает отзыв
+        // (removeFromCRL — сертификат больше не считается отозванным).
+        val deltaEntry = delta?.crl?.getRevokedCertificate(x509)
+        if (deltaEntry != null && deltaEntry.revocationReason != CRLReason.REMOVE_FROM_CRL) {
+            return revokedStatus(deltaEntry, delta.fileName)
+        }
+        if (deltaEntry == null) {
+            // Delta про серийник молчит — вердикт по base.
+            val baseEntry = base.crl.getRevokedCertificate(x509)
+            if (baseEntry != null) return revokedStatus(baseEntry, base.fileName)
+        }
+
+        // Не отозван → ACTIVE. Свежесть — от применённой delta, иначе от base:
+        // объединённая картина «текущая», если текущей является самый свежий
+        // применённый источник (RFC 5280 §5.2.4).
+        val fresh = if (delta != null) delta.fresh else base.fresh
+        return CrlStatus(result = CrlResult.ACTIVE, fresh = fresh)
+    }
+
+    /**
+     * Применимость delta к base по RFC 5280 §5.2.4: delta покрывает изменения
+     * начиная с base не новее нашего (`baseCRLNumber <= base.CRLNumber`) и
+     * строго новее нашего base (`base.CRLNumber < delta.CRLNumber`). Без
+     * CRLNumber у base либо без baseCRLNumber/CRLNumber у delta упорядочить
+     * нельзя — delta консервативно не применяется (работаем на одном base).
+     */
+    private fun isDeltaApplicable(base: UsableCrl, delta: UsableCrl): Boolean {
+        val baseNum = base.crlNumber ?: return false
+        val deltaBase = delta.baseCrlNumber ?: return false
+        val deltaNum = delta.crlNumber ?: return false
+        return deltaBase <= baseNum && baseNum < deltaNum
+    }
+
+    private fun revokedStatus(entry: X509CRLEntry, fileName: String): CrlStatus = CrlStatus(
+        result = CrlResult.REVOKED,
+        file = fileName,
+        revocationDate = entry.revocationDate,
+        reason = entry.revocationReason?.toString() ?: "",
+    )
+
+    /**
+     * Загружает CRL-файл и приводит к [UsableCrl], если он пригоден для проверки
+     * этого издателя. Иначе — null (пропускаем): чужой issuer, необрабатываемое
+     * critical-расширение (кроме deltaCRLIndicator, который мы теперь понимаем),
+     * несходящаяся подпись издателя. Протухший по nextUpdate не отбрасывается
+     * (для отзывов false negative хуже false positive), но помечается
+     * `fresh=false`.
+     */
+    private fun loadUsableCrl(
+        crlFile: File,
+        certIssuer: X500Principal,
+        issuerKey: PublicKey?,
+        now: Date,
+    ): UsableCrl? {
+        val crl: X509CRL = try {
+            loadCachedCrl(crlFile)
+        } catch (e: ServerException) {
+            log.warn("Skipping unreadable CRL file: {}", crlFile.name)
+            return null
+        }
+
+        // CRL должен быть выпущен тем же CA, что и проверяемый сертификат.
+        if (crl.issuerX500Principal != certIssuer) return null
+
+        // RFC 5280 §5.2: CRL с critical-расширением, которое мы не обрабатываем,
+        // использовать нельзя — его охват/семантика неизвестны. Единственное
+        // critical-расширение, которое мы понимаем — deltaCRLIndicator (маркер
+        // delta-CRL); всё прочее critical (напр. IssuingDistributionPoint) —
+        // повод пропустить. BC-флаг hasUnsupportedCriticalExtension не
+        // используем — он ненадёжен (см. CertificateWrapper.isValid).
+        val unhandledCritical = (crl.criticalExtensionOIDs ?: emptySet()) - SUPPORTED_CRITICAL_CRL_EXTENSIONS
+        if (unhandledCritical.isNotEmpty()) {
+            log.warn(
+                "CRL {} has critical extension(s) {} we do not process — skipping (RFC 5280 §5.2)",
+                crlFile.name, unhandledCritical,
+            )
+            return null
+        }
+
+        // RFC 5280 §5.1.2.5: после nextUpdate CRL формально устарел, но мы его
+        // не блокируем (отзывы не отменяются). DEBUG — операционно нормально.
+        if (crl.nextUpdate != null && crl.nextUpdate.before(now)) {
+            log.debug(
+                "CRL {} is past its nextUpdate={}, still using for revocation check",
+                crlFile.name, crl.nextUpdate,
+            )
+        }
+
+        // Подпись CRL должна быть подтверждена ключом издателя.
+        if (issuerKey != null) {
+            try {
+                verifyCachedSignature(crlFile, crl, issuerKey)
+            } catch (e: GeneralSecurityException) {
+                // Это уже реальная проблема — подпись CRL не сходится, либо ключ
+                // от другого CA. Такой CRL пропускаем.
+                log.warn(
+                    "CRL {} signature does not verify against issuer key: {}",
+                    crlFile.name, e.message,
+                )
+                return null
+            }
+        } else {
+            // Issuer'а нет в trust store (типично для легаси-CA). Криптопроверку
+            // CRL пропускаем, но сам CRL используем для проверки серийников.
+            log.debug(
+                "Issuer certificate not available, using CRL {} without signature verification",
+                crlFile.name,
+            )
+        }
+
+        // RFC 5280 §5.1.2.5 требует nextUpdate у conforming CRL; отсутствие поля
+        // трактуем консервативно — как несвежий.
+        val fresh = crl.nextUpdate != null && !crl.nextUpdate.before(now)
+        return UsableCrl(
+            crl = crl,
+            fileName = crlFile.name,
+            crlNumber = readIntegerCrlExtension(crl, Extension.cRLNumber.id),
+            baseCrlNumber = readIntegerCrlExtension(crl, Extension.deltaCRLIndicator.id),
+            fresh = fresh,
+        )
+    }
+
+    /**
+     * Читает INTEGER-расширение CRL (CRLNumber / BaseCRLNumber) как BigInteger.
+     * `getExtensionValue` возвращает DER OCTET STRING, внутри которого лежит сам
+     * INTEGER. null, если расширения нет или оно не парсится.
+     */
+    private fun readIntegerCrlExtension(crl: X509CRL, oid: String): BigInteger? {
+        val raw = crl.getExtensionValue(oid) ?: return null
+        return try {
+            ASN1Integer.getInstance(ASN1OctetString.getInstance(raw).octets).value
+        } catch (e: Exception) {
+            log.warn("Cannot parse CRL integer extension {}: {}", oid, e.message)
+            null
         }
     }
 
@@ -362,12 +449,11 @@ open class CrlService(
      * "нет CRL вообще" не возникает. После загрузки удаляем orphan-файлы
      * (от URL'ов, которых больше нет в конфигурации).
      *
-     * Примечание про delta-CRL: здесь delta обрабатывается как ещё один
-     * отдельный CRL-эндпоинт с более частым обновлением, а не как RFC 5280
-     * §5.2.4 delta CRL поверх base (с CRLNumber / BaseCRLNumber). Это работает
-     * для NCA, который по delta-URL отдаёт полноценный CRL; для строго
-     * совместимой реализации потребовалось бы объединять записи delta + base
-     * по их номерам.
+     * Примечание про delta-CRL: загрузка трактует delta как ещё один
+     * CRL-эндпоинт (свой URL, свой более частый TTL) — только качает файл.
+     * Само наложение delta поверх base по RFC 5280 §5.2.4 (сопоставление
+     * CRLNumber / BaseCRLNumber, обработка removeFromCRL) выполняется на
+     * этапе проверки — см. [verify].
      */
     @Synchronized
     open fun updateCache(force: Boolean, crlConfiguration: CrlConfiguration, cacheDirectory: String) {
@@ -596,5 +682,12 @@ open class CrlService(
         const val CRL_DEFAULT = "default"
         const val CRL_CA = "ca-crl"
         private const val CRL_FILE_EXTENSION = ".crl"
+
+        /**
+         * Единственное critical CRL-расширение, которое мы обрабатываем:
+         * deltaCRLIndicator (2.5.29.27) — маркер delta-CRL. Любое другое
+         * critical-расширение дисквалифицирует CRL (RFC 5280 §5.2).
+         */
+        private val SUPPORTED_CRITICAL_CRL_EXTENSIONS = setOf(Extension.deltaCRLIndicator.id)
     }
 }

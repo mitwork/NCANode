@@ -37,7 +37,7 @@ ncanode:
       cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
       warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:false}
       ttl: ${NCANODE_CA_CRL_TTL:1440}
-      url: ${NCANODE_CA_CRL_URL:http://crl.root.gov.kz/gost.crl http://crl.root.gov.kz/rsa.crl http://crl.root.gov.kz/gost2020.crl http://crl.root.gov.kz/rsa2020.crl}
+      url: ${NCANODE_CA_CRL_URL:http://crl.root.gov.kz/gost.crl http://crl.root.gov.kz/rsa.crl http://crl.root.gov.kz/gost2015_2022.crl http://crl.root.gov.kz/rsa2020.crl}
       delta:
         enabled: false
         url:

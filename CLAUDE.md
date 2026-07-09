@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 214 тестов / **76% coverage**.
+- **Состояние v4:** functional + 223 теста / **77% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -122,7 +122,7 @@ src/test/resources/
   cms/, xml/, wsse/, pdf/     ← .gitkeep — артефакты генерируются in-test
 ```
 
-214 тестов / **76% line coverage**.
+223 теста / **77% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -149,7 +149,7 @@ REVOKED-ветка покрывается через mock'нутый `X509CRL`, 
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 214 тестов + JaCoCo report
+./gradlew test                   # 223 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -546,6 +546,96 @@ Actuator был подключён и раньше (`starter-actuator` + кас�
 - Покрытие: `ActuatorEndpointTest` (5 кейсов, `@SpringBootTest` RANDOM_PORT):
   health UP / info / prometheus text-формат / discovery-листинг / env→404.
   Сети не требует (actuator не зависит от CA/OCSP/TSP).
+
+### 30. Delta-CRL: настоящий RFC 5280 §5.2.4 merge (не «ещё один full»)
+Раньше `CrlService.verify` перебирал CRL-файлы независимо и **выбрасывал**
+delta из-за её `critical deltaCRLIndicator` (общий фильтр «любое critical →
+skip»). То есть delta качалась (свой URL, TTL 60мин), но в проверке
+не участвовала. Дыра именно в контексте OCSP→CRL fallback (quirk #28):
+fallback принимает только `fresh` ACTIVE, а `fresh` считался по full CRL;
+досрочный отзыв, опубликованный НУЦ в delta но ещё не попавший в full,
+был невидим → при упавшем OCSP fallback ложно принял бы отозванный cert.
+
+Боевые данные НУЦ (проверено `crl.pki.gov.kz`, июль 2026):
+- full `nca_gost_2022.crl`: ~21.6 МБ, `nextUpdate` ~27ч, `CRLNumber`=1346,
+  перевыпускается ~ежедневно (Last-Modified меняется досрочно);
+- delta `nca_d_gost_2022.crl`: ~32 КБ, `nextUpdate` ~7.5ч,
+  `deltaCRLIndicator`(baseCRLNumber)=1346 == full.CRLNumber, `CRLNumber`=57725.
+  Полностью конформна RFC 5280 §5.2.4 — **баг-репорт в НУЦ не нужен**
+  (ранняя гипотеза про «nextUpdate 6 месяцев» была из протухшего снапшота
+  `test.pki.gov.kz`, на проде это ~27ч).
+
+Реализация (`CrlService.verify` + хелперы):
+- delta больше не skip: CRL-allowlist критичных расширений =
+  `{deltaCRLIndicator 2.5.29.27}` (`SUPPORTED_CRITICAL_CRL_EXTENSIONS`),
+  прочее critical по-прежнему дисквалифицирует CRL.
+- Собираем пригодные CRL издателя, делим на base/delta по наличию
+  `deltaCRLIndicator`. Base = max по `CRLNumber`. Delta = применимая
+  (`baseCRLNumber ≤ base.CRLNumber < delta.CRLNumber`) с max `CRLNumber`.
+- Итог = base ∪ delta, delta авторитетна для изменений после base:
+  запись про серийник отзывает (любой reason кроме `removeFromCRL`) либо
+  снимает отзыв (`removeFromCRL` → ACTIVE).
+- `CrlStatus.fresh` теперь берётся от применённой delta (иначе от base) —
+  делает fallback свежее (~7.5ч вместо ~27ч) и, главное, честно ловит
+  досрочные отзывы из delta.
+- `CRLNumber`/`BaseCRLNumber` парсятся через BC (`ASN1Integer` внутри
+  `getExtensionValue`-OCTET STRING). `verify()` перешёл с `crl.isRevoked`
+  на `crl.getRevokedCertificate` (нужно инспектировать reason для
+  removeFromCRL) — **грабли в тестах**: relaxed MockK для platform-типа
+  `X509CRLEntry` возвращает не-null дочерний мок, поэтому «не отозван»
+  в тестах надо стабить как `getRevokedCertificate(any()) returns null`,
+  а не `isRevoked returns false`.
+- Загрузка delta не изменилась (по-прежнему per-endpoint скачивание;
+  merge — только на этапе verify).
+
+Консервативность при кривой delta: repo-фикстуры тест-PKI содержат delta
+с `CRLNumber`=10 при `baseCRLNumber`=14 (delta старше своего base) — не
+применима (`14 < 10` = false), безопасно игнорируется, работаем на full.
+Поэтому live-интеграционные тесты не изменились (тест-pack cert'ы всё равно
+не отзываются через CRL — только OCSP, quirk #21).
+
+Покрытие: `CrlServiceTest` +4 кейса (delta отзывает; removeFromCRL снимает;
+неприменимая delta игнорируется; freshness от delta). Тесты 219 → **223**,
+coverage 76% → **77%**.
+
+### 31. `ca.crl.url` = root-issued CRL промежуточного (его CRL DP), не его собственный CRL
+Аудит адресов PKI (сверка с `test.pki.gov.kz` / реестром `root.gov.kz/registr/`
++ разбор `cRLDistributionPoints` самих сертов) показал рассинхрон `ca.crl.url`
+с реальностью. Ключевое различие:
+- **Собственный CRL промежуточного** (напр. `crl.pki.gov.kz/nca_gost_2022.crl`,
+  `test.pki.gov.kz/crl/nca_gost2022_test.crl`) — выпущен *самим* промежуточным,
+  перечисляет отозванные **end-entity**. Это для `crl.url` (проверка листовых).
+- **CRL для проверки *самого* промежуточного** — выпущен **корнем** и лежит по
+  его `cRLDistributionPoints`. Это для `ca.crl.url`.
+
+Реальные DP промежуточных (источник истины — RFC 5280 §4.2.1.13):
+| Промежуточный | CRL DP (root-issued) |
+|---|---|
+| `nca_gost.crt` | `crl.root.gov.kz/gost.crl` |
+| `nca_rsa.crt` | `crl.root.gov.kz/rsa.crl` |
+| `nca_gost_2022.cer` | `crl.root.gov.kz/gost2015_2022.crl` |
+| `nca_rsa_2022.cer` | `crl.root.gov.kz/rsa2020.crl` |
+| `nca_gost2022_test.cer` (TEST) | `crl.root.gov.kz/gost_test_2022.crl` |
+
+Самоподписанные корни (`root_*`) **CRL DP не имеют — и правильно**: trust anchor
+не отзывают через CRL. `caCrlService.verify(root)` → нет CRL издателя → UNAVAILABLE
+→ не REVOKED → безвредно.
+
+Фиксы (вариант «конфиги актуальны»):
+- **prod** `application.yml`: `gost2020.crl` (ничей DP в дефолтном бандле) →
+  `gost2015_2022.crl` (реальный DP `nca_gost_2022`). Было последствием quirk #25:
+  бандл догнал 2022-иерархию, а `ca.crl.url` — нет.
+- **test** `application-test.yml`: `test.pki.gov.kz/.../nca_gost2022_test.crl`
+  (собственный CRL промежуточного — issuer не совпадёт при проверке промежуточного,
+  отфильтровывался) → `crl.root.gov.kz/gost_test_2022.crl`.
+
+Почему это не было фатально до фикса: `CaService.updateCache` (строка ~105)
+дёргает `caCrlService.verify(caCert)` для **каждого** серта бандла, а `verify()`
+вызывает `fetchOnDemandCrls` — тянет CRL из `cRLDistributionPoints` **самого
+серта** on-demand. Т.е. корректный root-issued CRL приходил и так; `ca.crl.url`
+— лишь pre-warm-список, который дрейфовал. Отсюда следствие: `crl.root.gov.kz`
+— живая зависимость и в тестах (через on-demand при загрузке CA-бандла), правки
+конфига новых хостов не добавили.
 
 ## Что не покрыто тестами (≈494 lines)
 

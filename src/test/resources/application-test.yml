@@ -32,7 +32,11 @@ ncanode:
       cacheEnabled: true
       warmupEnabled: false
       ttl: 1440
-      url: http://test.pki.gov.kz/crl/nca_gost2022_test.crl
+      # CRL для проверки отзыва промежуточного nca_gost2022_test — это
+      # root-issued CRL (его CRL DP), а не собственный CRL промежуточного
+      # (nca_gost2022_test.crl, там end-entity). Совпадает с cRLDistributionPoints
+      # серта; тот же URL всё равно тянется on-demand при CA-CRL проверке.
+      url: http://crl.root.gov.kz/gost_test_2022.crl
       delta:
         enabled: false
   tsp:

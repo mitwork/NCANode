@@ -221,7 +221,10 @@ class CrlServiceTest : FunSpec({
     fun serviceWithSingleCrl(cert: kz.ncanode.wrapper.CertificateWrapper, crlNextUpdate: Date?): CrlService {
         val crl = mockk<X509CRL>(relaxed = true).apply {
             every { issuerX500Principal } returns cert.x509Certificate.issuerX500Principal
-            every { isRevoked(any<java.security.cert.X509Certificate>()) } returns false
+            // «Не отозван» = серийника нет в CRL. Стабим getRevokedCertificate,
+            // а не isRevoked: relaxed-мок для platform-типа X509CRLEntry вернул бы
+            // не-null дочерний мок, и verify() счёл бы cert отозванным.
+            every { getRevokedCertificate(any<java.security.cert.X509Certificate>()) } returns null
             every { nextUpdate } returns crlNextUpdate
         }
         val mockFile = mockCrlFile("freshness")
@@ -292,6 +295,155 @@ class CrlServiceTest : FunSpec({
         // быть вызван — иначе мы платим за листинг каталогов в hot path
         // верификации каждого подписанта при выключенной фиче.
         verify(exactly = 0) { service.getCrlFiles(any()) }
+    }
+
+    // ---- delta-CRL (RFC 5280 §5.2.4) ----
+
+    // DER для INTEGER-расширения CRL (CRLNumber / BaseCRLNumber): getExtensionValue
+    // отдаёт OCTET STRING, внутри которого лежит сам INTEGER.
+    fun intExt(n: Long): ByteArray = org.bouncycastle.asn1.DEROctetString(
+        org.bouncycastle.asn1.ASN1Integer(java.math.BigInteger.valueOf(n)).encoded,
+    ).encoded
+
+    fun crlEntry(reason: java.security.cert.CRLReason?, date: Date = Date()): java.security.cert.X509CRLEntry =
+        mockk<java.security.cert.X509CRLEntry>(relaxed = true).apply {
+            every { revocationReason } returns reason
+            every { revocationDate } returns date
+        }
+
+    fun mockBaseCrl(
+        issuer: javax.security.auth.x500.X500Principal,
+        crlNumber: Long,
+        nextUpd: Date?,
+        revoked: java.security.cert.X509CRLEntry?,
+    ): X509CRL = mockk<X509CRL>(relaxed = true).apply {
+        every { issuerX500Principal } returns issuer
+        every { criticalExtensionOIDs } returns emptySet()
+        every { nextUpdate } returns nextUpd
+        every { getExtensionValue("2.5.29.20") } returns intExt(crlNumber)
+        every { getExtensionValue("2.5.29.27") } returns null
+        every { getRevokedCertificate(any<java.security.cert.X509Certificate>()) } returns revoked
+    }
+
+    fun mockDeltaCrl(
+        issuer: javax.security.auth.x500.X500Principal,
+        crlNumber: Long,
+        baseCrlNumber: Long,
+        nextUpd: Date?,
+        revoked: java.security.cert.X509CRLEntry?,
+    ): X509CRL = mockk<X509CRL>(relaxed = true).apply {
+        every { issuerX500Principal } returns issuer
+        // deltaCRLIndicator critical — раньше это роняло CRL в skip, теперь понимаем.
+        every { criticalExtensionOIDs } returns setOf("2.5.29.27")
+        every { nextUpdate } returns nextUpd
+        every { getExtensionValue("2.5.29.20") } returns intExt(crlNumber)
+        every { getExtensionValue("2.5.29.27") } returns intExt(baseCrlNumber)
+        every { getRevokedCertificate(any<java.security.cert.X509Certificate>()) } returns revoked
+    }
+
+    fun serviceWith(baseCrl: X509CRL?, deltaCrl: X509CRL?): CrlService {
+        val baseFile = mockCrlFile("base")
+        val deltaFile = mockCrlFile("delta_x")
+        val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
+            every { isEnabled } returns true
+            every { isCacheEnabled } returns false
+            every { ttl } returns null
+            every { urlList } returns emptyMap()
+            every { delta } returns null
+        }
+        val service = spyk(
+            CrlService(mockk(relaxed = true), crlConfig, mockk(relaxed = true), HttpClientConfiguration(), mockk(relaxed = true), "test")
+        )
+        every { service.getCrlFiles(any()) } answers {
+            val arg = firstArg<String>()
+            when {
+                arg.contains("delta") -> if (deltaCrl != null) listOf(deltaFile) else emptyList()
+                arg.contains("full") -> if (baseCrl != null) listOf(baseFile) else emptyList()
+                else -> emptyList()
+            }
+        }
+        if (baseCrl != null) every { service.loadCrl(baseFile) } returns baseCrl
+        if (deltaCrl != null) every { service.loadCrl(deltaFile) } returns deltaCrl
+        return service
+    }
+
+    val future = Date(System.currentTimeMillis() + 86_400_000L)
+    val past = Date(System.currentTimeMillis() - 86_400_000L)
+
+    test("verify() honors a revocation present only in the applicable delta") {
+        // Отзыв опубликован в delta, но ещё не попал в base full CRL. Раньше
+        // delta с critical deltaCRLIndicator отбрасывалась → отзыв невидим →
+        // при упавшем OCSP fallback ложно принял бы отозванный сертификат.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(issuer, crlNumber = 1346, nextUpd = future, revoked = null)
+        val delta = mockDeltaCrl(
+            issuer, crlNumber = 57725, baseCrlNumber = 1346, nextUpd = future,
+            revoked = crlEntry(java.security.cert.CRLReason.KEY_COMPROMISE),
+        )
+        val status = serviceWith(base, delta).verify(cert)
+        status.result shouldBe CrlResult.REVOKED
+        status.file shouldBe "delta_x.crl"
+    }
+
+    test("verify() treats removeFromCRL in delta as un-revocation (ACTIVE)") {
+        // Сертификат был на base CRL, но delta сняла отзыв (removeFromCRL,
+        // напр. снятие certificateHold) — итог ACTIVE.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(
+            issuer, crlNumber = 1346, nextUpd = past,
+            revoked = crlEntry(java.security.cert.CRLReason.CERTIFICATE_HOLD),
+        )
+        val delta = mockDeltaCrl(
+            issuer, crlNumber = 57725, baseCrlNumber = 1346, nextUpd = future,
+            revoked = crlEntry(java.security.cert.CRLReason.REMOVE_FROM_CRL),
+        )
+        val status = serviceWith(base, delta).verify(cert)
+        status.result shouldBe CrlResult.ACTIVE
+        // Свежесть берётся от применённой delta (base протух, delta свежа).
+        status.fresh shouldBe true
+    }
+
+    test("verify() ignores a delta that is not applicable to base by CRLNumber") {
+        // delta.baseCRLNumber (2000) > base.CRLNumber (1346) — delta покрывает
+        // изменения от более нового base, применить к нашему нельзя. Её
+        // removeFromCRL не должна реабилитировать отозванный в base сертификат.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(
+            issuer, crlNumber = 1346, nextUpd = future,
+            revoked = crlEntry(java.security.cert.CRLReason.KEY_COMPROMISE),
+        )
+        val delta = mockDeltaCrl(
+            issuer, crlNumber = 57725, baseCrlNumber = 2000, nextUpd = future,
+            revoked = crlEntry(java.security.cert.CRLReason.REMOVE_FROM_CRL),
+        )
+        serviceWith(base, delta).verify(cert).result shouldBe CrlResult.REVOKED
+    }
+
+    test("verify() derives freshness from the applied delta when base is stale") {
+        // Base протух по nextUpdate, свежая применимая delta делает
+        // объединённую картину текущей → fresh=true (годится для OCSP fallback).
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(issuer, crlNumber = 1346, nextUpd = past, revoked = null)
+        val delta = mockDeltaCrl(issuer, crlNumber = 57725, baseCrlNumber = 1346, nextUpd = future, revoked = null)
+        val status = serviceWith(base, delta).verify(cert)
+        status.result shouldBe CrlResult.ACTIVE
+        status.fresh shouldBe true
     }
 
     test("verify() returns ACTIVE for cert from different CA (CRL issuer mismatch)") {
