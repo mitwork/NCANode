@@ -10,8 +10,8 @@
 # Вне контроля Dependabot (осознанно):
 #   - Kalkan (flatDir lib/) — проприетарный провайдер, версии руками;
 #   - kz.gov.pki:java-jwt — Azure-feed (не Maven Central), Dependabot его
-#     не резолвит и молча пропускает;
-#   - gradle-wrapper — у Dependabot нет такой экосистемы.
+#     не резолвит и молча пропускает.
+# gradle-wrapper обновляется gradle-экосистемой (входит в minor/patch группу).
 #
 # CI-нюанс: Dependabot-PR запускает build-ci.yml БЕЗ обычных repo secrets —
 # KALKAN_CRYPT_URL / KALKAN_CRYPT_XMLDSIG_URL нужно продублировать в
