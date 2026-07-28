@@ -1,7 +1,6 @@
 package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.shouldBe
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedData
@@ -30,7 +29,6 @@ class TsaCertDiagnosticTest(
     @param:Autowired private val kalkanWrapper: KalkanWrapper,
 ) : FunSpec({
 
-    extension(SpringExtension)
 
     test("TSA certificate EKU/criticality conformance to RFC 3161 §2.3") {
         val cert = kalkanWrapper.read(

@@ -1,7 +1,6 @@
 package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
@@ -44,7 +43,6 @@ class CmsServiceIntegrationTest(
     @param:Autowired private val kalkanWrapper: KalkanWrapper,
 ) : FunSpec({
 
-    extension(SpringExtension)
 
     beforeSpec {
         // CaService.updateCache @Scheduled, но через TaskScheduler — асинхронно.

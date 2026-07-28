@@ -1,7 +1,6 @@
 package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -36,7 +35,6 @@ class CaServiceConcurrencyTest(
     @param:Autowired private val kalkanWrapper: KalkanWrapper,
 ) : FunSpec({
 
-    extension(SpringExtension)
 
     beforeSpec {
         // Прогреваем bundle + CA-CRL кэш, чтобы updateCache(false) в writer'е

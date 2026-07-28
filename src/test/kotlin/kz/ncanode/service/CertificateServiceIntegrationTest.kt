@@ -1,7 +1,6 @@
 package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -36,7 +35,6 @@ class CertificateServiceIntegrationTest(
     @param:Autowired private val kalkanWrapper: KalkanWrapper,
 ) : FunSpec({
 
-    extension(SpringExtension)
 
     beforeSpec { caService.updateCache(true) }
 

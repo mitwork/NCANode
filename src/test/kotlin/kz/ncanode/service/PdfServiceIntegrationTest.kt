@@ -1,7 +1,6 @@
 package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -31,7 +30,6 @@ class PdfServiceIntegrationTest(
     @param:Autowired private val caService: CaService,
 ) : FunSpec({
 
-    extension(SpringExtension)
 
     beforeSpec { caService.updateCache(true) }
 

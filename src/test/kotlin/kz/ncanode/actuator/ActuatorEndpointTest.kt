@@ -1,7 +1,6 @@
 package kz.ncanode.actuator
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.springframework.beans.factory.annotation.Autowired
@@ -36,7 +35,6 @@ class ActuatorEndpointTest(
     @param:Autowired private val environment: Environment,
 ) : FunSpec({
 
-    extension(SpringExtension)
 
     val http = HttpClient.newHttpClient()
 

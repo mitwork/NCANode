@@ -1,7 +1,6 @@
 package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.collections.shouldNotBeEmpty
 import kz.ncanode.TestResources
 import kz.ncanode.dto.ocsp.OcspResult
@@ -33,7 +32,6 @@ class OcspExpiredCertDiagnosticTest(
     @param:Autowired private val kalkanWrapper: KalkanWrapper,
 ) : FunSpec({
 
-    extension(SpringExtension)
 
     test("OCSP responder behaviour for an already-expired NCA certificate") {
         val cert = kalkanWrapper.read(

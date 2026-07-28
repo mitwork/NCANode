@@ -29,7 +29,7 @@
 | **Кriptoprovider** | Kalkan 0.7.5 + kalkancrypt-xmldsig 0.5 (flatDir `lib/`) |
 | **TLS/PKI deps** | BouncyCastle bcprov/bcpkix-jdk18on 1.84, Santuario xmlsec 4.0.3, wss4j 4.0.0 (без OpenSAML), pdfbox 3.0.3, jaxws-rt 4.0.3 (SAAJ runtime для WsseService), springdoc 3.0.3 |
 | **HTTP client** | JDK `java.net.http.HttpClient` (Java 11+), без внешней зависимости |
-| **Тесты** | Kotest 5.9 (JUnit 5 runner) + MockK 1.14 + spring-boot-starter-test |
+| **Тесты** | Kotest 6.2 (JUnit 5 runner) + MockK 1.14 + spring-boot-starter-test |
 
 Build clean (zero warnings). `./gradlew bootJar` зелёный.
 
@@ -88,6 +88,9 @@ partial-response (per-item status + payload):
 ## Тестовая инфраструктура
 
 ```
+src/test/kotlin/io/kotest/provided/
+  ProjectConfig.kt            ← Kotest 6 project config (FQN-конвенция!) —
+                                глобальный SpringExtension, см. quirk #33
 src/test/kotlin/kz/ncanode/
   TestResources.kt            ← общий helper. KalkanProvider bootstrap +
                                 loadAsBase64 / loadBytes + P12_PASSWORD
@@ -728,6 +731,23 @@ regression-поверхностью, нечего мешать с багфикс
 `revocations[].result == REVOKED` (контракт quirk #28); `KeyStoreWrapperTest` —
 реальный sign/verify пары ключей вместо тавтологии; ⏰ дедлайн 2027-05-07
 задокументирован. Суть **233**, coverage 76%.
+
+### 33. Kotest 6 (миграция с 5.9, июль 2026): три граблины
+- **Координаты spring-extension**: в Kotest 6 он вернулся в основной monorepo —
+  `io.kotest:kotest-extensions-spring` с версией, ВЫРОВНЕННОЙ с ядром (в
+  каталоге один `version.ref = "kotest"` на оба — Dependabot бампит синхронно,
+  рассинхрон невозможен). Старые координаты `io.kotest.extensions:...`
+  застряли на 1.3.0 (Kotest 5-only): с ядром 6.x роняют discovery —
+  `NoSuchMethodError: SpecRef$Reference.<init>`, ни один тест не стартует.
+- **`SpringExtension` теперь класс, не object** → везде `SpringExtension()`.
+- **Constructor injection требует project-level регистрации**: спеки с
+  `@param:Autowired` в primary constructor инстанцируются ЧЕРЕЗ
+  ConstructorExtension, а регистрация `extension(...)` в теле спека опаздывает
+  → `SpecInstantiationException`/`IllegalArgumentException (instantiate.kt)`.
+  В Kotest 6 classpath-scanning и `@ApplyExtension` удалены — единственный
+  путь: `io.kotest.provided.ProjectConfig` (FQN-конвенция) с
+  `override val extensions = listOf(SpringExtension())`. Глобальный
+  SpringExtension безвреден для не-Spring спеков (все 233 зелёные).
 
 ## Что не покрыто тестами (≈494 lines)
 

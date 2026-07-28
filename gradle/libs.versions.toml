@@ -2,13 +2,17 @@
 kotlin = "2.4.10"
 springBoot = "4.1.0"
 springDependencyManagement = "1.1.7"
-kotest = "5.9.1"
+kotest = "6.2.3"
 mockk = "1.14.11"
 
 [libraries]
 kotest-runner = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
 kotest-assertions = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
-kotest-spring = { module = "io.kotest.extensions:kotest-extensions-spring", version = "1.3.0" }
+# Kotest 6: spring-extension вернулся в основной monorepo (io.kotest) с
+# версией, выровненной с ядром; старые координаты io.kotest.extensions:...
+# застряли на 1.3.0 (Kotest 5-only). Один version.ref — Dependabot бампит
+# ядро и extension синхронно.
+kotest-spring = { module = "io.kotest:kotest-extensions-spring", version.ref = "kotest" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 
 [bundles]
