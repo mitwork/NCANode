@@ -1,0 +1,77 @@
+# Dependabot version updates.
+#
+# GitHub читает этот файл с default branch — с июля 2026 это v4
+# (master остался upstream-tracking). target-branch: v4 указан явно —
+# защита от случайного возврата default'а на master.
+#
+# Security-апдейты Dependabot живут отдельно от этого файла (Settings →
+# Advanced Security) и всегда целятся в default branch.
+#
+# Вне контроля Dependabot (осознанно):
+#   - Kalkan (flatDir lib/) — проприетарный провайдер, версии руками;
+#   - kz.gov.pki:java-jwt — Azure-feed (не Maven Central), Dependabot его
+#     не резолвит и молча пропускает;
+#   - gradle-wrapper — у Dependabot нет такой экосистемы.
+#
+# CI-нюанс: Dependabot-PR запускает build-ci.yml БЕЗ обычных repo secrets —
+# KALKAN_CRYPT_URL / KALKAN_CRYPT_XMLDSIG_URL нужно продублировать в
+# Settings → Secrets and variables → Dependabot (иначе билд зависит от
+# попадания в кеш ./lib).
+
+version: 2
+updates:
+  # build.gradle.kts + gradle/libs.versions.toml + плагины из settings.gradle.kts
+  - package-ecosystem: gradle
+    directory: "/"
+    target-branch: v4
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Asia/Almaty"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+    groups:
+      # Миноры и патчи — одним PR в неделю, чтобы не дробить шум.
+      # Major'ы (SB 5, Kotlin 3, BC 2.x...) идут отдельными PR —
+      # каждый такой bump — осознанное решение.
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # Версии actions в .github/workflows/*.yml
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: v4
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Asia/Almaty"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Базовый образ в Dockerfile
+  - package-ecosystem: docker
+    directory: "/"
+    target-branch: v4
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Asia/Almaty"
+    commit-message:
+      prefix: "deps"
+    ignore:
+      # Major JVM (corretto 26+) — только руками, синхронно с
+      # java toolchain(25) в build.gradle.kts и java-version в CI.
+      - dependency-name: amazoncorretto
+        update-types:
+          - "version-update:semver-major"

@@ -200,6 +200,17 @@ print(f"{'--- TOTAL':<40} {total_c}/{total_c+total_m} ({100*total_c//(total_c+to
 (checkout@v6, setup-java@v5, gradle/actions/setup-gradle@v6,
 docker/build-push-action@v7, upload-artifact@v7 — см. коммит 7949a29).
 
+**Dependabot** — `.github/dependabot.yml`: gradle + github-actions + docker,
+weekly (пн 06:00 Asia/Almaty), все PR через `target-branch: v4`. Gradle
+minor/patch группируются в один PR, major'ы отдельно; corretto major в
+Dockerfile игнорируется (JVM bump — руками, синхронно с toolchain).
+Default branch форка переключён на **v4** (июль 2026) — конфиг читается
+с него, security-апдейты тоже целятся в v4.
+⚠️ Dependabot-PR запускают build-ci.yml без обычных secrets:
+`KALKAN_CRYPT_URL`/`KALKAN_CRYPT_XMLDSIG_URL` продублированы в
+Settings → Secrets and variables → **Dependabot**. Kalkan (flatDir) и
+`kz.gov.pki:java-jwt` (Azure feed) Dependabot не резолвит — руками.
+
 Dockerfile: `amazoncorretto:25-alpine` (бывший 17).
 
 ## Non-obvious quirks (история и почему)
