@@ -55,7 +55,7 @@ dependencies {
     // KalkanCrypt из flatDir lib/
     implementation(":knca_provider_jce_kalkan-0.7.5")
     implementation(":kalkancrypt-xmldsig-0.5")
-    implementation("org.apache.santuario:xmlsec:4.0.3")
+    implementation("org.apache.santuario:xmlsec:4.0.4")
 
     // JWT GG2015
     implementation("kz.gov.pki:java-jwt:4.4.0")
@@ -63,13 +63,13 @@ dependencies {
     // SOAP/WSSE — jakarta-ery.
     // wss4j 4.0 тащит OpenSAML из Shibboleth-репо для SAML-token support;
     // NCANode только X.509 WSSE подписывает/проверяет, без SAML — exclude.
-    implementation("org.apache.wss4j:wss4j-ws-security-dom:4.0.0") {
+    implementation("org.apache.wss4j:wss4j-ws-security-dom:4.0.1") {
         exclude(group = "org.opensaml")
     }
     // SAAJ runtime — даёт jakarta.xml.soap.MessageFactory, который использует
     // WsseService для парсинга/перепаковки SOAP envelope'ов. wss4j подтягивает
     // только jakarta.xml.soap-api (интерфейсы), реализацию нужно дать явно.
-    implementation("com.sun.xml.ws:jaxws-rt:4.0.3")
+    implementation("com.sun.xml.ws:jaxws-rt:4.0.5")
 
     // OpenAPI / Swagger UI — v3 (для Spring 7 / SB 4).
     // springdoc 2.x ссылается на удалённый в Spring 7 конструктор
@@ -78,11 +78,11 @@ dependencies {
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.3")
 
     // PDFBox 3.x — jakarta-совместимый.
-    implementation("org.apache.pdfbox:pdfbox:3.0.3")
+    implementation("org.apache.pdfbox:pdfbox:3.0.8")
 
     // BouncyCastle — bcprov-jdk18on (Java 17+ artifacts).
-    implementation("org.bouncycastle:bcprov-jdk18on:1.84")
-    implementation("org.bouncycastle:bcpkix-jdk18on:1.84")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.85")
 
     // Тесты — Kotest (JUnit 5 runner) + MockK + Spring Boot Test.
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
