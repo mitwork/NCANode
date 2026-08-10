@@ -75,7 +75,7 @@ dependencies {
     // springdoc 2.x ссылается на удалённый в Spring 7 конструктор
     // ControllerAdviceBean(Object) — NoSuchMethodError на любой запрос
     // через DispatcherServlet с @ControllerAdvice бином.
-    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.3")
+    implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.0")
 
     // PDFBox 3.x — jakarta-совместимый.
     implementation("org.apache.pdfbox:pdfbox:3.0.8")
