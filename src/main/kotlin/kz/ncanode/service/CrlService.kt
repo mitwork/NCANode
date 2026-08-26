@@ -20,6 +20,8 @@ import org.springframework.scheduling.TaskScheduler
 import org.springframework.scheduling.support.PeriodicTrigger
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.math.BigInteger
 import java.net.URI
 import java.net.URL
@@ -33,6 +35,7 @@ import java.security.GeneralSecurityException
 import java.security.PublicKey
 import java.security.cert.CRLReason
 import java.time.Duration
+import java.util.Collections
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 import javax.security.auth.x500.X500Principal
@@ -78,9 +81,29 @@ open class CrlService(
      *
      * Инвалидация: по `lastModified` файла. Проверка подписи против того же
      * ключа издателя повторно не делается (сравниваем encoded key bytes).
+     *
+     * Размер ограничен [MEM_CACHE_MAX_ENTRIES] по принципу LRU. Число
+     * конфигурационных CRL мало, а on-demand ограничены своим потолком
+     * (см. [enforceOnDemandLimit]), так что упереться в этот предел в норме
+     * нельзя — он страхует от роста в обход обоих механизмов. Порядок
+     * доступа мутируется на чтении, поэтому карта синхронизированная целиком.
      */
     private data class CachedIndex(val index: CrlIndex, val fileMtime: Long, val verifiedAgainstKeyEncoded: ByteArray?)
-    private val crlMemCache = ConcurrentHashMap<String, CachedIndex>()
+
+    private val crlMemCache: MutableMap<String, CachedIndex> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, CachedIndex>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, CachedIndex>): Boolean =
+                size > MEM_CACHE_MAX_ENTRIES
+        },
+    )
+
+    /**
+     * Когда on-demand CRL последний раз пригодился при проверке (epoch millis).
+     * Основание для LRU-вытеснения. Файлы, которых здесь нет (например, после
+     * рестарта), упорядочиваются по `lastModified` — то есть по времени
+     * загрузки; шкала та же, значения сравнимы напрямую.
+     */
+    private val onDemandLastUse = ConcurrentHashMap<String, Long>()
 
     /**
      * Возвращает индекс CRL, используя кэш если он включён. При промахе или
@@ -281,9 +304,17 @@ open class CrlService(
         // Собираем все пригодные CRL этого издателя из всех кэш-каталогов и
         // делим на base (full) и delta по наличию deltaCRLIndicator.
         val usable = ArrayList<UsableCrl>()
-        for (cacheDirectory in listOf(cacheFullDir(), cacheDeltaDir(), cacheOnDemandDir())) {
+        val onDemandDir = cacheOnDemandDir()
+        for (cacheDirectory in listOf(cacheFullDir(), cacheDeltaDir(), onDemandDir)) {
             for (crlFile in getCrlFiles(cacheDirectory)) {
-                loadUsableCrl(crlFile, certIssuer, issuerKey, now)?.let { usable.add(it) }
+                loadUsableCrl(crlFile, certIssuer, issuerKey, now)?.let {
+                    // Отмечаем именно пригодившийся CRL: тот, что не подошёл ни
+                    // одному издателю, так и остаётся кандидатом на вытеснение.
+                    if (cacheDirectory == onDemandDir) {
+                        onDemandLastUse[crlFile.absolutePath] = System.currentTimeMillis()
+                    }
+                    usable.add(it)
+                }
             }
         }
 
@@ -494,6 +525,11 @@ open class CrlService(
             } else {
                 log.info("{} files updated in CRL cache for '{}'", updatedCount, cacheDirectory)
             }
+
+            // Периодическая уборка on-demand кэша. Без неё уже разросшийся
+            // кэш ужался бы только при следующей загрузке по CRL DP — на
+            // инстансе, который их больше не получает, никогда.
+            enforceOnDemandLimit()
         }
     }
 
@@ -520,6 +556,7 @@ open class CrlService(
         val now = System.currentTimeMillis()
         val dirName = cacheOnDemandDir()
         val cacheDir = directoryService.getCachePathFor(dirName) ?: return
+        var fetched = false
 
         for (url in crlUrls) {
             // Минимальный SSRF-барьер: URL из серта не должен указывать на
@@ -546,6 +583,64 @@ open class CrlService(
 
             log.debug("On-demand fetching CRL from cert CRL-DP: {}", url)
             downloadCrl(dirName, url)
+            fetched = true
+        }
+
+        // Кэш пополняется URL'ами из присланных сертификатов, то есть растёт
+        // ровно настолько, насколько разнообразны запросы. Держим его в рамках.
+        if (fetched) enforceOnDemandLimit()
+    }
+
+    /**
+     * Ограничивает размер on-demand кэша [CrlConfiguration.onDemandMaxEntries]
+     * файлами, вытесняя реже всего использованные вместе с их
+     * файлами-спутниками и записями in-memory кэша.
+     *
+     * «Реже всего использованный» — по последнему успешному применению в
+     * [verify]; для файлов, которые ни разу не пригодились в этом процессе
+     * (в том числе оставшихся от прошлого запуска), берётся время загрузки.
+     * Так первыми уходят CRL, скачанные по CRL DP из чужих сертификатов и
+     * никому не пригодившиеся.
+     *
+     * Публичный и синхронизированный: вызывается после загрузок, сериализуется
+     * с [updateCache], чтобы не удалять файл, который прямо сейчас пишется.
+     */
+    @Synchronized
+    open fun enforceOnDemandLimit() {
+        val limit = crlConfiguration.onDemandMaxEntries
+        if (limit <= 0) return
+
+        val files = getCrlFiles(cacheOnDemandDir())
+
+        // Подчищаем хвосты учёта от файлов, которых уже нет на диске.
+        val present = files.mapTo(HashSet()) { it.absolutePath }
+        onDemandLastUse.keys.retainAll(present)
+
+        if (files.size <= limit) return
+
+        val victims = files.sortedBy { lastUseOf(it) }.take(files.size - limit)
+        log.info(
+            "On-demand CRL cache holds {} files, limit is {} — evicting {} least recently used",
+            files.size, limit, victims.size,
+        )
+        for (victim in victims) evictOnDemandCrl(victim)
+    }
+
+    private fun lastUseOf(file: File): Long =
+        maxOf(onDemandLastUse[file.absolutePath] ?: 0L, file.lastModified())
+
+    private fun evictOnDemandCrl(file: File) {
+        val indexFile = CrlIndex.indexFileFor(file)
+        crlMemCache.remove(file.absolutePath)
+        onDemandLastUse.remove(file.absolutePath)
+
+        if (file.delete()) {
+            log.debug("Evicted on-demand CRL {}", file.name)
+        } else {
+            log.warn("Could not evict on-demand CRL {}", file)
+        }
+        if (indexFile.isFile && !indexFile.delete()) {
+            log.warn("Could not delete index of evicted CRL {}", indexFile)
         }
     }
 
@@ -620,17 +715,35 @@ open class CrlService(
         // или провайдер вернул ошибку — старый CRL на диске остаётся целым,
         // и проверки revocation продолжают работать на нём до следующего цикла.
         val tmpPath = path.resolveSibling(path.fileName.toString() + ".tmp")
+        val maxBytes = maxDownloadBytes()
         try {
             val request = httpClientConfiguration.requestBuilder(URI(url))
                 .GET()
                 .build()
-            // ofFile стримит ответ прямо в tmp-файл — для крупных CRL (десятки MB)
-            // не держим всё в памяти.
-            val response = client.send(request, HttpResponse.BodyHandlers.ofFile(tmpPath))
-            val status = response.statusCode()
-            if (status != HttpStatus.OK.value()) {
-                val location = response.headers().firstValue("location").orElse("<none>")
-                throw CrlException("Cannot download file from: $url. Got HTTP status: $status (location=$location)")
+            // ofInputStream, а не ofFile: тело копируем сами, чтобы оборвать
+            // загрузку на превышении потолка. ofFile принял бы файл любого
+            // размера, а URL в нестрогом режиме приходит из чужого сертификата.
+            // Память при этом всё так же не растёт — копируем буфером.
+            val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            response.body().use { body ->
+                val status = response.statusCode()
+                if (status != HttpStatus.OK.value()) {
+                    val location = response.headers().firstValue("location").orElse("<none>")
+                    throw CrlException(
+                        "Cannot download file from: $url. Got HTTP status: $status (location=$location)",
+                    )
+                }
+
+                // Если сервер объявил размер — отказываемся, не читая тело.
+                val declared = response.headers().firstValueAsLong(CONTENT_LENGTH_HEADER).orElse(-1L)
+                if (maxBytes > 0 && declared > maxBytes) {
+                    throw CrlException(
+                        "CRL at $url declares $declared bytes, over the $maxBytes byte limit " +
+                            "(ncanode.crl.maxSizeMb)",
+                    )
+                }
+
+                Files.newOutputStream(tmpPath).use { output -> copyLimited(body, output, maxBytes, url) }
             }
 
             try {
@@ -661,11 +774,43 @@ open class CrlService(
     private fun getCrlCacheFilePathFor(cacheDirName: String, fileName: String): File =
         File(requireNotNull(directoryService.getCachePathFor(cacheDirName)), fileName)
 
+    /** Потолок загрузки в байтах; ноль или меньше — без ограничения. */
+    private fun maxDownloadBytes(): Long {
+        val megabytes = crlConfiguration.maxSizeMb
+        return if (megabytes <= 0) 0L else megabytes.toLong() * 1024L * 1024L
+    }
+
+    /**
+     * Копирует тело ответа, обрывая загрузку на превышении [maxBytes].
+     * Проверка идёт до записи очередного блока, так что за потолок на диск
+     * не попадает ничего.
+     */
+    @Throws(CrlException::class, IOException::class)
+    private fun copyLimited(input: InputStream, output: OutputStream, maxBytes: Long, url: String): Long {
+        val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (maxBytes > 0 && total > maxBytes) {
+                throw CrlException("CRL at $url exceeds the $maxBytes byte limit (ncanode.crl.maxSizeMb)")
+            }
+            output.write(buffer, 0, read)
+        }
+        return total
+    }
+
     companion object {
         private val log = LoggerFactory.getLogger(CrlService::class.java)
         const val CRL_DEFAULT = "default"
         const val CRL_CA = "ca-crl"
         private const val CRL_FILE_EXTENSION = ".crl"
+        private const val CONTENT_LENGTH_HEADER = "content-length"
+        private const val DOWNLOAD_BUFFER_SIZE = 64 * 1024
+
+        /** Потолок числа открытых индексов в памяти, см. `crlMemCache`. */
+        private const val MEM_CACHE_MAX_ENTRIES = 256
 
         /**
          * Единственное critical CRL-расширение, которое мы обрабатываем:

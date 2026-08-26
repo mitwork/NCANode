@@ -33,6 +33,19 @@ open class CrlBaseConfiguration : CrlConfiguration {
      */
     override var isStrict: Boolean = false
 
+    /**
+     * Потолок размера скачиваемого CRL (см. [CrlConfiguration.maxSizeMb]).
+     * 64 МБ — примерно трёхкратный запас к боевому `nca_gost_2022.crl`
+     * (~20 МБ). Оба конфига мапятся на один env `NCANODE_CRL_MAX_SIZE_MB`.
+     */
+    override var maxSizeMb: Int = 64
+
+    /**
+     * Размер on-demand кэша (см. [CrlConfiguration.onDemandMaxEntries]).
+     * Оба конфига мапятся на один env `NCANODE_CRL_ONDEMAND_MAX`.
+     */
+    override var onDemandMaxEntries: Int = 64
+
     override var ttl: Int? = null
     override var url: String? = null
     override var delta: CrlBaseConfiguration? = null
