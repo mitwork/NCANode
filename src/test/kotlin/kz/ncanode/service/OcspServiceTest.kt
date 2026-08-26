@@ -12,8 +12,11 @@ import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.dto.ocsp.OcspResult
 import kz.ncanode.wrapper.KalkanWrapper
+import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.http.HttpClient
+import java.net.http.HttpHeaders
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 
@@ -26,6 +29,9 @@ import java.net.http.HttpResponse
  *  - verify() при сетевой ошибке — UNAVAILABLE (транспортный сбой, допускает
  *    CRL-fallback), без проброса исключения.
  *  - verify() при мусоре в HTTP-ответе — UNAVAILABLE, без падения.
+ *  - verify() при ответе сверх потолка размера — UNAVAILABLE (тело не
+ *    аккумулируется целиком; адрес респондера в нестрогом режиме приходит
+ *    из AIA сертификата).
  *
  * Положительные ветки (ACTIVE / REVOKED / UNKNOWN на nonce mismatch)
  * требуют валидного OCSP-ответа от test.pki.gov.kz и покрываются
@@ -37,6 +43,20 @@ class OcspServiceTest : FunSpec({
     val kalkanWrapper = KalkanWrapper(kalkanProvider)
     val ocspConfig = OcspConfiguration()  // пустой — fallback URL не задан
     val httpConfig = HttpClientConfiguration()
+
+    /** Ответ OCSP-респондера: тело читается потоково, см. `sendBounded`. */
+    fun httpResponse(body: ByteArray, contentLength: Long? = null): HttpResponse<InputStream> {
+        val headers = if (contentLength == null) {
+            HttpHeaders.of(emptyMap()) { _, _ -> true }
+        } else {
+            HttpHeaders.of(mapOf("content-length" to listOf(contentLength.toString()))) { _, _ -> true }
+        }
+        return mockk<HttpResponse<InputStream>>(relaxed = true).apply {
+            every { statusCode() } returns 200
+            every { body() } returns ByteArrayInputStream(body)
+            every { this@apply.headers() } returns headers
+        }
+    }
 
     test("generateOcspNonce returns 16-byte array (RFC 8954)") {
         val client = mockk<HttpClient>(relaxed = true)
@@ -103,16 +123,40 @@ class OcspServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         val issuer = ks.certificate
-        val response = mockk<HttpResponse<ByteArray>>().apply {
-            every { body() } returns "not an OCSP response".toByteArray()
-        }
         val client = mockk<HttpClient>().apply {
-            every { send(any<HttpRequest>(), any<HttpResponse.BodyHandler<ByteArray>>()) } returns response
+            every {
+                send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>())
+            } returns httpResponse("not an OCSP response".toByteArray())
         }
         val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
 
         val statuses = service.verify(ks.certificate, issuer)
         statuses shouldHaveSize 1
         statuses[0].result shouldBe OcspResult.UNAVAILABLE
+    }
+
+    test("verify() returns UNAVAILABLE when the responder body exceeds the size limit") {
+        // Адрес респондера в нестрогом режиме берётся из AIA сертификата, то
+        // есть его выбирает автор сертификата. Неограниченное чтение ответа
+        // означало бы, что он же выбирает и объём выделяемой нами памяти.
+        // Превышение — это «пригодного ответа не было», то есть UNAVAILABLE:
+        // fallback на свежий CRL допустим (см. разделение UNAVAILABLE/UNKNOWN).
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val issuer = ks.certificate
+        val boundedConfig = HttpClientConfiguration().apply { maxResponseSizeKb = 1 }
+        val client = mockk<HttpClient>().apply {
+            every {
+                send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>())
+            } returns httpResponse(ByteArray(64 * 1024))
+        }
+        val service = OcspService(kalkanProvider, ocspConfig, client, boundedConfig)
+
+        val statuses = service.verify(ks.certificate, issuer)
+        statuses shouldHaveSize 1
+        statuses[0].result shouldBe OcspResult.UNAVAILABLE
+        statuses[0].message!! shouldContain "limit"
     }
 })

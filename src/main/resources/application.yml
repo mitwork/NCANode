@@ -24,6 +24,7 @@ ncanode:
   http-client:
     connectTimeout: ${NCANODE_HTTP_CLIENT_CONNECT_TIMEOUT:5}
     requestTimeout: ${NCANODE_HTTP_CLIENT_REQUEST_TIMEOUT:30}
+    maxResponseSizeKb: ${NCANODE_HTTP_CLIENT_MAX_RESPONSE_KB:1024}
     userAgent: ${NCANODE_HTTP_CLIENT_USER_AGENT:}
     proxy:
       url: ${NCANODE_PROXY_URL:}

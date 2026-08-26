@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 250 тестов / **82% coverage**.
+- **Состояние v4:** functional + 256 тестов / **82% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -140,7 +140,7 @@ JWT/PDF/X509/PKCS12) начнёт возвращать `valid=false` из-за `
 NCA SDK 2.0 test pack, заменить p12 в `p12/`, сверить новый период валидности,
 обновить эту дату.
 
-250 тестов / **82% line coverage**.
+256 тестов / **82% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -167,7 +167,7 @@ REVOKED-ветка покрывается через mock'нутый `CrlIndex`,
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 250 тестов + JaCoCo report
+./gradlew test                   # 256 тестов + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -885,10 +885,37 @@ symbol 12 МБ, class 9 МБ, threads 3.8 МБ.
   access-order `LinkedHashMap` с потолком 256 записей. Порядок доступа
   мутируется на чтении, поэтому синхронизация нужна на всей карте.
 
-Не тронуто (тот же класс проблемы, другой транспорт): `OcspService` и
-`TspService` читают ответ через `BodyHandlers.ofByteArray()` без потолка, а
-адрес OCSP в нестрогом режиме тоже может прийти из AIA сертификата — там это
-сразу heap, а не диск. Отдельная задача.
+### 37. Потолок ответа для OCSP / TSP / CA — `HttpClientConfiguration.sendBounded`
+Тот же класс проблемы, что quirk #36, но другой транспорт: все три сервиса
+читали ответ через `BodyHandlers.ofByteArray()` без ограничения — сразу в
+кучу, а не на диск. Для OCSP это к тому же управляется извне: в нестрогом
+режиме адрес респондера берётся из AIA проверяемого сертификата.
+
+Реализация — `sendBounded(client, request)` рядом с `requestBuilder` в
+`HttpClientConfiguration`: инвариант становится структурным, как и с непустым
+User-Agent (quirk #24). Тело читается потоково с проверкой счётчика перед
+каждым блоком; объявленный `Content-Length` сверх потолка отвергается до
+чтения тела. Потолок — `NCANODE_HTTP_CLIENT_MAX_RESPONSE_KB`, дефолт 1024 КБ
+(OCSP/TSP/CA-обмены — единицы килобайт, запас в десятки раз). Возвращает
+`BoundedResponse(statusCode, body)`.
+
+**Проверено экспериментом (важно и для quirk #36):** переход с
+`ofByteArray`/`ofFile` на `ofInputStream` НЕ ломает `HttpRequest.timeout()`.
+Хотя `send` возвращается по заголовкам (замерено: 0.0 с), JDK всё равно
+обрывает обмен по таймауту запроса — заблокированный `read` получает
+`IOException: closed` с корневой причиной `HttpTimeoutException: request timed
+out` ровно на 3-й секунде при `timeout(3s)`. То есть медленный сервер не может
+держать поток вечно, slow-loris не появился ни здесь, ни в CRL-загрузке.
+
+`ResponseTooLargeException` наследует `IOException` намеренно: все три сервиса
+уже ловят его и переводят в свои отказы. Для OCSP это UNAVAILABLE, а не
+UNKNOWN — по разделению quirk #28 пригодного ответа не было, значит fallback
+на свежий CRL допустим.
+
+`CaService.download` переведён туда же (сверх изначально запрошенного объёма —
+это тот же вызов): попутно пустое тело больше не превращается в пустой файл на
+диске. Итоговое поведение то же — `downloadCert` вернёт null и `checkCertForNull`
+остановит приложение, — но без порчи кэша.
 
 ## Что не покрыто тестами (≈494 lines)
 

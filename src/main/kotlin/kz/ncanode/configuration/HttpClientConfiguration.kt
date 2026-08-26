@@ -14,8 +14,11 @@ import java.net.InetSocketAddress
 import java.net.PasswordAuthentication
 import java.net.ProxySelector
 import java.net.URI
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.time.Duration
 
 @Configuration
@@ -25,6 +28,21 @@ open class HttpClientConfiguration {
     var connectTimeout: Int = 5
     var requestTimeout: Int = 30
     var userAgent: String = ""
+
+    /**
+     * Потолок размера тела ответа в килобайтах для «мелких» PKI-обменов:
+     * OCSP, TSP и загрузка CA-сертификатов. Все они измеряются единицами
+     * килобайт, так что дефолтный мегабайт — запас в десятки раз.
+     *
+     * Нужен потому, что адрес OCSP-респондера в нестрогом режиме берётся из
+     * AIA проверяемого сертификата: без потолка такой сертификат заставляет
+     * сервер прочитать ответ произвольного размера, причём сразу в кучу.
+     * Ноль или меньше — без ограничения.
+     *
+     * CRL сюда не относится — они на порядки крупнее и ограничены отдельно
+     * (`ncanode.crl.maxSizeMb`), к тому же пишутся на диск, а не в память.
+     */
+    var maxResponseSizeKb: Int = 1024
 
     // Версия для дефолтного User-Agent берётся из build-info (тот же источник,
     // что и MaintenanceService) — `package.implementationVersion` в boot-jar
@@ -84,6 +102,62 @@ open class HttpClientConfiguration {
             .timeout(requestTimeoutDuration)
             .header("User-Agent", effectiveUserAgent)
 
+    /** Потолок тела ответа в байтах; ноль или меньше — без ограничения. */
+    private val maxResponseBytes: Long
+        get() = if (maxResponseSizeKb <= 0) 0L else maxResponseSizeKb.toLong() * 1024L
+
+    /**
+     * Отправляет запрос и читает тело под потолком [maxResponseSizeKb].
+     *
+     * Почему не `BodyHandlers.ofByteArray()`: он аккумулирует тело целиком и
+     * оборвать его нечем — сервер (в т.ч. выбранный чужим сертификатом через
+     * AIA) мог бы заставить нас выделить сколько угодно кучи. Здесь тело
+     * читается потоково, счётчик проверяется перед добавлением очередного
+     * блока, а объявленный `Content-Length` сверх потолка отвергается ещё до
+     * чтения тела.
+     *
+     * Таймаут запроса при этом сохраняется: хотя `send` с `ofInputStream`
+     * возвращается по заголовкам, JDK всё равно обрывает обмен по
+     * `HttpRequest.timeout` — заблокированный `read` получает
+     * `IOException: closed` с корневой причиной `HttpTimeoutException`
+     * (проверено). То есть медленный сервер не может держать поток вечно.
+     *
+     * @throws ResponseTooLargeException если тело превысило потолок
+     */
+    @Throws(IOException::class, InterruptedException::class)
+    fun sendBounded(client: HttpClient, request: HttpRequest): BoundedResponse {
+        val maxBytes = maxResponseBytes
+        val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+
+        return response.body().use { body ->
+            val declared = response.headers().firstValueAsLong(CONTENT_LENGTH_HEADER).orElse(-1L)
+            if (maxBytes > 0 && declared > maxBytes) {
+                throw ResponseTooLargeException(
+                    "Response from ${request.uri()} declares $declared bytes, over the $maxBytes byte limit " +
+                        "(ncanode.http-client.maxResponseSizeKb)",
+                )
+            }
+
+            val initialCapacity = if (declared in 0..MAX_PREALLOCATED_BYTES) declared.toInt() else DEFAULT_CAPACITY
+            val collected = ByteArrayOutputStream(initialCapacity)
+            val chunk = ByteArray(READ_BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val read = body.read(chunk)
+                if (read < 0) break
+                total += read
+                if (maxBytes > 0 && total > maxBytes) {
+                    throw ResponseTooLargeException(
+                        "Response from ${request.uri()} exceeds the $maxBytes byte limit " +
+                            "(ncanode.http-client.maxResponseSizeKb)",
+                    )
+                }
+                collected.write(chunk, 0, read)
+            }
+            BoundedResponse(response.statusCode(), collected.toByteArray())
+        }
+    }
+
     private fun configureProxy(builder: HttpClient.Builder) {
         val proxyConfig = proxy ?: return
         val urlValue = proxyConfig.url
@@ -122,5 +196,32 @@ open class HttpClientConfiguration {
 
     companion object {
         private val log = LoggerFactory.getLogger(HttpClientConfiguration::class.java)
+
+        private const val CONTENT_LENGTH_HEADER = "content-length"
+        private const val READ_BUFFER_SIZE = 16 * 1024
+        private const val DEFAULT_CAPACITY = 8 * 1024
+
+        /**
+         * До какого объявленного размера доверять `Content-Length` при
+         * преаллокации буфера. Выше — растём по мере чтения: заголовок
+         * приходит от чужого сервера, и верить ему на слово незачем.
+         */
+        private const val MAX_PREALLOCATED_BYTES = 64L * 1024
     }
 }
+
+/**
+ * Ответ, тело которого прочитано под потолком
+ * (см. [HttpClientConfiguration.sendBounded]).
+ */
+class BoundedResponse(val statusCode: Int, val body: ByteArray)
+
+/**
+ * Тело ответа превысило потолок.
+ *
+ * Наследник [IOException] намеренно: Ca/Ocsp/Tsp уже ловят его и переводят в
+ * свои доменные отказы. Для OCSP это UNAVAILABLE («ответа не было»), а не
+ * UNKNOWN — и это корректно по разделению quirk #28: пригодного ответа мы
+ * действительно не получили, значит fallback на свежий CRL допустим.
+ */
+class ResponseTooLargeException(message: String) : IOException(message)

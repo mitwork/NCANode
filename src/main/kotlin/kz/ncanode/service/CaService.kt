@@ -17,7 +17,6 @@ import java.io.IOException
 import java.net.URI
 import java.net.URL
 import java.net.http.HttpClient
-import java.net.http.HttpResponse
 import java.util.concurrent.TimeUnit
 
 /**
@@ -201,11 +200,15 @@ class CaService(
             val request = httpClientConfiguration.requestBuilder(URI(url.toString()))
                 .GET()
                 .build()
-            val response = client.send(request, HttpResponse.BodyHandlers.ofByteArray())
-            if (response.statusCode() != 200) {
+            // Под тем же потолком, что OCSP/TSP: CA-сертификат — единицы
+            // килобайт. Пустое тело больше не превращается в пустой файл на
+            // диске — отказ виден сразу, как и при любой другой ошибке загрузки.
+            val response = httpClientConfiguration.sendBounded(client, request)
+            if (response.statusCode != 200) {
                 throw CaException("Cannot download file: $url")
             }
-            val body = response.body() ?: throw CaException("Got empty request from: $url")
+            val body = response.body
+            if (body.isEmpty()) throw CaException("Got empty request from: $url")
             file.outputStream().use { out -> out.write(body) }
         } catch (e: IOException) {
             throw CaException("Cannot download file: $url", e)
