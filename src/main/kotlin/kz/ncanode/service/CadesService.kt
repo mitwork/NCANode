@@ -14,9 +14,13 @@ import kz.gov.pki.kalkan.asn1.cms.Attribute
 import java.util.Date
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.ades.CadesSignerInfo
+import kz.ncanode.dto.request.CadesSignBatchRequest
 import kz.ncanode.dto.request.CadesSignRequest
+import kz.ncanode.dto.request.CadesVerifyBatchRequest
 import kz.ncanode.dto.request.CadesVerifyRequest
 import kz.ncanode.dto.response.CadesResponse
+import kz.ncanode.dto.response.CadesSignBatchResponse
+import kz.ncanode.dto.response.CadesVerificationBatchResponse
 import kz.ncanode.dto.response.CadesVerificationResponse
 import kz.ncanode.dto.tsp.TsaPolicy
 import kz.ncanode.exception.ApplicationException
@@ -24,6 +28,7 @@ import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.ServerException
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getTspHashAlgorithmByOid
+import kz.ncanode.util.mapPartial
 import kz.ncanode.wrapper.KalkanWrapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -212,6 +217,51 @@ class CadesService(
      * Доказанное время существования подписи: genTime её метки времени, если
      * метка есть. Иначе null — момент проверки остаётся текущим.
      */
+
+    /**
+     * Batch-подпись: каждый элемент подписывается независимо общим набором
+     * signer'ов до общего уровня. Ошибка на одном элементе не валит остальные,
+     * её видно в `results[n].status` (batch-инварианты — в CLAUDE.md).
+     *
+     * Уровень общий на весь batch: смешивать в одном запросе B и LTA незачем.
+     */
+    fun signBatch(request: CadesSignBatchRequest): CadesSignBatchResponse {
+        val items = request.data.mapPartial({ status, message ->
+            CadesSignBatchResponse.Item(status = status, message = message)
+        }) { data ->
+            val response = sign(
+                CadesSignRequest().apply {
+                    this.data = data
+                    this.signers = request.signers
+                    this.level = request.level
+                    this.isDetached = request.isDetached
+                    this.tsaPolicy = request.tsaPolicy
+                },
+            )
+            CadesSignBatchResponse.Item(cms = response.cms, level = response.level)
+        }
+        return CadesSignBatchResponse(results = items)
+    }
+
+    /**
+     * Batch-проверка: каждая пара `cms + data?` проверяется независимо
+     * с общими revocation-флагами.
+     */
+    fun verifyBatch(request: CadesVerifyBatchRequest): CadesVerificationBatchResponse {
+        val items = request.items.mapPartial({ status, message ->
+            CadesVerificationResponse(valid = false, status = status, message = message)
+        }) { item ->
+            verify(
+                CadesVerifyRequest().apply {
+                    cms = item.cms
+                    data = item.data
+                    revocationCheck = request.revocationCheck
+                },
+            )
+        }
+        return CadesVerificationBatchResponse(results = items)
+    }
+
     private fun proofOfExistence(signer: SignerInformation): Date? = try {
         tspService.extractTimestampToken(signer)
             ?.let { tspService.verify(it, signer.signature, false, false) }

@@ -10,9 +10,13 @@ import kz.ncanode.dto.ades.AdesLevel
 import java.util.Date
 import kz.ncanode.dto.ades.SignaturePackaging
 import kz.ncanode.dto.ades.XadesSignatureInfo
+import kz.ncanode.dto.request.XadesSignBatchRequest
 import kz.ncanode.dto.request.XadesSignRequest
+import kz.ncanode.dto.request.XadesVerifyBatchRequest
 import kz.ncanode.dto.request.XadesVerifyRequest
 import kz.ncanode.dto.response.XadesResponse
+import kz.ncanode.dto.response.XadesSignBatchResponse
+import kz.ncanode.dto.response.XadesVerificationBatchResponse
 import kz.ncanode.dto.response.XadesVerificationResponse
 import kz.ncanode.dto.tsp.TsaPolicy
 import kz.ncanode.dto.tsp.TspInfo
@@ -22,6 +26,7 @@ import kz.ncanode.exception.ServerException
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getHashingAlgorithmByOID
 import kz.ncanode.util.getTspHashAlgorithmByOid
+import kz.ncanode.util.mapPartial
 import kz.ncanode.wrapper.DocumentWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.KeyStoreWrapper
@@ -79,6 +84,45 @@ class XadesService(
      * Объект с ними попадает внутрь `ds:Signature`, поэтому enveloped-трансформ
      * исключает его из ссылки на сам документ, и рекурсии не возникает.
      */
+
+    /**
+     * Batch-подпись: каждый XML подписывается независимо общим набором
+     * signer'ов до общего уровня. Ошибка на одном документе не валит
+     * остальные — она в `results[n].status`.
+     */
+    fun signBatch(request: XadesSignBatchRequest): XadesSignBatchResponse {
+        val items = request.xmls.mapPartial({ status, message ->
+            XadesSignBatchResponse.Item(status = status, message = message)
+        }) { xml ->
+            val response = sign(
+                XadesSignRequest().apply {
+                    this.xml = xml
+                    this.signers = request.signers
+                    this.level = request.level
+                    this.packaging = request.packaging
+                    this.tsaPolicy = request.tsaPolicy
+                },
+            )
+            XadesSignBatchResponse.Item(xml = response.xml, level = response.level)
+        }
+        return XadesSignBatchResponse(results = items)
+    }
+
+    /** Batch-проверка: каждый XML проверяется независимо с общими флагами. */
+    fun verifyBatch(request: XadesVerifyBatchRequest): XadesVerificationBatchResponse {
+        val items = request.xmls.mapPartial({ status, message ->
+            XadesVerificationResponse(valid = false, status = status, message = message)
+        }) { xml ->
+            verify(
+                XadesVerifyRequest().apply {
+                    this.xml = xml
+                    revocationCheck = request.revocationCheck
+                },
+            )
+        }
+        return XadesVerificationBatchResponse(results = items)
+    }
+
     private fun appendSignature(
         document: DocumentWrapper,
         keyStore: KeyStoreWrapper,

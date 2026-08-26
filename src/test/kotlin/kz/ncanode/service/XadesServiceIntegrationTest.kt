@@ -3,6 +3,7 @@ package kz.ncanode.service
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldMatch
@@ -18,7 +19,9 @@ import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.ades.SignaturePackaging
 import kz.ncanode.dto.request.SignerRequest
+import kz.ncanode.dto.request.XadesSignBatchRequest
 import kz.ncanode.dto.request.XadesSignRequest
+import kz.ncanode.dto.request.XadesVerifyBatchRequest
 import kz.ncanode.dto.request.XadesVerifyRequest
 import kz.ncanode.exception.ClientException
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
@@ -353,5 +356,75 @@ class XadesServiceIntegrationTest(
     test("other packagings are refused explicitly") {
         shouldThrow<ClientException> { xadesService.sign(request(packaging = SignaturePackaging.DETACHED)) }
             .message!! shouldContain "not supported yet"
+    }
+
+    // ---- batch ----
+
+    test("signBatch signs every document with the shared signer and level") {
+        val response = xadesService.signBatch(
+            XadesSignBatchRequest().apply {
+                xmls = listOf(xml, """<?xml version="1.0" encoding="UTF-8"?><other><v>2</v></other>""")
+                signers = listOf(signerRequest())
+                level = AdesLevel.T
+            },
+        )
+
+        response.status shouldBe 200
+        response.results shouldHaveSize 2
+        response.results.forEach { item ->
+            item.status shouldBe 200
+            item.level shouldBe AdesLevel.T
+            xadesService.verify(
+                XadesVerifyRequest().apply { this.xml = item.xml.shouldNotBeNull() },
+            ).valid shouldBe true
+        }
+    }
+
+    test("signBatch keeps going when one document is malformed") {
+        val response = xadesService.signBatch(
+            XadesSignBatchRequest().apply {
+                xmls = listOf(xml, "<unclosed", xml)
+                signers = listOf(signerRequest())
+            },
+        )
+
+        response.results shouldHaveSize 3
+        response.results[0].status shouldBe 200
+        response.results[1].xml shouldBe null
+        response.results[2].status shouldBe 200
+    }
+
+    test("verifyBatch verifies each document independently") {
+        val signed = xadesService.signBatch(
+            XadesSignBatchRequest().apply {
+                xmls = listOf(xml, xml)
+                signers = listOf(signerRequest())
+            },
+        )
+
+        val response = xadesService.verifyBatch(
+            XadesVerifyBatchRequest().apply {
+                xmls = signed.results.map { it.xml.shouldNotBeNull() }
+            },
+        )
+
+        response.results shouldHaveSize 2
+        response.results.forEach { it.valid shouldBe true }
+    }
+
+    test("verifyBatch reports an unsigned document without spoiling the others") {
+        val signed = xadesService.sign(request()).xml.shouldNotBeNull()
+
+        val response = xadesService.verifyBatch(
+            XadesVerifyBatchRequest().apply { xmls = listOf(signed, xml) }
+        )
+
+        response.results shouldHaveSize 2
+        response.results[0].valid shouldBe true
+        // Документ без подписи для XML — не ошибка, а отрицательный вердикт
+        // (в отличие от PDF, где это 404 NoSignaturesFound). Поведение
+        // унаследовано от `/xml/verify` и batch его не меняет.
+        response.results[1].valid shouldBe false
+        response.results[1].status shouldBe 200
     }
 })

@@ -5,6 +5,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.ints.shouldBeGreaterThan
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import kz.gov.pki.kalkan.asn1.DERObjectIdentifier
@@ -20,7 +21,9 @@ import kz.ncanode.ades.CadesAttributes
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.ades.PadesInspector
+import kz.ncanode.dto.request.PadesSignBatchRequest
 import kz.ncanode.dto.request.PadesSignRequest
+import kz.ncanode.dto.request.PadesVerifyBatchRequest
 import kz.ncanode.dto.request.PadesVerifyRequest
 import kz.ncanode.dto.request.PdfVerifyRequest
 import kz.ncanode.dto.request.SignerRequest
@@ -587,5 +590,71 @@ class PadesServiceIntegrationTest(
         result.valid shouldBe true
         result.level shouldBe AdesLevel.LTA
         result.verifiedLevel shouldBe AdesLevel.LT
+    }
+
+    // ---- batch ----
+
+    test("signBatch signs every document with the shared signer and level") {
+        val response = padesService.signBatch(
+            PadesSignBatchRequest().apply {
+                pdfs = listOf(unsignedPdf, unsignedPdf)
+                signers = listOf(signerOf())
+                level = AdesLevel.T
+            },
+        )
+
+        response.status shouldBe 200
+        response.results shouldHaveSize 2
+        response.results.forEach { item ->
+            item.status shouldBe 200
+            item.level shouldBe AdesLevel.T
+            padesService.verify(
+                PadesVerifyRequest().apply { pdf = item.pdf.shouldNotBeNull() },
+            ).valid shouldBe true
+        }
+    }
+
+    test("signBatch keeps going when one document is not a PDF") {
+        val response = padesService.signBatch(
+            PadesSignBatchRequest().apply {
+                pdfs = listOf(unsignedPdf, Base64.getEncoder().encodeToString("не PDF".toByteArray()))
+                signers = listOf(signerOf())
+            },
+        )
+
+        response.results shouldHaveSize 2
+        response.results[0].status shouldBe 200
+        response.results[1].pdf shouldBe null
+    }
+
+    test("verifyBatch verifies each document independently") {
+        val signed = padesService.signBatch(
+            PadesSignBatchRequest().apply {
+                pdfs = listOf(unsignedPdf, unsignedPdf)
+                signers = listOf(signerOf())
+            },
+        )
+
+        val response = padesService.verifyBatch(
+            PadesVerifyBatchRequest().apply {
+                pdfs = signed.results.map { it.pdf.shouldNotBeNull() }
+            },
+        )
+
+        response.results shouldHaveSize 2
+        response.results.forEach { it.valid shouldBe true }
+    }
+
+    test("verifyBatch reports an unsigned document without spoiling the others") {
+        val signed = padesService.sign(request()).pdf.shouldNotBeNull()
+
+        val response = padesService.verifyBatch(
+            PadesVerifyBatchRequest().apply { pdfs = listOf(signed, unsignedPdf) },
+        )
+
+        response.results shouldHaveSize 2
+        response.results[0].valid shouldBe true
+        response.results[1].valid shouldBe false
+        response.results[1].status shouldBe 404
     }
 })

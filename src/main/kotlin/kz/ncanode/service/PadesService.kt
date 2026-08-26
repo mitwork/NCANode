@@ -13,10 +13,14 @@ import kz.ncanode.ades.PdfDocumentSecurityStore
 import kz.ncanode.ades.PdfIncrementalUpdate
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.ades.PadesSignatureInfo
+import kz.ncanode.dto.request.PadesSignBatchRequest
 import kz.ncanode.dto.request.PadesSignRequest
+import kz.ncanode.dto.request.PadesVerifyBatchRequest
 import kz.ncanode.dto.request.PadesVerifyRequest
 import kz.ncanode.dto.request.PdfVerifyRequest
 import kz.ncanode.dto.response.PadesResponse
+import kz.ncanode.dto.response.PadesSignBatchResponse
+import kz.ncanode.dto.response.PadesVerificationBatchResponse
 import kz.ncanode.dto.response.PadesVerificationResponse
 import kz.ncanode.dto.tsp.TsaPolicy
 import kz.ncanode.exception.ApplicationException
@@ -24,6 +28,7 @@ import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.ServerException
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getTspHashAlgorithmByOid
+import kz.ncanode.util.mapPartial
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.KeyStoreWrapper
 import org.apache.pdfbox.Loader
@@ -204,6 +209,44 @@ class PadesService(
      * использованный материал из `/DSS` для LT, проверенная документная метка
      * для LTA.
      */
+
+    /**
+     * Batch-подпись: каждый PDF подписывается независимо общим набором
+     * signer'ов до общего уровня. Метаданные подписанта, включая видимое
+     * представление, общие — они часть подписанта, а не документа.
+     */
+    fun signBatch(request: PadesSignBatchRequest): PadesSignBatchResponse {
+        val items = request.pdfs.mapPartial({ status, message ->
+            PadesSignBatchResponse.Item(status = status, message = message)
+        }) { pdf ->
+            val response = sign(
+                PadesSignRequest().apply {
+                    this.pdf = pdf
+                    this.signers = request.signers
+                    this.level = request.level
+                    this.tsaPolicy = request.tsaPolicy
+                },
+            )
+            PadesSignBatchResponse.Item(pdf = response.pdf, level = response.level)
+        }
+        return PadesSignBatchResponse(results = items)
+    }
+
+    /** Batch-проверка: каждый PDF проверяется независимо с общими флагами. */
+    fun verifyBatch(request: PadesVerifyBatchRequest): PadesVerificationBatchResponse {
+        val items = request.pdfs.mapPartial({ status, message ->
+            PadesVerificationResponse(valid = false, status = status, message = message)
+        }) { pdf ->
+            verify(
+                PadesVerifyRequest().apply {
+                    this.pdf = pdf
+                    revocationCheck = request.revocationCheck
+                },
+            )
+        }
+        return PadesVerificationBatchResponse(results = items)
+    }
+
     private fun verifiedLevel(
         claimed: AdesLevel,
         timestamped: Boolean,

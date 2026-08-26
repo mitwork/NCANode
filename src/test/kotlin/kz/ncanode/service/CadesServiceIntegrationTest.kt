@@ -2,6 +2,7 @@ package kz.ncanode.service
 
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -27,7 +28,9 @@ import kz.ncanode.ades.CadesInspector
 import kz.ncanode.ades.CmsArchiveTimestamp
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.certificate.CertificateRevocation
+import kz.ncanode.dto.request.CadesSignBatchRequest
 import kz.ncanode.dto.request.CadesSignRequest
+import kz.ncanode.dto.request.CadesVerifyBatchRequest
 import kz.ncanode.dto.request.CadesVerifyRequest
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.exception.ClientException
@@ -375,5 +378,84 @@ class CadesServiceIntegrationTest(
         val recomputed = CmsArchiveTimestamp.hashIndex(cms, before, digestOid, provider)
 
         recomputed.getDEREncoded().contentEquals(embedded.getDEREncoded()) shouldBe true
+    }
+
+    // ---- batch ----
+
+    test("signBatch signs every item with the shared signer and level") {
+        val second = Base64.getEncoder().encodeToString("second payload".toByteArray())
+        val response = cadesService.signBatch(
+            CadesSignBatchRequest().apply {
+                data = listOf(payload, second)
+                signers = listOf(signer())
+                level = AdesLevel.T
+            },
+        )
+
+        response.status shouldBe 200
+        response.results shouldHaveSize 2
+        response.results.forEach { item ->
+            item.status shouldBe 200
+            item.level shouldBe AdesLevel.T
+            // Каждый элемент — самостоятельная подпись, а не кусок общей.
+            cadesService.verify(
+                CadesVerifyRequest().apply { cms = item.cms.shouldNotBeNull() },
+            ).valid shouldBe true
+        }
+    }
+
+    test("signBatch keeps going when one item is not valid base64") {
+        val response = cadesService.signBatch(
+            CadesSignBatchRequest().apply {
+                data = listOf(payload, "не base64 вовсе", payload)
+                signers = listOf(signer())
+            },
+        )
+
+        // Top-level 200 означает «batch дошёл до конца», а не «всё удалось».
+        response.status shouldBe 200
+        response.results shouldHaveSize 3
+        response.results[0].status shouldBe 200
+        response.results[1].status shouldBe 400
+        response.results[1].cms.shouldBeNull()
+        response.results[2].status shouldBe 200
+    }
+
+    test("verifyBatch verifies each item on its own, detached included") {
+        val attached = cadesService.sign(request()).cms.shouldNotBeNull()
+        val detached = cadesService.sign(request(detached = true)).cms.shouldNotBeNull()
+
+        val response = cadesService.verifyBatch(
+            CadesVerifyBatchRequest().apply {
+                items = listOf(
+                    CadesVerifyBatchRequest.Item().apply { cms = attached },
+                    CadesVerifyBatchRequest.Item().apply {
+                        cms = detached
+                        data = payload
+                    },
+                )
+            },
+        )
+
+        response.results shouldHaveSize 2
+        response.results.forEach { it.valid shouldBe true }
+    }
+
+    test("verifyBatch reports a broken item without spoiling the others") {
+        val signed = cadesService.sign(request()).cms.shouldNotBeNull()
+
+        val response = cadesService.verifyBatch(
+            CadesVerifyBatchRequest().apply {
+                items = listOf(
+                    CadesVerifyBatchRequest.Item().apply { cms = signed },
+                    CadesVerifyBatchRequest.Item().apply { cms = "не CMS" },
+                )
+            },
+        )
+
+        response.results shouldHaveSize 2
+        response.results[0].valid shouldBe true
+        response.results[1].valid shouldBe false
+        response.results[1].status shouldBe 400
     }
 })

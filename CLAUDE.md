@@ -19,7 +19,7 @@
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
 - **Состояние v4:** functional + 256 тестов / **82% coverage**
-  (на `feature/ades-levels` — 318 тестов / **84%**).
+  (на `feature/ades-levels` — 330 тестов / **85%**).
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -66,7 +66,7 @@ src/main/kotlin/kz/ncanode/
 
 ## Batch endpoints (issue malikzh/NCANode#212)
 
-15 batch endpoints, симметрично с одиночными. Каждый принимает массив
+21 batch endpoint, симметрично с одиночными. Каждый принимает массив
 вместо одного элемента + общие signers/key/cert и возвращает
 partial-response (per-item status + payload):
 
@@ -79,10 +79,15 @@ partial-response (per-item status + payload):
 | PDF | `/pdf/sign/batch`, `/pdf/verify/batch` |
 | X509 | `/x509/info/batch`, `/x509/verify/batch` |
 | Pkcs12 | `/pkcs12/info/batch`, `/pkcs12/aliases/batch` |
+| CAdES | `/cades/sign/batch`, `/cades/verify/batch` |
+| XAdES | `/xades/sign/batch`, `/xades/verify/batch` |
+| PAdES | `/pades/sign/batch`, `/pades/verify/batch` |
 
 Дизайн-инварианты:
 
-- **Общий signer/key на весь batch.** Mass-signing use case.
+- **Общий signer/key на весь batch.** Mass-signing use case. У AdES-семейств
+  общий и **уровень**: смешивать в одном запросе B и LTA незачем, а разный
+  уровень на элемент сделал бы неоднозначным частичный отказ на LT.
 - **Sequential обработка items.** KalkanProvider thread-safety на GOST 2015
   без аудита не доверяем. Parallel — возможная оптимизация после нагрузки.
 - **Top-level status — HTTP-уровень** (200 = "batch обработан до конца").
@@ -110,8 +115,7 @@ partial-response (per-item status + payload):
 Новые сервисы ходят в них через швы с дефолтным параметром `prepare`
 (без аргумента — прежний путь один в один).
 
-Batch для этих трёх семейств пока НЕТ — отложено вторым проходом,
-документация под них не менялась.
+Batch есть у всех трёх — см. таблицу в разделе «Batch endpoints».
 
 ## Тестовая инфраструктура
 
@@ -1003,9 +1007,7 @@ OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bi
 
 ### 0. Довести `feature/ades-levels` (текущая задача)
 
-1. Batch-эндпойнты для `/cades`, `/xades`, `/pades` — вторым проходом,
-   по инвариантам раздела «Batch endpoints».
-2. Обратная сверка — отдать наши подписи их валидатору
+1. Обратная сверка — отдать наши подписи их валидатору
    (`knca_provider_util-osgi-0.9.jar` в `lib/` как оракул в тестах).
    Прямое направление закрыто: эталоны NCALayer мы принимаем, 15/15.
 4. Документация `docs/_tabs/docs.md` — сразу целиком, после batch.
@@ -1058,8 +1060,9 @@ OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bi
    (-1% за счёт configureProxy без unit-теста).
 
 10. **AdES-уровни** (ветка `feature/ades-levels`): CAdES/XAdES/PAdES
-    уровней B/T/LT/LTA под обновлённый NCALayer, Kalkan 0.7.5 → 0.7.8.
-    Тесты 233 → **303**, coverage 76% → **83%**. См. `ades-levels-plan.md`.
+    уровней B/T/LT/LTA под обновлённый NCALayer, Kalkan 0.7.5 → 0.7.8,
+    сверка на эталонах НУЦ, batch для трёх новых семейств.
+    Тесты 233 → **330**, coverage 76% → **85%**. См. `ades-levels-plan.md`.
 
 Все коммиты подписаны `Co-Authored-By: Claude Opus 4.7`.
 
