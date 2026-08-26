@@ -9,6 +9,7 @@ import org.apache.xml.security.signature.XMLSignatureException
 import org.apache.xml.security.transforms.Transforms
 import org.apache.xml.security.utils.XMLUtils
 import org.slf4j.LoggerFactory
+import org.w3c.dom.DOMException
 import org.w3c.dom.Document
 import org.w3c.dom.Element
 import java.security.PrivateKey
@@ -22,6 +23,36 @@ class XMLSignatureWrapper {
             XMLSignature(signature, "")
         } catch (e: XMLSecurityException) {
             throw ServerException("XML Signature creation error", e)
+        }
+        registerXadesIds(signature)
+    }
+
+    /**
+     * Помечает `Id`-атрибуты XAdES-свойств как настоящие ID.
+     *
+     * XAdES-подпись содержит вторую Reference на `xades:SignedProperties` по
+     * `URI="#..."`. При разборе чужого XML парсер не знает схемы, поэтому
+     * `getElementById` такой элемент не находит, ссылка не резолвится и
+     * проверка подписи падает — то есть любая XAdES-подпись (в том числе всё,
+     * что выпускает NCALayer) считалась бы невалидной.
+     *
+     * Делается в конструкторе намеренно: обёртка над уже готовой подписью
+     * создаётся только чтобы её проверить, а забытый вызов давал бы не ошибку,
+     * а тихий неверный вердикт. Область ограничена поддеревом самой подписи —
+     * чужие элементы документа не затрагиваются.
+     */
+    private fun registerXadesIds(signature: Element) {
+        for (namespace in XADES_NAMESPACES) {
+            val nodes = signature.getElementsByTagNameNS(namespace, "*")
+            for (i in 0 until nodes.length) {
+                val element = nodes.item(i) as? Element ?: continue
+                if (element.getAttribute("Id").isEmpty()) continue
+                try {
+                    element.setIdAttribute("Id", true)
+                } catch (e: DOMException) {
+                    log.debug("Cannot mark {} Id as an ID attribute: {}", element.nodeName, e.message)
+                }
+            }
         }
     }
 
@@ -110,6 +141,13 @@ class XMLSignatureWrapper {
 
     companion object {
         private val log = LoggerFactory.getLogger(XMLSignatureWrapper::class.java)
+
+        /** Пространства имён XAdES, в которых встречаются Id-несущие свойства. */
+        private val XADES_NAMESPACES = listOf(
+            "http://uri.etsi.org/01903/v1.3.2#",
+            "http://uri.etsi.org/01903/v1.4.1#",
+            "http://uri.etsi.org/01903/v1.1.1#",
+        )
 
         /**
          * Трансформы, не сужающие покрытие Reference'а: enveloped-signature

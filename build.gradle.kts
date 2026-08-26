@@ -53,7 +53,7 @@ dependencies {
     // tomcat теперь приходит транзитивно через starter-web; war/providedRuntime убрали.
 
     // KalkanCrypt из flatDir lib/
-    implementation(":knca_provider_jce_kalkan-0.7.5")
+    implementation(":knca_provider_jce_kalkan-0.7.8")
     implementation(":kalkancrypt-xmldsig-0.5")
     implementation("org.apache.santuario:xmlsec:4.0.4")
 

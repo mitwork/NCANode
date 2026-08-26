@@ -23,7 +23,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ./lib
-          key: ${{ runner.os }}-kalkancrypt-libs-2
+          key: ${{ runner.os }}-kalkancrypt-libs-3
       - name: Install kalkan libraries
         if: steps.kalkancrypt-cache.outputs.cache-hit != 'true'
         env:

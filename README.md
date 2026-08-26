@@ -40,7 +40,7 @@
 - **Kotlin** 2.3.x, **Java 25** (toolchain через foojay-resolver)
 - **Spring Boot** 4.0.x, **Gradle** 9.5.x
 - Jakarta EE (без `javax.*` кроме JDK-native)
-- KalkanCrypt 0.7.5, BouncyCastle 1.84, Apache Santuario 4.0.x, Apache PDFBox 3.0.x
+- KalkanCrypt 0.7.8, BouncyCastle 1.84, Apache Santuario 4.0.x, Apache PDFBox 3.0.x
 - Тесты: Kotest 5.9 + MockK + Spring Boot Test
 
 ## Официальная группа в Telegram

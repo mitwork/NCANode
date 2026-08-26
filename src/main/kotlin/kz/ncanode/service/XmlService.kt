@@ -122,7 +122,19 @@ class XmlService(
     /**
      * Проверяет XML-подписи.
      */
-    fun verify(xml: String, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
+    fun verify(
+        xml: String,
+        checkOcsp: Boolean,
+        checkCrl: Boolean,
+        /**
+         * Вызывается для каждой подписи до её проверки: получает сертификат и
+         * сам элемент `ds:Signature`. Позволяет заранее прикрепить вердикты по
+         * вшитому материалу (уровень LT) — тогда `attachValidationData` за ними
+         * в сеть не пойдёт. По умолчанию ничего не делает, поведение прежних
+         * вызовов не меняется.
+         */
+        prepare: (CertificateWrapper, Element) -> Unit = { _, _ -> },
+    ): VerificationResponse {
         warnIfRevocationDisabled(checkOcsp, checkCrl)
         val document = read(xml, false)
         val root = document.documentElement
@@ -149,6 +161,7 @@ class XmlService(
                 continue
             }
 
+            prepare(cert, signature)
             certificateService.attachValidationData(cert, checkOcsp, checkCrl)
 
             // check() подтверждает только целостность дайджестов Reference'ов.

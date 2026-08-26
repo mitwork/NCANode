@@ -7,6 +7,7 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.gov.pki.kalkan.tsp.TimeStampTokenInfo
+import kz.ncanode.ades.PdfIncrementalUpdate
 import kz.ncanode.dto.pdf.PdfSignerInfo
 import kz.ncanode.dto.request.PdfSignBatchRequest
 import kz.ncanode.dto.request.PdfSignRequest
@@ -129,7 +130,17 @@ class PdfService(
     /**
      * Verifies digital signatures in a PDF document.
      */
-    fun verify(pdfVerifyRequest: PdfVerifyRequest): PdfVerificationResponse {
+    fun verify(
+        pdfVerifyRequest: PdfVerifyRequest,
+        /**
+         * Вызывается для каждого подписанта до проверки доверия: получает
+         * сертификат и момент, на который он проверяется (genTime метки, если
+         * она валидна). Позволяет заранее прикрепить вердикты по вшитому в
+         * документ материалу — тогда `attachValidationData` за ними в сеть не
+         * пойдёт. По умолчанию ничего не делает.
+         */
+        prepare: (CertificateWrapper, Date) -> Unit = { _, _ -> },
+    ): PdfVerificationResponse {
         warnIfRevocationDisabled(
             pdfVerifyRequest.checkOcsp,
             pdfVerifyRequest.checkCrl,
@@ -156,21 +167,28 @@ class PdfService(
                     val coversWhole = signatureCoversWholeDocument(signature, fileLength)
                     if (coversWhole) wholeDocumentCovered = true
 
-                    val signerInfo = verifySignature(signature, pdfVerifyRequest, pdfBytes, coversWhole)
+                    val signerInfo = verifySignature(signature, pdfVerifyRequest, pdfBytes, coversWhole, prepare)
                     signerInfos.add(signerInfo)
                     if (!signerInfo.isValid) allValid = false
                 }
 
                 // Документ цел, только если хотя бы одна подпись покрывает его
                 // целиком: для multi-sign это последняя подпись (она подписывает
-                // и предыдущие ревизии). Иначе есть неподписанный хвост — весь
-                // результат верификации обесценивается.
-                if (!wholeDocumentCovered) {
+                // и предыдущие ревизии).
+                //
+                // Единственное исключение — хвост, добавляющий только данные для
+                // проверки (`/DSS` уровня PAdES-LT) и невидимые поля подписи:
+                // по стандарту он дописывается инкрементально уже после
+                // подписания. Отличаем его от дописанного содержимого разбором
+                // хвоста, а не по факту его наличия (см. PdfIncrementalUpdate).
+                val coverageAcceptable = wholeDocumentCovered ||
+                    PdfIncrementalUpdate.coverageAcceptable(pdfBytes)
+                if (!coverageAcceptable) {
                     log.warn("PDF has signatures but none covers the whole document — content appended after signing")
                 }
 
                 return PdfVerificationResponse(
-                    valid = allValid && wholeDocumentCovered,
+                    valid = allValid && coverageAcceptable,
                     signers = signerInfos,
                 )
             }
@@ -205,6 +223,7 @@ class PdfService(
         pdfVerifyRequest: PdfVerifyRequest,
         originalPdfBytes: ByteArray,
         coversWholeDocument: Boolean,
+        prepare: (CertificateWrapper, Date) -> Unit = { _, _ -> },
     ): PdfSignerInfo {
         try {
             // 1) Extract raw CMS (the /Contents) and the signed content (ByteRange)
@@ -232,7 +251,7 @@ class PdfService(
             var validationDate = now
             var digestAlgReported: String? = null
             for (si in signers) {
-                val attempt = verifyPdfSigner(si, certStore, withOcsp, withCrl, now) ?: continue
+                val attempt = verifyPdfSigner(si, certStore, withOcsp, withCrl, now, prepare) ?: continue
                 certificateWrapper = attempt.certificate
                 validationDate = attempt.validationDate
                 if (attempt.valid) {
@@ -281,6 +300,7 @@ class PdfService(
         withOcsp: Boolean,
         withCrl: Boolean,
         now: Date,
+        prepare: (CertificateWrapper, Date) -> Unit = { _, _ -> },
     ): PdfSignerAttempt? {
         val certCollection = certStore.getCertificates(si.sid)
         if (certCollection == null || certCollection.isEmpty()) return null
@@ -303,6 +323,9 @@ class PdfService(
 
         // Trust + revocation.
         val certificateWrapper = CertificateWrapper(x509)
+        // Момент проверки уже вычислен выше — отдаём его наружу вместе с
+        // сертификатом: слою AdES не нужно выводить POE во второй раз.
+        prepare(certificateWrapper, validationDate)
         certificateService.attachValidationData(certificateWrapper, withOcsp, withCrl)
         if (!certificateWrapper.isValid(validationDate, withOcsp, withCrl)) {
             return PdfSignerAttempt(false, certificateWrapper, validationDate, digest = null)

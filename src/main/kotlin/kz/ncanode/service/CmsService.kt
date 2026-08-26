@@ -212,6 +212,13 @@ class CmsService(
         detachedData: String?,
         checkOcsp: Boolean,
         checkCrl: Boolean,
+        /**
+         * Вызывается для каждого сертификата подписанта до проверки. Позволяет
+         * заранее прикрепить вердикты по вшитому в подпись материалу (уровень
+         * LT): дальше `attachValidationData` в сеть за ними уже не пойдёт.
+         * По умолчанию ничего не делает — поведение прежних вызовов не меняется.
+         */
+        prepare: (CertificateWrapper) -> Unit = {},
     ): CmsVerificationResponse {
         warnIfRevocationDisabled(checkOcsp, checkCrl)
         try {
@@ -222,6 +229,8 @@ class CmsService(
             // Batch-prefetch: параллельный OCSP + последовательный CRL/issuer
             // для всех cert'ов всех подписантов сразу (для CMS с N подписантами —
             // почти N-кратное ускорение при NCANODE_OCSP_PARALLEL).
+            signerCerts.values.flatten().forEach(prepare)
+
             if (checkOcsp || checkCrl) {
                 certificateService.prefetchValidationData(signerCerts.values.flatten(), checkOcsp, checkCrl)
             }
