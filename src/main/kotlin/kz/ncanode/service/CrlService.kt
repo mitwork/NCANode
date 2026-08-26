@@ -3,6 +3,9 @@ package kz.ncanode.service
 import jakarta.annotation.PostConstruct
 import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.crl.CrlConfiguration
+import kz.ncanode.crl.CrlIndex
+import kz.ncanode.crl.DerException
+import kz.ncanode.crl.RevokedEntry
 import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.dto.crl.CrlStatus
 import kz.ncanode.exception.CrlException
@@ -10,8 +13,6 @@ import kz.ncanode.exception.ServerException
 import kz.ncanode.util.isInternalHost
 import kz.ncanode.util.sha1
 import kz.ncanode.wrapper.CertificateWrapper
-import org.bouncycastle.asn1.ASN1Integer
-import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.x509.Extension
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -31,10 +32,6 @@ import java.nio.file.StandardCopyOption
 import java.security.GeneralSecurityException
 import java.security.PublicKey
 import java.security.cert.CRLReason
-import java.security.cert.CertificateException
-import java.security.cert.CertificateFactory
-import java.security.cert.X509CRL
-import java.security.cert.X509CRLEntry
 import java.time.Duration
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
@@ -67,47 +64,52 @@ open class CrlService(
     private fun cacheOnDemandDir() = "crl/$crlServiceType/ondemand"
 
     /**
-     * In-memory кэш распарсенных и подпись-верифицированных CRL'ей.
+     * Кэш открытых CRL-индексов.
+     *
+     * Сам индекс лежит на диске рядом с CRL и работает через `mmap`, поэтому
+     * кэшируется здесь дёшево: в куче — только метаданные, таблица отзывов
+     * остаётся file-backed. Прежняя версия держала здесь распарсенный
+     * `X509CRL`, а это 243 МБ на одном боевом `nca_gost_2022.crl`.
+     *
      * Включается через `NCANODE_CRL_CACHE_ENABLED` (по умолчанию true).
+     * Выключенный кэш означает «переоткрывать индекс на каждый verify» — это
+     * mmap плюс чтение заголовка, без разбора CRL, но и без запоминания
+     * результата проверки подписи.
      *
-     * Без кэша на каждый verify-call делается полный [loadCrl] +
-     * `crl.verify(issuerKey)` для каждого файла в каталоге. Для крупных
-     * GOST 2015 CRL'ей (десятки MB) это уходит на десятки секунд.
-     * С кэшем — миллисекунды (только `isRevoked` lookup).
-     *
-     * Инвалидация: автоматически по `lastModified` файла. Repeat-verify
-     * против того же ключа issuer'а не делается повторно (cmp encoded key
-     * bytes).
+     * Инвалидация: по `lastModified` файла. Проверка подписи против того же
+     * ключа издателя повторно не делается (сравниваем encoded key bytes).
      */
-    private data class CachedCrl(val crl: X509CRL, val fileMtime: Long, val verifiedAgainstKeyEncoded: ByteArray?)
-    private val crlMemCache = ConcurrentHashMap<String, CachedCrl>()
+    private data class CachedIndex(val index: CrlIndex, val fileMtime: Long, val verifiedAgainstKeyEncoded: ByteArray?)
+    private val crlMemCache = ConcurrentHashMap<String, CachedIndex>()
 
     /**
-     * Возвращает распарсенный CRL, используя in-memory кэш если включён.
-     * При промахе или изменении файла — re-parse, кэшируем без verified-key
-     * (signature проверится отдельно).
+     * Возвращает индекс CRL, используя кэш если он включён. При промахе или
+     * изменении файла индекс открывается заново (и при необходимости
+     * перестраивается) без запомненного verified-key — подпись проверится
+     * отдельно.
      */
-    private fun loadCachedCrl(file: File): X509CRL {
-        if (!crlConfiguration.isCacheEnabled) return loadCrl(file)
-        // Без стабильного идентификатора кэшировать нельзя — парсим напрямую.
-        // Срабатывает в основном на моках Mockito, где getAbsolutePath() = null.
-        val key = file.absolutePath ?: return loadCrl(file)
+    private fun loadCachedIndex(file: File): CrlIndex {
+        if (!crlConfiguration.isCacheEnabled) return loadIndex(file)
+        // Без стабильного идентификатора кэшировать нельзя — открываем напрямую.
+        // Срабатывает в основном на моках, где getAbsolutePath() = null.
+        val key = file.absolutePath ?: return loadIndex(file)
         val mtime = file.lastModified()
         val cached = crlMemCache[key]
-        if (cached != null && cached.fileMtime == mtime) return cached.crl
-        val parsed = loadCrl(file)
-        crlMemCache[key] = CachedCrl(parsed, mtime, null)
-        return parsed
+        if (cached != null && cached.fileMtime == mtime) return cached.index
+        val index = loadIndex(file)
+        crlMemCache[key] = CachedIndex(index, mtime, null)
+        return index
     }
 
     /**
-     * Прогревает in-memory кэш: проходит по всем CRL-файлам в этом
-     * cache namespace, парсит каждый и (по возможности) проверяет подпись
-     * против issuer-сертификата из переданного CA-bundle'а.
+     * Прогревает кэш: проходит по всем CRL-файлам в этом cache namespace,
+     * открывает индекс каждого (строя его, если файла-спутника ещё нет или он
+     * устарел) и по возможности проверяет подпись против issuer-сертификата из
+     * переданного CA-bundle'а.
      *
-     * Цель — чтобы первый user-verify не платил многосекундную цену парсинга
-     * крупных GOST CRL'ей. Прогревается всё что есть на диске; orphan'ы
-     * пропускаем тихо.
+     * Цель — чтобы первый user-verify не платил за построение индекса крупного
+     * CRL. После первого запуска индексы лежат на диске, и прогрев сводится к
+     * их открытию. Прогревается всё что есть на диске; orphan'ы пропускаем тихо.
      *
      * Если cache отключён в конфиге, метод тихо выходит — нет смысла парсить
      * в кэш, который всё равно не используется.
@@ -125,15 +127,14 @@ open class CrlService(
         for (dir in listOf(cacheFullDir(), cacheDeltaDir(), cacheOnDemandDir())) {
             for (crlFile in getCrlFiles(dir)) {
                 try {
-                    val crl = loadCachedCrl(crlFile)
+                    val index = loadCachedIndex(crlFile)
                     parsed++
 
-                    val crlIssuer = crl.issuerX500Principal
-                    val issuerKey = caCerts.firstOrNull { it.subjectX500Principal == crlIssuer }?.publicKey
+                    val issuerKey = caCerts.firstOrNull { it.subjectX500Principal == index.issuer }?.publicKey
 
                     if (issuerKey != null) {
                         try {
-                            verifyCachedSignature(crlFile, crl, issuerKey)
+                            verifyCachedSignature(crlFile, index, issuerKey)
                             sigVerified++
                         } catch (e: GeneralSecurityException) {
                             log.debug(
@@ -162,14 +163,14 @@ open class CrlService(
      * `X509CRL.verify`, если cert'у нельзя доверять.
      */
     @Throws(GeneralSecurityException::class)
-    private fun verifyCachedSignature(file: File, crl: X509CRL, issuerKey: PublicKey) {
+    private fun verifyCachedSignature(file: File, index: CrlIndex, issuerKey: PublicKey) {
         if (!crlConfiguration.isCacheEnabled) {
-            crl.verify(issuerKey)
+            index.verifySignature(issuerKey)
             return
         }
         val key = file.absolutePath
         if (key == null) {
-            crl.verify(issuerKey)
+            index.verifySignature(issuerKey)
             return
         }
         val mtime = file.lastModified()
@@ -182,8 +183,8 @@ open class CrlService(
         ) {
             return
         }
-        crl.verify(issuerKey)
-        crlMemCache[key] = CachedCrl(crl, mtime, keyEnc)
+        index.verifySignature(issuerKey)
+        crlMemCache[key] = CachedIndex(index, mtime, keyEnc)
     }
 
     @PostConstruct
@@ -220,7 +221,7 @@ open class CrlService(
      * актуален ли CRL по `nextUpdate` на момент проверки.
      */
     private data class UsableCrl(
-        val crl: X509CRL,
+        val index: CrlIndex,
         val fileName: String,
         val crlNumber: BigInteger?,
         val baseCrlNumber: BigInteger?,
@@ -299,18 +300,18 @@ open class CrlService(
             .filter { it.isDelta && isDeltaApplicable(base, it) }
             .maxWithOrNull(compareBy { it.crlNumber })
 
-        val x509 = cert.x509Certificate
+        val serial = cert.x509Certificate.serialNumber
 
         // Delta авторитетна для изменений после base. Её запись про наш серийник
         // либо отзывает (любой reason кроме removeFromCRL), либо снимает отзыв
         // (removeFromCRL — сертификат больше не считается отозванным).
-        val deltaEntry = delta?.crl?.getRevokedCertificate(x509)
-        if (deltaEntry != null && deltaEntry.revocationReason != CRLReason.REMOVE_FROM_CRL) {
+        val deltaEntry = delta?.index?.find(serial)
+        if (deltaEntry != null && deltaEntry.reason != CRLReason.REMOVE_FROM_CRL) {
             return revokedStatus(deltaEntry, delta.fileName)
         }
         if (deltaEntry == null) {
             // Delta про серийник молчит — вердикт по base.
-            val baseEntry = base.crl.getRevokedCertificate(x509)
+            val baseEntry = base.index.find(serial)
             if (baseEntry != null) return revokedStatus(baseEntry, base.fileName)
         }
 
@@ -335,11 +336,11 @@ open class CrlService(
         return deltaBase <= baseNum && baseNum < deltaNum
     }
 
-    private fun revokedStatus(entry: X509CRLEntry, fileName: String): CrlStatus = CrlStatus(
+    private fun revokedStatus(entry: RevokedEntry, fileName: String): CrlStatus = CrlStatus(
         result = CrlResult.REVOKED,
         file = fileName,
         revocationDate = entry.revocationDate,
-        reason = entry.revocationReason?.toString() ?: "",
+        reason = entry.reason?.toString() ?: "",
     )
 
     /**
@@ -356,15 +357,22 @@ open class CrlService(
         issuerKey: PublicKey?,
         now: Date,
     ): UsableCrl? {
-        val crl: X509CRL = try {
-            loadCachedCrl(crlFile)
+        val index: CrlIndex = try {
+            loadCachedIndex(crlFile)
         } catch (e: ServerException) {
             log.warn("Skipping unreadable CRL file: {}", crlFile.name)
             return null
         }
 
         // CRL должен быть выпущен тем же CA, что и проверяемый сертификат.
-        if (crl.issuerX500Principal != certIssuer) return null
+        if (index.issuer != certIssuer) return null
+
+        // Indirect CRL либо запись с непонятым critical-расширением: записи
+        // нельзя сопоставлять по одному лишь серийнику (RFC 5280 §5.3).
+        index.unusableReason?.let { reason ->
+            log.warn("CRL {} is not usable for revocation checking ({}) — skipping", crlFile.name, reason)
+            return null
+        }
 
         // RFC 5280 §5.2: CRL с critical-расширением, которое мы не обрабатываем,
         // использовать нельзя — его охват/семантика неизвестны. Единственное
@@ -372,7 +380,7 @@ open class CrlService(
         // delta-CRL); всё прочее critical (напр. IssuingDistributionPoint) —
         // повод пропустить. BC-флаг hasUnsupportedCriticalExtension не
         // используем — он ненадёжен (см. CertificateWrapper.isValid).
-        val unhandledCritical = (crl.criticalExtensionOIDs ?: emptySet()) - SUPPORTED_CRITICAL_CRL_EXTENSIONS
+        val unhandledCritical = index.criticalExtensionOids - SUPPORTED_CRITICAL_CRL_EXTENSIONS
         if (unhandledCritical.isNotEmpty()) {
             log.warn(
                 "CRL {} has critical extension(s) {} we do not process — skipping (RFC 5280 §5.2)",
@@ -383,17 +391,18 @@ open class CrlService(
 
         // RFC 5280 §5.1.2.5: после nextUpdate CRL формально устарел, но мы его
         // не блокируем (отзывы не отменяются). DEBUG — операционно нормально.
-        if (crl.nextUpdate != null && crl.nextUpdate.before(now)) {
+        val nextUpdate = index.nextUpdate
+        if (nextUpdate != null && nextUpdate.before(now)) {
             log.debug(
                 "CRL {} is past its nextUpdate={}, still using for revocation check",
-                crlFile.name, crl.nextUpdate,
+                crlFile.name, nextUpdate,
             )
         }
 
         // Подпись CRL должна быть подтверждена ключом издателя.
         if (issuerKey != null) {
             try {
-                verifyCachedSignature(crlFile, crl, issuerKey)
+                verifyCachedSignature(crlFile, index, issuerKey)
             } catch (e: GeneralSecurityException) {
                 // Это уже реальная проблема — подпись CRL не сходится, либо ключ
                 // от другого CA. Такой CRL пропускаем.
@@ -414,29 +423,14 @@ open class CrlService(
 
         // RFC 5280 §5.1.2.5 требует nextUpdate у conforming CRL; отсутствие поля
         // трактуем консервативно — как несвежий.
-        val fresh = crl.nextUpdate != null && !crl.nextUpdate.before(now)
+        val fresh = nextUpdate != null && !nextUpdate.before(now)
         return UsableCrl(
-            crl = crl,
+            index = index,
             fileName = crlFile.name,
-            crlNumber = readIntegerCrlExtension(crl, Extension.cRLNumber.id),
-            baseCrlNumber = readIntegerCrlExtension(crl, Extension.deltaCRLIndicator.id),
+            crlNumber = index.crlNumber,
+            baseCrlNumber = index.baseCrlNumber,
             fresh = fresh,
         )
-    }
-
-    /**
-     * Читает INTEGER-расширение CRL (CRLNumber / BaseCRLNumber) как BigInteger.
-     * `getExtensionValue` возвращает DER OCTET STRING, внутри которого лежит сам
-     * INTEGER. null, если расширения нет или оно не парсится.
-     */
-    private fun readIntegerCrlExtension(crl: X509CRL, oid: String): BigInteger? {
-        val raw = crl.getExtensionValue(oid) ?: return null
-        return try {
-            ASN1Integer.getInstance(ASN1OctetString.getInstance(raw).octets).value
-        } catch (e: Exception) {
-            log.warn("Cannot parse CRL integer extension {}: {}", oid, e.message)
-            null
-        }
     }
 
     /**
@@ -490,6 +484,10 @@ open class CrlService(
             // Удаляем orphan-файлы: записи прошлых конфигов, которых больше нет
             // в списке URL'ов.
             directoryService.deleteOrphans(cacheDirectory, CRL_FILE_EXTENSION, crlConfiguration.urlList.keys, "CRL")
+            // Файл-спутник живёт рядом с CRL и должен уходить вместе с ним.
+            directoryService.deleteOrphans(
+                cacheDirectory, CrlIndex.INDEX_EXTENSION, crlConfiguration.urlList.keys, "CRL index",
+            )
 
             if (updatedCount == 0) {
                 log.info("Nothing to update in CRL cache for '{}'", cacheDirectory)
@@ -574,21 +572,18 @@ open class CrlService(
     }
 
     /**
-     * Загружает CRL файл.
+     * Открывает индекс CRL-файла, строя его при первом обращении или после
+     * обновления файла. Дорогая часть (обход CRL) выполняется только при
+     * перестроении; дальше это mmap готового файла-спутника.
      */
-    fun loadCrl(file: File): X509CRL = try {
-        file.inputStream().use { input ->
-            CertificateFactory.getInstance("X.509").generateCRL(input) as X509CRL
-        }
+    open fun loadIndex(file: File): CrlIndex = try {
+        CrlIndex.of(file)
     } catch (e: IOException) {
         log.error("Cannot load CRL file \"{}\"", file, e)
-        throw ServerException("Cannot load CRL file \"${file.name}\"", e)
-    } catch (e: java.security.cert.CRLException) {
-        log.error("Cannot load CRL file \"{}\"", file, e)
-        throw ServerException("Cannot load CRL file \"${file.name}\"", e)
-    } catch (e: CertificateException) {
-        log.error("Cannot load CRL file \"{}\"", file, e)
-        throw ServerException("Cannot load CRL file \"${file.name}\"", e)
+        throw ServerException("Cannot load CRL file \"" + file.name + "\"", e)
+    } catch (e: DerException) {
+        log.error("Cannot parse CRL file \"{}\"", file, e)
+        throw ServerException("Cannot parse CRL file \"" + file.name + "\"", e)
     }
 
     /**

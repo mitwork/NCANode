@@ -1,11 +1,24 @@
-version: '3.7'
-
 services:
   ncanode:
     image: ncanode
     restart: unless-stopped
     build:
       context: .
+    deploy:
+      resources:
+        limits:
+          # Потолок памяти контейнера. Замеренный профиль на простое — около
+          # 260 МБ (heap ~30 МБ, metaspace ~50 МБ, остальное — код, символы,
+          # GC, стеки). Запас до 768 МБ оставлен на пики подписи объёмных
+          # документов; он же согласован с -Xmx512m из Dockerfile. Кэш
+          # CRL-индексов отображён в память из файлов и вытесняется ОС при
+          # нехватке — в этот лимит он не упирается.
+          #
+          # Форма deploy.resources, а не mem_limit: последняя отсутствует в
+          # схеме Compose v3 и подсвечивается как ошибка в IDE, хотя рантайм
+          # её понимает. Docker Compose V2 применяет этот лимит и вне swarm
+          # (проверено: HostConfig.Memory = 805306368).
+          memory: 768M
     volumes:
       - ncanode_cache:/app/cache
     ports:

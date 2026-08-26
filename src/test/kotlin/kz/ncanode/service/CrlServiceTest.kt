@@ -12,12 +12,16 @@ import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
 import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.crl.CrlConfiguration
+import kz.ncanode.crl.CrlIndex
+import kz.ncanode.crl.RevokedEntry
 import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.wrapper.KalkanWrapper
 import java.io.File
-import java.security.cert.CertificateFactory
-import java.security.cert.X509CRL
+import java.math.BigInteger
+import java.nio.file.Files
+import java.security.cert.CRLReason
 import java.util.Date
+import javax.security.auth.x500.X500Principal
 
 /**
  * Unit-проверка CrlService.verify против реального CRL'я из репо
@@ -35,15 +39,36 @@ class CrlServiceTest : FunSpec({
 
     val kalkanWrapper = KalkanWrapper(KalkanProvider())
 
-    // Парсим оба CRL'я один раз на spec — каждый ~МБ, повторно делать дорого.
+    // Индексируем оба CRL'я один раз на spec. CrlIndex работает поверх файла
+    // на диске (рядом кладётся файл-спутник .crl.idx), поэтому ресурсы
+    // выкладываем во временный каталог.
     // NCA публикует full ("nca_gost2022_test.crl") и delta ("nca_gost2022_d_test.crl"):
     // отзывы могут лежать в любом из них в зависимости от времени отзыва
     // относительно последнего cut'а full CRL.
-    fun parseCrl(name: String): X509CRL = CertificateFactory.getInstance("X.509")
-        .generateCRL(TestResources.loadBytes("crl/$name").inputStream()) as X509CRL
+    val crlDir = Files.createTempDirectory("ncanode-crl-test").toFile().apply { deleteOnExit() }
 
-    val gostCrlFull: X509CRL = parseCrl("nca_gost2022_test.crl")
-    val gostCrlDelta: X509CRL = parseCrl("nca_gost2022_d_test.crl")
+    fun indexOf(name: String): CrlIndex {
+        val file = File(crlDir, name)
+        if (!file.exists()) file.writeBytes(TestResources.loadBytes("crl/$name"))
+        return CrlIndex.of(file)
+    }
+
+    val gostCrlFull: CrlIndex = indexOf("nca_gost2022_test.crl")
+    val gostCrlDelta: CrlIndex = indexOf("nca_gost2022_d_test.crl")
+
+    // Индекс-заглушка: издатель совпадает, критичных расширений нет, ничего не
+    // отозвано, номера CRL отсутствуют. Конкретные тесты доопределяют нужное.
+    // Стабим явно, а не полагаемся на relaxed-дефолты: пустой unusableReason
+    // или ненулевой find() поменяли бы вердикт.
+    fun mockCrlIndex(issuerPrincipal: X500Principal): CrlIndex = mockk<CrlIndex>(relaxed = true).apply {
+        every { issuer } returns issuerPrincipal
+        every { criticalExtensionOids } returns emptySet()
+        every { unusableReason } returns null
+        every { crlNumber } returns null
+        every { baseCrlNumber } returns null
+        every { nextUpdate } returns null
+        every { find(any()) } returns null
+    }
 
     fun mockCrlFile(label: String): File = mockk<File>(relaxed = true).apply {
         every { absolutePath } returns "/mock/$label.crl"
@@ -55,7 +80,7 @@ class CrlServiceTest : FunSpec({
     fun buildService(crlEnabled: Boolean = true): CrlService {
         val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
             every { isEnabled } returns crlEnabled
-            every { isCacheEnabled } returns false  // обходит in-memory кэш — loadCrl вызывается напрямую
+            every { isCacheEnabled } returns false  // обходит in-memory кэш — loadIndex вызывается напрямую
             every { ttl } returns null              // обходит fetchOnDemandCrls и initialize-scheduler
             every { urlList } returns emptyMap()
             every { delta } returns null
@@ -82,32 +107,26 @@ class CrlServiceTest : FunSpec({
                 else -> emptyList()
             }
         }
-        every { service.loadCrl(fullFile) } returns gostCrlFull
-        every { service.loadCrl(deltaFile) } returns gostCrlDelta
+        every { service.loadIndex(fullFile) } returns gostCrlFull
+        every { service.loadIndex(deltaFile) } returns gostCrlDelta
         return service
     }
 
     test("verify() returns REVOKED when CRL marks cert as revoked") {
         // NCA test-pack p12 в реальные test.pki.gov.kz CRL'и не попали
         // (отзывы там обслуживаются через OCSP, а не CRL). Поэтому REVOKED-ветка
-        // покрывается через mock'нутый X509CRL, который объявляет cert
+        // покрывается через mock'нутый CrlIndex, который объявляет cert
         // отозванным. Цель — проверить CrlService.verify pipeline (issuer-match,
-        // signature skip при null issuerKey, isRevoked-lookup), а не сам
-        // JDK'шный X509CRL.isRevoked (он работает корректно по построению).
+        // signature skip при null issuerKey, поиск по индексу), а не сам
+        // двоичный поиск (он покрыт отдельно в CrlIndexTest).
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
         val cert = ks.certificate
         val revocationDate = Date()
-        val mockCrlEntry = mockk<java.security.cert.X509CRLEntry>(relaxed = true).apply {
-            every { this@apply.revocationDate } returns revocationDate
-            every { revocationReason } returns null
-        }
-        val revokingCrl = mockk<X509CRL>(relaxed = true).apply {
-            every { issuerX500Principal } returns cert.x509Certificate.issuerX500Principal
-            every { isRevoked(any<java.security.cert.X509Certificate>()) } returns true
-            every { getRevokedCertificate(any<java.security.cert.X509Certificate>()) } returns mockCrlEntry
+        val revokingCrl = mockCrlIndex(cert.x509Certificate.issuerX500Principal).apply {
+            every { find(any()) } returns RevokedEntry(revocationDate, null)
             every { nextUpdate } returns Date(System.currentTimeMillis() + 86_400_000L)
         }
         val mockFile = mockCrlFile("synthetic_revoked")
@@ -124,7 +143,7 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()
         }
-        every { service.loadCrl(mockFile) } returns revokingCrl
+        every { service.loadIndex(mockFile) } returns revokingCrl
 
         val status = service.verify(cert)
         status.result shouldBe CrlResult.REVOKED
@@ -135,7 +154,7 @@ class CrlServiceTest : FunSpec({
         // Положительный путь на реальных fixtures: cert не отозван (даже если
         // когда-то им станет, full CRL для individual_valid сейчас не содержит
         // его серийник). Проверяет issuer-match + isRevoked-lookup на честных
-        // CRL-данных, не на mock'нутом X509CRL.
+        // CRL-данных, не на mock'нутом CrlIndex.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
@@ -155,10 +174,9 @@ class CrlServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         val cert = ks.certificate
-        val foreignCrl = mockk<X509CRL>(relaxed = true).apply {
-            every { issuerX500Principal } returns javax.security.auth.x500.X500Principal("CN=Some Other CA")
+        val foreignCrl = mockCrlIndex(X500Principal("CN=Some Other CA")).apply {
             // Эту ветку CrlService даже не должен дойти — issuer mismatch выше.
-            every { isRevoked(any<java.security.cert.X509Certificate>()) } returns true
+            every { find(any()) } returns RevokedEntry(Date(), null)
         }
         val mockFile = mockCrlFile("foreign")
         val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
@@ -174,11 +192,11 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()
         }
-        every { service.loadCrl(mockFile) } returns foreignCrl
+        every { service.loadIndex(mockFile) } returns foreignCrl
 
         service.verify(cert).result shouldBe CrlResult.UNAVAILABLE
-        // isRevoked даже не должен был быть вызван — issuer-фильтр срабатывает раньше.
-        verify(exactly = 0) { foreignCrl.isRevoked(any<java.security.cert.X509Certificate>()) }
+        // Поиск даже не должен был случиться — issuer-фильтр срабатывает раньше.
+        verify(exactly = 0) { foreignCrl.find(any()) }
     }
 
     test("verify() skips a CRL carrying an unsupported critical extension (RFC 5280 §5.2)") {
@@ -190,11 +208,10 @@ class CrlServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         val cert = ks.certificate
-        val criticalCrl = mockk<X509CRL>(relaxed = true).apply {
-            every { issuerX500Principal } returns cert.x509Certificate.issuerX500Principal
-            every { criticalExtensionOIDs } returns setOf("2.5.29.28") // IDP, critical
+        val criticalCrl = mockCrlIndex(cert.x509Certificate.issuerX500Principal).apply {
+            every { criticalExtensionOids } returns setOf("2.5.29.28") // IDP, critical
             // Если бы CRL НЕ пропустили — он бы отозвал cert. Проверяем, что не доходит.
-            every { isRevoked(any<java.security.cert.X509Certificate>()) } returns true
+            every { find(any()) } returns RevokedEntry(Date(), null)
         }
         val mockFile = mockCrlFile("idp_critical")
         val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
@@ -210,23 +227,20 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()
         }
-        every { service.loadCrl(mockFile) } returns criticalCrl
+        every { service.loadIndex(mockFile) } returns criticalCrl
 
         // Единственный CRL отброшен → проверять было нечем → UNAVAILABLE.
         service.verify(cert).result shouldBe CrlResult.UNAVAILABLE
-        // CRL пропущен до isRevoked-проверки.
-        verify(exactly = 0) { criticalCrl.isRevoked(any<java.security.cert.X509Certificate>()) }
+        // CRL пропущен до поиска по индексу.
+        verify(exactly = 0) { criticalCrl.find(any()) }
     }
 
     // Хелпер для freshness-тестов: сервис с одним mock-CRL от issuer'а cert'а,
     // не содержащим его серийник, с управляемым nextUpdate.
     fun serviceWithSingleCrl(cert: kz.ncanode.wrapper.CertificateWrapper, crlNextUpdate: Date?): CrlService {
-        val crl = mockk<X509CRL>(relaxed = true).apply {
-            every { issuerX500Principal } returns cert.x509Certificate.issuerX500Principal
-            // «Не отозван» = серийника нет в CRL. Стабим getRevokedCertificate,
-            // а не isRevoked: relaxed-мок для platform-типа X509CRLEntry вернул бы
-            // не-null дочерний мок, и verify() счёл бы cert отозванным.
-            every { getRevokedCertificate(any<java.security.cert.X509Certificate>()) } returns null
+        val crl = mockCrlIndex(cert.x509Certificate.issuerX500Principal).apply {
+            // «Не отозван» = серийника нет в индексе.
+            every { find(any()) } returns null
             every { nextUpdate } returns crlNextUpdate
         }
         val mockFile = mockCrlFile("freshness")
@@ -243,7 +257,7 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             if (firstArg<String>().contains("full")) listOf(mockFile) else emptyList()
         }
-        every { service.loadCrl(mockFile) } returns crl
+        every { service.loadIndex(mockFile) } returns crl
         return service
     }
 
@@ -301,49 +315,35 @@ class CrlServiceTest : FunSpec({
 
     // ---- delta-CRL (RFC 5280 §5.2.4) ----
 
-    // DER для INTEGER-расширения CRL (CRLNumber / BaseCRLNumber): getExtensionValue
-    // отдаёт OCTET STRING, внутри которого лежит сам INTEGER.
-    fun intExt(n: Long): ByteArray = org.bouncycastle.asn1.DEROctetString(
-        org.bouncycastle.asn1.ASN1Integer(java.math.BigInteger.valueOf(n)).encoded,
-    ).encoded
-
-    fun crlEntry(reason: java.security.cert.CRLReason?, date: Date = Date()): java.security.cert.X509CRLEntry =
-        mockk<java.security.cert.X509CRLEntry>(relaxed = true).apply {
-            every { revocationReason } returns reason
-            every { revocationDate } returns date
-        }
+    fun crlEntry(reason: CRLReason?, date: Date = Date()): RevokedEntry = RevokedEntry(date, reason)
 
     fun mockBaseCrl(
-        issuer: javax.security.auth.x500.X500Principal,
-        crlNumber: Long,
+        issuerPrincipal: X500Principal,
+        crlNum: Long,
         nextUpd: Date?,
-        revoked: java.security.cert.X509CRLEntry?,
-    ): X509CRL = mockk<X509CRL>(relaxed = true).apply {
-        every { issuerX500Principal } returns issuer
-        every { criticalExtensionOIDs } returns emptySet()
+        revoked: RevokedEntry?,
+    ): CrlIndex = mockCrlIndex(issuerPrincipal).apply {
         every { nextUpdate } returns nextUpd
-        every { getExtensionValue("2.5.29.20") } returns intExt(crlNumber)
-        every { getExtensionValue("2.5.29.27") } returns null
-        every { getRevokedCertificate(any<java.security.cert.X509Certificate>()) } returns revoked
+        every { crlNumber } returns BigInteger.valueOf(crlNum)
+        every { find(any()) } returns revoked
     }
 
     fun mockDeltaCrl(
-        issuer: javax.security.auth.x500.X500Principal,
-        crlNumber: Long,
-        baseCrlNumber: Long,
+        issuerPrincipal: X500Principal,
+        crlNum: Long,
+        baseCrlNum: Long,
         nextUpd: Date?,
-        revoked: java.security.cert.X509CRLEntry?,
-    ): X509CRL = mockk<X509CRL>(relaxed = true).apply {
-        every { issuerX500Principal } returns issuer
+        revoked: RevokedEntry?,
+    ): CrlIndex = mockCrlIndex(issuerPrincipal).apply {
         // deltaCRLIndicator critical — раньше это роняло CRL в skip, теперь понимаем.
-        every { criticalExtensionOIDs } returns setOf("2.5.29.27")
+        every { criticalExtensionOids } returns setOf("2.5.29.27")
         every { nextUpdate } returns nextUpd
-        every { getExtensionValue("2.5.29.20") } returns intExt(crlNumber)
-        every { getExtensionValue("2.5.29.27") } returns intExt(baseCrlNumber)
-        every { getRevokedCertificate(any<java.security.cert.X509Certificate>()) } returns revoked
+        every { crlNumber } returns BigInteger.valueOf(crlNum)
+        every { baseCrlNumber } returns BigInteger.valueOf(baseCrlNum)
+        every { find(any()) } returns revoked
     }
 
-    fun serviceWith(baseCrl: X509CRL?, deltaCrl: X509CRL?): CrlService {
+    fun serviceWith(baseCrl: CrlIndex?, deltaCrl: CrlIndex?): CrlService {
         val baseFile = mockCrlFile("base")
         val deltaFile = mockCrlFile("delta_x")
         val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
@@ -364,8 +364,8 @@ class CrlServiceTest : FunSpec({
                 else -> emptyList()
             }
         }
-        if (baseCrl != null) every { service.loadCrl(baseFile) } returns baseCrl
-        if (deltaCrl != null) every { service.loadCrl(deltaFile) } returns deltaCrl
+        if (baseCrl != null) every { service.loadIndex(baseFile) } returns baseCrl
+        if (deltaCrl != null) every { service.loadIndex(deltaFile) } returns deltaCrl
         return service
     }
 
@@ -381,10 +381,10 @@ class CrlServiceTest : FunSpec({
         )
         val cert = ks.certificate
         val issuer = cert.x509Certificate.issuerX500Principal
-        val base = mockBaseCrl(issuer, crlNumber = 1346, nextUpd = future, revoked = null)
+        val base = mockBaseCrl(issuer, crlNum = 1346, nextUpd = future, revoked = null)
         val delta = mockDeltaCrl(
-            issuer, crlNumber = 57725, baseCrlNumber = 1346, nextUpd = future,
-            revoked = crlEntry(java.security.cert.CRLReason.KEY_COMPROMISE),
+            issuer, crlNum = 57725, baseCrlNum = 1346, nextUpd = future,
+            revoked = crlEntry(CRLReason.KEY_COMPROMISE),
         )
         val status = serviceWith(base, delta).verify(cert)
         status.result shouldBe CrlResult.REVOKED
@@ -400,12 +400,12 @@ class CrlServiceTest : FunSpec({
         val cert = ks.certificate
         val issuer = cert.x509Certificate.issuerX500Principal
         val base = mockBaseCrl(
-            issuer, crlNumber = 1346, nextUpd = past,
-            revoked = crlEntry(java.security.cert.CRLReason.CERTIFICATE_HOLD),
+            issuer, crlNum = 1346, nextUpd = past,
+            revoked = crlEntry(CRLReason.CERTIFICATE_HOLD),
         )
         val delta = mockDeltaCrl(
-            issuer, crlNumber = 57725, baseCrlNumber = 1346, nextUpd = future,
-            revoked = crlEntry(java.security.cert.CRLReason.REMOVE_FROM_CRL),
+            issuer, crlNum = 57725, baseCrlNum = 1346, nextUpd = future,
+            revoked = crlEntry(CRLReason.REMOVE_FROM_CRL),
         )
         val status = serviceWith(base, delta).verify(cert)
         status.result shouldBe CrlResult.ACTIVE
@@ -423,12 +423,12 @@ class CrlServiceTest : FunSpec({
         val cert = ks.certificate
         val issuer = cert.x509Certificate.issuerX500Principal
         val base = mockBaseCrl(
-            issuer, crlNumber = 1346, nextUpd = future,
-            revoked = crlEntry(java.security.cert.CRLReason.KEY_COMPROMISE),
+            issuer, crlNum = 1346, nextUpd = future,
+            revoked = crlEntry(CRLReason.KEY_COMPROMISE),
         )
         val delta = mockDeltaCrl(
-            issuer, crlNumber = 57725, baseCrlNumber = 2000, nextUpd = future,
-            revoked = crlEntry(java.security.cert.CRLReason.REMOVE_FROM_CRL),
+            issuer, crlNum = 57725, baseCrlNum = 2000, nextUpd = future,
+            revoked = crlEntry(CRLReason.REMOVE_FROM_CRL),
         )
         serviceWith(base, delta).verify(cert).result shouldBe CrlResult.REVOKED
     }
@@ -441,8 +441,8 @@ class CrlServiceTest : FunSpec({
         )
         val cert = ks.certificate
         val issuer = cert.x509Certificate.issuerX500Principal
-        val base = mockBaseCrl(issuer, crlNumber = 1346, nextUpd = past, revoked = null)
-        val delta = mockDeltaCrl(issuer, crlNumber = 57725, baseCrlNumber = 1346, nextUpd = future, revoked = null)
+        val base = mockBaseCrl(issuer, crlNum = 1346, nextUpd = past, revoked = null)
+        val delta = mockDeltaCrl(issuer, crlNum = 57725, baseCrlNum = 1346, nextUpd = future, revoked = null)
         val status = serviceWith(base, delta).verify(cert)
         status.result shouldBe CrlResult.ACTIVE
         status.fresh shouldBe true

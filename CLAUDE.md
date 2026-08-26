@@ -11,7 +11,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 233 теста / **76% coverage**.
+- **Состояние v4:** functional + 243 теста / **82% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -42,6 +42,8 @@ src/main/kotlin/kz/ncanode/
     crl/                      ← CrlConfiguration interface + 2 наследника
   constants/MessageConstants  ← object с const val (error message keys)
   controller/                 ← 8 @RestController + advice/
+  crl/                        ← Der, CrlScanner, CrlIndex — потоковый разбор CRL
+                                и mmap-индекс отзывов (см. quirk #34)
   dto/
     certificate/, cms/, crl/, http/, ocsp/, pdf/, request/, response/, tsp/
   exception/                  ← 8 классов, ApplicationException base
@@ -94,6 +96,9 @@ src/test/kotlin/io/kotest/provided/
 src/test/kotlin/kz/ncanode/
   TestResources.kt            ← общий helper. KalkanProvider bootstrap +
                                 loadAsBase64 / loadBytes + P12_PASSWORD
+  crl/CrlIndexTest            ← эквивалентность потокового разбора JDK-парсеру
+                                (посписочно по всем 54 записям реального CRL),
+                                GOST-подпись, sidecar, битый индекс, не-CRL
   util/                       ← UtilTest, KalkanUtilTest
   wrapper/                    ← 4 файла: Certificate / Document / Kalkan / KeyStore
   service/
@@ -135,7 +140,7 @@ JWT/PDF/X509/PKCS12) начнёт возвращать `valid=false` из-за `
 NCA SDK 2.0 test pack, заменить p12 в `p12/`, сверить новый период валидности,
 обновить эту дату.
 
-233 теста / **76% line coverage**.
+243 теста / **82% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -156,13 +161,13 @@ http://test.pki.gov.kz/tsp/
 ⚠️ **NCA test-pack p12 не отзываются через CRL.** `nca_gost2022_test.crl`
 содержит 54 entry, но ни одного нашего `*_revoked.p12` среди них — отзывы
 для них публикуются только через OCSP. Поэтому в `CrlServiceTest`
-REVOKED-ветка покрывается через mock'нутый `X509CRL`, а не реальные данные.
+REVOKED-ветка покрывается через mock'нутый `CrlIndex`, а не реальные данные.
 
 ## Команды (cheatsheet)
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 233 теста + JaCoCo report
+./gradlew test                   # 243 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -336,8 +341,9 @@ reflection в любом случае; protected мешало unit-тестам 
 ### 21. CrlService.verify REVOKED — через mock X509CRL, не реальный
 NCA публикует отзывы наших test-pack p12 только через OCSP. В CRL'ях
 `nca_gost2022_test.crl` (54 entry) + delta (0 entry) их нет. CrlServiceTest
-покрывает pipeline `verify` через mock'нутый X509CRL.isRevoked → true.
-Сам JDK-овый X509CRL.isRevoked не тестируем — это библиотечный код.
+покрывает pipeline `verify` через mock'нутый `CrlIndex.find` → RevokedEntry
+(до quirk #34 — через mock'нутый `X509CRL.isRevoked`). Сам поиск по индексу
+проверяется отдельно в `CrlIndexTest` на реальных данных.
 
 ### 22. Batch endpoints — partial response, top-level всегда 200
 См. отдельный раздел "Batch endpoints" выше. Aggregate `valid` намеренно
@@ -748,6 +754,101 @@ regression-поверхностью, нечего мешать с багфикс
   путь: `io.kotest.provided.ProjectConfig` (FQN-конвенция) с
   `override val extensions = listOf(SpringExtension())`. Глобальный
   SpringExtension безвреден для не-Spring спеков (все 233 зелёные).
+
+### 34. CRL хранится как mmap-индекс, а не как распарсенный X509CRL
+Мотивация: жалоба на 700 МБ RSS на простое. Замер (`jcmd VM.native_memory`,
+`vmmap`) показал, что живой heap — 265 МБ, и **260 МБ из них — один
+распарсенный CRL**. `sun.security.x509.X509CRLImpl` держит каждую запись
+отдельным объектом: боевой `nca_gost_2022.crl` (20.8 МБ, 422 065 записей)
+занимает **243 МБ кучи — 604 байта на запись**. Прежний `crlMemCache` держал
+это strong-ссылкой навсегда и грел на старте, т.е. один CRL составлял
+практически весь heap сервиса.
+
+Решение — `kz.ncanode.crl`:
+- **`Der`** — минимальный DER-ридер поверх `ByteBuffer` (отвергает BER
+  indefinite-length, многобайтовые теги, длину >4 байт; каждое чтение
+  проверяется по границам буфера).
+- **`CrlScanner`** — потоковый обход `CertificateList` без материализации
+  записей: метаданные + диапазон байт `tbsCertList` + колбэк на запись
+  (серийник отдаётся как диапазон в буфере, `ByteArray` на запись не создаётся).
+- **`CrlIndex`** — плоский файл-спутник `<имя>.crl.idx`: отсортированная
+  таблица серийников фиксированного шага + параллельные массивы дат и
+  причин, `mmap` + двоичный поиск.
+
+Замеры на боевом CRL: индекс **11.4 МБ** против 243 МБ, построение **524 мс**
+против 1.16 с у `CertificateFactory` (в 4 раза быстрее — не строятся объекты),
+пик кучи при обходе — 7.6 МБ (проверено под `-Xmx24m`).
+
+Почему mmap, а не heap-массивы и не H2 (обсуждалось): страницы file-backed —
+не считаются в `-Xmx`, вытесняются ОС под давлением, переживают рестарт
+(прогрев после первого запуска сводится к `mmap`, парсинг не повторяется).
+H2 отвергнут по цифрам: дефолтный `CACHE_SIZE` 64 МБ на базу — больше, чем
+весь индекс, плюс JDBC, batch-insert сотен тысяч строк на каждое обновление
+CRL и повреждённая база как новый режим отказа.
+
+Грабли и решения:
+- **Подпись проверяется вручную**, раз `X509CRL` больше нет: хэшируется
+  диапазон `tbsCertList` прямо в отображённом файле. Алгоритм берётся по OID
+  из самого CRL — `Signature.getInstance("1.2.398.3.10.1.1.2.3.2")` работает,
+  Kalkan регистрирует GOST-OID'ы как имена алгоритмов, JDK — RSA'шные.
+  **Форма `OID.<...>` не годится** — её GOST-провайдер не знает (RSA-провайдер
+  знает, поэтому ошибка проявилась бы только на GOST).
+- **Отрицательные серийники в записях отбрасываются** (RFC 5280 §4.1.2.2
+  требует положительный). Иначе беззнаковая интерпретация такого серийника
+  могла бы совпасть с серийником настоящего сертификата → ложный REVOKED.
+- **Indirect CRL** (`certificateIssuer` 2.5.29.29 у записи) и непонятые
+  critical-расширения записи помечают весь индекс `unusableReason`, и
+  `CrlService` его пропускает: мы сопоставляем записи только по серийнику,
+  а в indirect CRL запись принадлежит другому издателю.
+- **Инвалидация** — по длине и mtime исходного `.crl`; битый/устаревший/чужой
+  версии индекс молча перестраивается. Orphan-очистка индексов добавлена в
+  `updateCache` рядом с очисткой самих CRL.
+- **`NCANODE_CRL_CACHE_ENABLED=false`** теперь означает «переоткрывать индекс
+  на каждый verify» (mmap + чтение заголовка), а не «парсить CRL заново».
+
+Страховка от собственного разбора ASN.1 — `CrlIndexTest`: каждая из 54 записей
+реального `nca_gost2022_test.crl` сверяется с тем, что о ней говорит JDK
+(серийник, дата, причина), плюс метаданные, GOST-подпись реальным ключом CA,
+переиспользование и перестроение sidecar'а, битый индекс, не-CRL, обрезанный
+DER. Валидация на проде: warmup проверил подписи 7 реальных CRL НУЦ
+(GOST + RSA, включая 19.5-МБ) через новый путь.
+
+### 35. JVM-настройки в Dockerfile не применялись вообще
+`ENV JAVA_OPTS='-Xms128m -Xmx512m'` при `ENTRYPOINT ["java", "-jar", ...]` —
+exec-форма `$JAVA_OPTS` не разворачивает, переменная нигде больше не
+упоминалась. JVM брала дефолт в 25% памяти хоста: reserved heap 8 ГБ,
+committed 1.63 ГБ, нативные структуры G1 — 90 МБ. Починено shell-формой с
+`exec` (с прокидыванием `"$@"`, чтобы аргументы контейнера не терялись).
+
+Дефолты подобраны под замеренный профиль: `-Xms64m -Xmx512m -XX:+UseSerialGC
+-XX:MaxMetaspaceSize=256m -XX:MaxHeapFreeRatio=30 -XX:MinHeapFreeRatio=10
+-XX:+ExitOnOutOfMemoryError`. SerialGC здесь не компромисс, а выигрыш: на
+такой куче нативные структуры G1 (90 МБ → 57 МБ после фикса CRL) сжимаются
+до **0.26 МБ**, а `*HeapFreeRatio` отдаёт неиспользуемое обратно ОС.
+`-Xmx512m` — потолок с запасом на подпись объёмных документов; при живом
+heap'е в 30 МБ он не занимается.
+
+В docker-compose.yml добавлен лимит 768 МБ — в форме
+`deploy.resources.limits.memory`, а НЕ `mem_limit`: последней нет в схеме
+Compose v3, и IDE подсвечивает её как ошибку («Key 'mem_limit' is not expected
+here»), хотя рантайм её понимает. Обе формы дают одинаковый результат
+(проверено: `HostConfig.Memory` = 805306368 при `docker compose up` вне swarm).
+Заодно убран ключ `version: '3.7'` — Docker Compose V2 сам просит его удалить
+(«the attribute `version` is obsolete»), и именно он заставлял IDE проверять
+файл по устаревшей схеме.
+
+Итог по замерам (одна и та же машина, приложение на простое после прогрева):
+
+| | было | индекс | индекс + флаги |
+|---|---|---|---|
+| живой heap после full GC | 265 МБ | 29.5 МБ | 28.7 МБ |
+| Java heap committed | 1.63 ГБ | 110 МБ | 65.6 МБ |
+| нативные структуры GC | 90 МБ | 56.8 МБ | 0.26 МБ |
+| NMT total committed | 1.84 ГБ | 288 МБ | **186 МБ** |
+| physical footprint | ~650 МБ | 259 МБ | **246 МБ** |
+
+Оставшееся — базовая стоимость Spring: metaspace 51 МБ, code 22 МБ,
+symbol 12 МБ, class 9 МБ, threads 3.8 МБ.
 
 ## Что не покрыто тестами (≈494 lines)
 
