@@ -66,7 +66,7 @@ import java.util.Base64
 /**
  * PAdES по ETSI EN 319 142-1: уровни B, T, LT и LTA.
  *
- * Состав CMS сверен с реализацией НУЦ (`PadesSignatureService` из NCALayer) —
+ * Состав CMS сверен с реализацией НУЦ (NCALayer) —
  * в PDF профиль требует иного набора атрибутов, чем в CAdES: только привязка
  * к сертификату, без `signingTime` (его несёт запись `/M` словаря подписи) и
  * без `cmsAlgorithmProtection`. Тест проверяет и присутствие нужного, и

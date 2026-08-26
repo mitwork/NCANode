@@ -23,7 +23,7 @@ import java.security.cert.X509Certificate
  * сертификату.
  *
  * В PDF уровни определяются не только содержимым CMS, но и структурами самого
- * документа — по правилам валидатора НУЦ (`PadesSignatureService.validate`):
+ * документа — согласно реализации NCALayer:
  *
  *  1. B — базовый;
  *  2. T — в CMS есть `signatureTimeStampToken`;

@@ -23,7 +23,7 @@ import java.util.Base64
  *
  * Как и в CAdES, уровень определяется **наличием элементов, а не их
  * валидностью** — по правилам валидатора НУЦ
- * (`XadesSignatureService.validateSignatureElement`):
+ * (согласно реализации NCALayer):
  *
  *  1. B — базовый;
  *  2. T — присутствует `xades:SignatureTimeStamp`;

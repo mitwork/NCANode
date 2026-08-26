@@ -38,7 +38,7 @@ import java.util.Base64
 /**
  * XAdES-B по ETSI EN 319 132-1.
  *
- * Структура сверена с реализацией НУЦ (`XadesSignatureService` из NCALayer):
+ * Структура сверена с реализацией НУЦ (NCALayer):
  * две ссылки в `SignedInfo` (на документ и на `SignedProperties`), время
  * подписи и привязка к сертификату внутри подписанных свойств, exclusive c14n.
  *
