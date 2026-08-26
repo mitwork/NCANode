@@ -1,0 +1,17 @@
+# Профиль для проверки эталонных подписей NCALayer, сделанных БОЕВЫМ ключом.
+# Отличается от `test` только адресами: боевая иерархия вместо тестовой.
+# Включается вместе с ним — @ActiveProfiles("test", "reference"), значения
+# отсюда перекрывают тестовые.
+ncanode:
+  crl:
+    url: http://crl.pki.gov.kz/nca_rsa_2022.crl http://crl.pki.gov.kz/nca_gost_2022.crl
+    delta:
+      url: http://crl.pki.gov.kz/nca_d_rsa_2022.crl http://crl.pki.gov.kz/nca_d_gost_2022.crl
+  ocsp:
+    url: http://ocsp.pki.gov.kz/
+  ca:
+    url: http://pki.gov.kz/cert/root_gost_2022.cer http://pki.gov.kz/cert/nca_gost_2022.cer http://pki.gov.kz/cert/nca_rsa_2022.cer http://root.gov.kz/cert/root_rsa_2020.cer
+    crl:
+      url: http://crl.root.gov.kz/gost2015_2022.crl http://crl.root.gov.kz/rsa2020.crl
+  tsp:
+    url: http://tsp.pki.gov.kz/
