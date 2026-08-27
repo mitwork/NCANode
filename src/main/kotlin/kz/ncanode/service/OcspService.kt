@@ -306,7 +306,7 @@ class OcspService(
 
         return responses.mapNotNull { response ->
             try {
-                embeddedStatus(response, issuer, expectedSerial, at)
+                embeddedStatus(response, issuer, expectedSerial, at, cert.x509Certificate.notAfter)
             } catch (e: Exception) {
                 log.warn("Cannot read the embedded OCSP response: {}", e.message)
                 unknownStatus(message = "Embedded OCSP response could not be read")
@@ -319,6 +319,7 @@ class OcspService(
         issuer: CertificateWrapper,
         expectedSerial: BigInteger,
         at: Date,
+        certNotAfter: Date,
     ): OcspStatus? {
         val resp = OCSPResp(response)
         if (resp.status != 0) return unknownStatus(message = "OCSP response status: ${'$'}{resp.status}")
@@ -335,14 +336,40 @@ class OcspService(
             return null
         }
 
-        val covers = singleResp.thisUpdate != null &&
-            singleResp.thisUpdate.time <= at.time + CLOCK_SKEW_MS &&
-            (singleResp.nextUpdate == null || singleResp.nextUpdate.time + CLOCK_SKEW_MS >= at.time)
-        if (!covers) {
-            return unavailableStatus(null, "Embedded OCSP response does not cover the validation time")
+        if (!authoritativeAt(singleResp.thisUpdate, singleResp.nextUpdate, at, certNotAfter)) {
+            return unavailableStatus(null, "Embedded OCSP response does not testify about the validation time")
         }
 
         return certStatus(singleResp)
+    }
+
+    /**
+     * Свидетельствует ли ответ о состоянии сертификата на момент [at].
+     *
+     * Годится либо ответ, чей интервал `[thisUpdate, nextUpdate]` накрывает
+     * момент, либо выпущенный **позже** — но пока сертификат ещё действовал.
+     * Отзыв необратим и датирован: случись он до [at], более поздний ответ
+     * показал бы это с `revocationTime ≤ at`. На этом стоит повышение уровня
+     * подписи — данные об отзыве для него всегда собираются уже после
+     * подписания (ETSI EN 319 102-1).
+     *
+     * После истечения сертификата ответ о прошлом уже не свидетельствует:
+     * отвечающий вправе забыть про отозванный, но истёкший сертификат, и тот
+     * выглядел бы добропорядочным.
+     */
+    private fun authoritativeAt(
+        thisUpdate: Date?,
+        nextUpdate: Date?,
+        at: Date,
+        certNotAfter: Date,
+    ): Boolean {
+        if (thisUpdate == null) return false
+        val covers = thisUpdate.time <= at.time + CLOCK_SKEW_MS &&
+            (nextUpdate == null || nextUpdate.time + CLOCK_SKEW_MS >= at.time)
+        if (covers) return true
+
+        val issuedAfter = thisUpdate.time + CLOCK_SKEW_MS >= at.time
+        return issuedAfter && thisUpdate.time <= certNotAfter.time + CLOCK_SKEW_MS
     }
 
     /**

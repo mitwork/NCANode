@@ -259,4 +259,33 @@ class AdesExtendTest(
             padesService.extend(PadesExtendRequest().apply { this.pdf = signed; level = AdesLevel.T })
         }
     }
+
+    test("extending a signature timestamped earlier still confirms LT") {
+        // Данные об отзыве для extend собираются ПОЗЖЕ момента подписи — иначе
+        // и не бывает. Если считать авторитетными только те, чей интервал
+        // накрывает этот момент, повышение уровня становится бессмысленным:
+        // материал вшит, а подтвердить им нечего.
+        val signed = cadesService.sign(
+            CadesSignRequest().apply {
+                data = payload
+                signers = listOf(signer())
+                level = AdesLevel.T
+            },
+        ).cms.shouldNotBeNull()
+
+        val extended = cadesService.extend(
+            CadesExtendRequest().apply {
+                cms = signed
+                level = AdesLevel.LT
+            },
+        ).cms.shouldNotBeNull()
+
+        val result = cadesService.verify(
+            CadesVerifyRequest().apply {
+                cms = extended
+                revocationCheck = fullCheck
+            },
+        )
+        result.verifiedLevel shouldBe AdesLevel.LT
+    }
 })
