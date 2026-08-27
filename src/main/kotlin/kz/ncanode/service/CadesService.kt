@@ -146,8 +146,10 @@ class CadesService(
                 .filterIsInstance<X509Certificate>()
                 .toMutableList()
 
+            val existingSignerCertificates = signerCertificates(existing)
             for (keyStore in kalkanWrapper.read(request.signers)) {
                 val certificate = keyStore.certificate.x509Certificate
+                warnIfSignsAgain(existingSignerCertificates, certificate, request.level)
                 addSigner(generator, keyStore.privateKey, certificate)
                 certificates.add(certificate)
             }
@@ -204,6 +206,35 @@ class CadesService(
             digestAlgorithmOid,
             signedAttributes,
             null as kz.gov.pki.kalkan.asn1.cms.AttributeTable?,
+        )
+    }
+
+    /**
+     * Предупреждает о подписи тем же сертификатом, что уже стоит в контейнере.
+     *
+     * Сам контейнер при этом корректен, но у таких подписей совпадает SID
+     * (издатель плюс серийный номер), и проверяющий, который ищет подписанта
+     * по нему, пересчитает архивную метку второй подписи по данным первой и
+     * отвергнет её. Так ведёт себя валидатор НУЦ — проверено на паре
+     * контейнеров, отличавшихся только этим. До уровня LTA архивной метки нет,
+     * и проблема не возникает.
+     */
+    private fun warnIfSignsAgain(
+        existing: List<X509Certificate>,
+        certificate: X509Certificate,
+        level: AdesLevel,
+    ) {
+        if (!level.isAtLeast(AdesLevel.LTA)) return
+        val alreadySigned = existing.any {
+            it.serialNumber == certificate.serialNumber &&
+                it.issuerX500Principal == certificate.issuerX500Principal
+        }
+        if (!alreadySigned) return
+
+        log.warn(
+            "Certificate {} has already signed this container; validators that resolve signers by " +
+                "certificate id will reject the archive timestamp of the new signature",
+            certificate.subjectX500Principal,
         )
     }
 
