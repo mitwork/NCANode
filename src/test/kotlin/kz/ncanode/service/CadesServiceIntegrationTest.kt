@@ -3,6 +3,8 @@ package kz.ncanode.service
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.ints.shouldBeGreaterThan
+import io.kotest.matchers.ints.shouldBeGreaterThanOrEqual
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -23,6 +25,7 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedData
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.ncanode.TestResources
+import kz.ncanode.ades.CmsValidationData
 import kz.ncanode.ades.CadesAttributes
 import kz.ncanode.ades.CadesInspector
 import kz.ncanode.ades.CmsArchiveTimestamp
@@ -457,5 +460,138 @@ class CadesServiceIntegrationTest(
         response.results[0].valid shouldBe true
         response.results[1].valid shouldBe false
         response.results[1].status shouldBe 400
+    }
+
+    // ---- доподписание (PATCH /cades/sign) ----
+
+    fun coSignRequest(cms: String, level: AdesLevel = AdesLevel.B, data: String? = null) =
+        CadesSignRequest().apply {
+            this.cms = cms
+            this.data = data
+            this.signers = listOf(
+                SignerRequest().apply {
+                    key = TestResources.loadAsBase64("p12/legal_ceo_valid.p12")
+                    password = TestResources.P12_PASSWORD
+                },
+            )
+            this.level = level
+        }
+
+    test("coSign adds a second signer with full AdES attributes") {
+        val first = cadesService.sign(request()).cms.shouldNotBeNull()
+        val both = cadesService.coSign(coSignRequest(first)).cms.shouldNotBeNull()
+
+        val result = cadesService.verify(CadesVerifyRequest().apply { cms = both })
+        result.valid shouldBe true
+        result.signers.size shouldBe 2
+
+        // Новый подписант — полноценный AdES, а не «просто ещё один SignerInfo»:
+        // без привязки к сертификату документ перестал бы быть CAdES.
+        val signers = CMSSignedData(Base64.getDecoder().decode(both)).signerInfos.signers
+            .map { it as SignerInformation }
+        signers.size shouldBe 2
+        signers.forEach {
+            it.signedAttributes.get(PKCSObjectIdentifiers.id_aa_signingCertificateV2).shouldNotBeNull()
+        }
+    }
+
+    test("coSign keeps the first signer's timestamp untouched") {
+        val first = cadesService.sign(request(level = AdesLevel.T)).cms.shouldNotBeNull()
+        val originalToken = firstSigner(first).unsignedAttributes
+            .get(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken).attrValues.getObjectAt(0).getDERObject().getDEREncoded()
+
+        val both = cadesService.coSign(coSignRequest(first, AdesLevel.T)).cms.shouldNotBeNull()
+        val signers = CMSSignedData(Base64.getDecoder().decode(both)).signerInfos.signers
+            .map { it as SignerInformation }
+
+        // У прежнего подписанта ровно та же метка — не вторая поверх и не новая
+        // вместо: свидетельствовать о чужом времени задним числом мы не вправе.
+        val kept = signers.map { it.unsignedAttributes?.get(PKCSObjectIdentifiers.id_aa_signatureTimeStampToken) }
+            .filterNotNull()
+        kept.size shouldBe 2
+        kept.count { it.attrValues.getObjectAt(0).getDERObject().getDEREncoded().contentEquals(originalToken) } shouldBe 1
+        kept.forEach { it.attrValues.size() shouldBe 1 }
+
+        cadesService.verify(CadesVerifyRequest().apply { cms = both }).valid shouldBe true
+    }
+
+    test("coSign preserves the embedded validation data of level LT") {
+        // Ровно та ловушка, что есть у старого PATCH /cms/sign: он пересобирает
+        // SignedData и теряет поле crls, где живёт материал уровня LT. Подпись
+        // остаётся валидной и молча перестаёт быть долгоживущей.
+        val first = cadesService.sign(request(level = AdesLevel.LT)).cms.shouldNotBeNull()
+        val embedded = CmsValidationData.extract(Base64.getDecoder().decode(first))
+        (embedded.crls.size + embedded.ocspResponses.size) shouldBeGreaterThan 0
+
+        val both = cadesService.coSign(coSignRequest(first, AdesLevel.LT)).cms.shouldNotBeNull()
+        val after = CmsValidationData.extract(Base64.getDecoder().decode(both))
+
+        after.crls.size shouldBeGreaterThanOrEqual embedded.crls.size
+        after.ocspResponses.size shouldBeGreaterThanOrEqual embedded.ocspResponses.size
+
+        val result = cadesService.verify(
+            CadesVerifyRequest().apply {
+                cms = both
+                revocationCheck = setOf(CertificateRevocation.OCSP, CertificateRevocation.CRL)
+            },
+        )
+        result.valid shouldBe true
+        result.verifiedLevel shouldBe AdesLevel.LT
+    }
+
+    test("coSign reports the document level as the weakest signer") {
+        // Первый подписал на T, второй — на B: документ не сильнее слабого звена,
+        // и отдавать запрошенный уровень было бы неправдой.
+        val first = cadesService.sign(request(level = AdesLevel.T)).cms.shouldNotBeNull()
+        val both = cadesService.coSign(coSignRequest(first, AdesLevel.B))
+
+        both.level shouldBe AdesLevel.B
+        cadesService.verify(CadesVerifyRequest().apply { cms = both.cms!! }).signers
+            .map { it.level }.toSet() shouldBe setOf(AdesLevel.B, AdesLevel.T)
+    }
+
+    test("coSign gives the new signer its own archive timestamp and leaves the old one alone") {
+        val first = cadesService.sign(request(level = AdesLevel.LTA)).cms.shouldNotBeNull()
+        val both = cadesService.coSign(coSignRequest(first, AdesLevel.LTA)).cms.shouldNotBeNull()
+
+        CMSSignedData(Base64.getDecoder().decode(both)).signerInfos.signers
+            .map { it as SignerInformation }
+            .forEach { signer ->
+                // По одной архивной метке на подписанта: у прежнего — прежняя.
+                signer.unsignedAttributes.shouldNotBeNull()
+                    .get(CmsArchiveTimestamp.ARCHIVE_TIMESTAMP_V3).shouldNotBeNull()
+                    .attrValues.size() shouldBe 1
+            }
+
+        val result = cadesService.verify(
+            CadesVerifyRequest().apply {
+                cms = both
+                revocationCheck = setOf(CertificateRevocation.OCSP, CertificateRevocation.CRL)
+            },
+        )
+        result.valid shouldBe true
+        result.verifiedLevel shouldBe AdesLevel.LTA
+    }
+
+    test("coSign of a detached container needs the data") {
+        val detached = cadesService.sign(request(detached = true)).cms.shouldNotBeNull()
+
+        shouldThrow<ClientException> { cadesService.coSign(coSignRequest(detached)) }
+
+        val both = cadesService.coSign(coSignRequest(detached, data = payload)).cms.shouldNotBeNull()
+        val result = cadesService.verify(
+            CadesVerifyRequest().apply {
+                cms = both
+                data = payload
+            },
+        )
+        result.valid shouldBe true
+        result.signers.size shouldBe 2
+    }
+
+    test("coSign without a container is a client error") {
+        shouldThrow<ClientException> {
+            cadesService.coSign(CadesSignRequest().apply { signers = listOf(signer()) })
+        }
     }
 })

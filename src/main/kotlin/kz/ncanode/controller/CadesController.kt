@@ -12,6 +12,7 @@ import kz.ncanode.dto.response.CadesSignBatchResponse
 import kz.ncanode.dto.response.CadesVerificationBatchResponse
 import kz.ncanode.dto.response.CadesVerificationResponse
 import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
@@ -25,6 +26,15 @@ class CadesController(private val cadesService: CadesService) {
     @PostMapping("/sign")
     fun sign(@Valid @RequestBody request: CadesSignRequest): ResponseEntity<CadesResponse> =
         ResponseEntity.ok(cadesService.sign(request))
+
+    /**
+     * Добавляет подписанта к готовому контейнеру. PATCH, а не POST: это
+     * частичное обновление существующего ресурса (RFC 5789), тот же URL и
+     * другой глагол — как у `/cms/sign`.
+     */
+    @PatchMapping("/sign")
+    fun coSign(@Valid @RequestBody request: CadesSignRequest): ResponseEntity<CadesResponse> =
+        ResponseEntity.ok(cadesService.coSign(request))
 
     @PostMapping("/verify")
     fun verify(@Valid @RequestBody request: CadesVerifyRequest): ResponseEntity<CadesVerificationResponse> =

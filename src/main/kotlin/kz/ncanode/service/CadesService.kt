@@ -32,6 +32,7 @@ import kz.ncanode.util.mapPartial
 import kz.ncanode.wrapper.KalkanWrapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import java.io.ByteArrayOutputStream
 import java.security.cert.CertStore
 import java.security.cert.CollectionCertStoreParameters
 import java.security.cert.X509Certificate
@@ -72,21 +73,7 @@ class CadesService(
 
             for (keyStore in kalkanWrapper.read(request.signers)) {
                 val certificate = keyStore.certificate.x509Certificate
-                val digestAlgorithmOid = getDigestAlgorithmOidBYSignAlgorithmOid(certificate.sigAlgOID)
-                val signedAttributes = CadesAttributes.signedAttributes(
-                    certificate = certificate,
-                    digestAlgorithmOid = digestAlgorithmOid,
-                    provider = kalkanWrapper.kalkanProvider,
-                )
-                // Перегрузка с AttributeTable: генератор сам дополнит набор
-                // обязательными contentType и messageDigest.
-                generator.addSigner(
-                    keyStore.privateKey,
-                    certificate,
-                    digestAlgorithmOid,
-                    signedAttributes,
-                    null as kz.gov.pki.kalkan.asn1.cms.AttributeTable?,
-                )
+                addSigner(generator, keyStore.privateKey, certificate)
                 certificates.add(certificate)
             }
 
@@ -103,15 +90,7 @@ class CadesService(
                 KalkanProvider.PROVIDER_NAME,
             )
 
-            if (level.isAtLeast(AdesLevel.T)) {
-                signed = addSignatureTimestamps(signed, certificates, request.tsaPolicy)
-            }
-            if (level.isAtLeast(AdesLevel.LT)) {
-                signed = embedValidationData(signed, certificates)
-            }
-            if (level.isAtLeast(AdesLevel.LTA)) {
-                signed = addArchiveTimestamps(signed, certificates, request.tsaPolicy)
-            }
+            signed = applyLevel(signed, certificates, level, request.tsaPolicy)
 
             CadesResponse(
                 cms = Base64.getEncoder().encodeToString(signed.encoded),
@@ -133,6 +112,112 @@ class CadesService(
      * AdES незачем, он один и тот же. Здесь добавляется то, чего в нём нет:
      * определение заявленного уровня и сверка привязки `signingCertificateV2`.
      */
+    /**
+     * Добавляет подписанта к готовому контейнеру — подпись «вторым по
+     * маршруту», когда первый подписал раньше и своего ключа уже не даст.
+     *
+     * Подписи параллельные (RFC 5652 §5.1: несколько `SignerInfo` над одним
+     * содержимым), а не вложенные: второй подписант заверяет документ, а не
+     * подпись первого.
+     *
+     * Что сохраняется: подписанные и неподписанные атрибуты прежних
+     * подписантов, их метки времени и архивные метки, вшитый материал
+     * проверки. [CadesSignRequest.level] относится к НОВОМУ подписанту;
+     * итоговый уровень документа — минимум по всем, поэтому в ответе он
+     * вычисляется по факту, а не берётся из запроса.
+     */
+    fun coSign(request: CadesSignRequest): CadesResponse {
+        val cmsBytes = decodeCms(request.cms ?: throw ClientException("CMS argument not specified"))
+
+        return try {
+            val existing = CMSSignedData(cmsBytes)
+            val content = existing.signedContent?.let { signedContent ->
+                ByteArrayOutputStream().use { out ->
+                    signedContent.write(out)
+                    out.toByteArray()
+                }
+            } ?: decodeData(request.data)   // detached: содержимое приносит клиент
+
+            // Прежние подписанты переезжают как есть — вместе со своими
+            // атрибутами; трогать их нельзя, это чужие подписи.
+            val generator = CMSSignedDataGenerator().apply { addSigners(existing.signerInfos) }
+            val certificates = existing.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME)
+                .getCertificates(null)
+                .filterIsInstance<X509Certificate>()
+                .toMutableList()
+
+            for (keyStore in kalkanWrapper.read(request.signers)) {
+                val certificate = keyStore.certificate.x509Certificate
+                addSigner(generator, keyStore.privateKey, certificate)
+                certificates.add(certificate)
+            }
+
+            var signed = generator.generate(
+                CMSProcessableByteArray(content),
+                existing.signedContent != null,
+                KalkanProvider.PROVIDER_NAME,
+            )
+            signed = CmsValidationData.embed(
+                signed,
+                certificates.distinct(),
+                emptyList(),
+                emptyList(),
+            )
+            signed = applyLevel(
+                signed,
+                signerCertificates(signed),
+                request.level,
+                request.tsaPolicy,
+                carried = CmsValidationData.extract(cmsBytes),
+            )
+
+            val encoded = signed.encoded
+            CadesResponse(
+                cms = Base64.getEncoder().encodeToString(encoded),
+                level = documentLevel(encoded),
+            )
+        } catch (e: ApplicationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ServerException("Error co-signing CAdES: ${e.message}", e)
+        }
+    }
+
+    /** Добавляет подписанта с полным набором подписанных атрибутов AdES. */
+    private fun addSigner(
+        generator: CMSSignedDataGenerator,
+        privateKey: java.security.PrivateKey,
+        certificate: X509Certificate,
+    ) {
+        val digestAlgorithmOid = getDigestAlgorithmOidBYSignAlgorithmOid(certificate.sigAlgOID)
+        val signedAttributes = CadesAttributes.signedAttributes(
+            certificate = certificate,
+            digestAlgorithmOid = digestAlgorithmOid,
+            provider = kalkanWrapper.kalkanProvider,
+        )
+        // Перегрузка с AttributeTable: генератор сам дополнит набор
+        // обязательными contentType и messageDigest.
+        generator.addSigner(
+            privateKey,
+            certificate,
+            digestAlgorithmOid,
+            signedAttributes,
+            null as kz.gov.pki.kalkan.asn1.cms.AttributeTable?,
+        )
+    }
+
+    /** Сертификаты всех подписантов контейнера — по их SID. */
+    private fun signerCertificates(signed: CMSSignedData): List<X509Certificate> =
+        signed.signerInfos.signers.mapNotNull { signerCertificateOf(signed, it as SignerInformation) }
+
+    /**
+     * Уровень документа — минимум по подписантам: контейнер не «долгоживущий»,
+     * если хотя бы одна подпись в нём таковой не является.
+     */
+    private fun documentLevel(cms: ByteArray): AdesLevel? =
+        CadesInspector.inspect(cms, kalkanWrapper.kalkanProvider)
+            .minByOrNull { it.level.ordinal }?.level
+
     fun verify(request: CadesVerifyRequest): CadesVerificationResponse {
         val cmsBytes = decodeCms(request.cms)
         val provider = kalkanWrapper.kalkanProvider
@@ -353,13 +438,50 @@ class CadesService(
      * подписи (операция extend, пока не реализована) момент сбора должен
      * задаваться отдельно.
      */
+    /**
+     * Надстраивает уровни поверх готового `SignedData`.
+     *
+     * [carried] — материал проверки, уже лежавший в контейнере до нашего
+     * вмешательства. Его переносим ВСЕГДА, независимо от запрошенного уровня:
+     * иначе доподписание молча превращало бы LT-подпись в обычную, оставляя её
+     * валидной и уже недолгоживущей — ровно та ловушка, что есть у старого
+     * `PATCH /cms/sign`.
+     */
+    private fun applyLevel(
+        signed: CMSSignedData,
+        certificates: List<X509Certificate>,
+        level: AdesLevel,
+        tsaPolicy: TsaPolicy?,
+        carried: CmsValidationData.Embedded? = null,
+    ): CMSSignedData {
+        var result = signed
+        if (level.isAtLeast(AdesLevel.T)) {
+            result = addSignatureTimestamps(result, tsaPolicy)
+        }
+        if (level.isAtLeast(AdesLevel.LT)) {
+            result = embedValidationData(result, certificates, carried)
+        } else if (carried != null && (carried.crls.isNotEmpty() || carried.ocspResponses.isNotEmpty())) {
+            result = CmsValidationData.embed(result, emptyList(), carried.crls, carried.ocspResponses)
+        }
+        if (level.isAtLeast(AdesLevel.LTA)) {
+            result = addArchiveTimestamps(result, tsaPolicy)
+        }
+        return result
+    }
+
     private fun embedValidationData(
         signed: CMSSignedData,
         certificates: List<X509Certificate>,
+        carried: CmsValidationData.Embedded? = null,
     ): CMSSignedData {
         val chain = mutableListOf<X509Certificate>()
         val crls = mutableListOf<java.security.cert.X509CRL>()
         val ocspResponses = mutableListOf<ByteArray>()
+
+        carried?.let {
+            crls.addAll(it.crls)
+            ocspResponses.addAll(it.ocspResponses)
+        }
 
         for (certificate in certificates.distinct()) {
             val data = validationDataService.collect(certificate)
@@ -368,7 +490,12 @@ class CadesService(
             ocspResponses.addAll(data.ocspResponses)
         }
 
-        return CmsValidationData.embed(signed, chain.distinct(), crls, ocspResponses)
+        return CmsValidationData.embed(
+            signed,
+            chain.distinct(),
+            crls.distinctBy { it.encoded.contentHashCode() },
+            ocspResponses.distinctBy { it.contentHashCode() },
+        )
     }
 
     /**
@@ -379,36 +506,57 @@ class CadesService(
      * поэтому сначала должны быть добавлены и метка времени подписи (T), и
      * данные для проверки (LT). Иначе она зафиксирует неполную картину.
      */
-    private fun addArchiveTimestamps(
-        signed: CMSSignedData,
-        certificates: List<X509Certificate>,
-        tsaPolicy: TsaPolicy?,
-    ): CMSSignedData {
+    /**
+     * Добавляет архивную метку тем подписантам, у кого её ещё нет.
+     *
+     * У существующих метка уже накрыла их состояние на своё время, и вторая им
+     * ничего не добавит: индекс `ATSHashIndex-v3` перечисляет то, что метка
+     * покрыла, и появление нового подписанта его не ломает.
+     */
+    private fun addArchiveTimestamps(signed: CMSSignedData, tsaPolicy: TsaPolicy?): CMSSignedData {
         val policyId = (tsaPolicy ?: TsaPolicy.TSA_GOST2015_POLICY).policyId
         val provider = kalkanWrapper.kalkanProvider
 
-        val archived = signed.signerInfos.signers.mapIndexed { index, signerObject ->
+        val archived = signed.signerInfos.signers.map { signerObject ->
             val signer = signerObject as SignerInformation
-            val digestOid = getTspHashAlgorithmByOid(certificates[index].sigAlgOID)
+            val certificate = signerCertificateOf(signed, signer)
 
-            val hashIndex = CmsArchiveTimestamp.hashIndex(signed, signer, digestOid, provider)
-            val imprintInput = CmsArchiveTimestamp.imprintInput(signed, signer, digestOid, hashIndex, provider)
-            val token = tspService.create(imprintInput, digestOid, policyId)
-
-            CmsArchiveTimestamp.attach(signer, CmsArchiveTimestamp.embedHashIndex(token, hashIndex))
+            if (certificate == null || hasArchiveTimestamp(signer)) {
+                signer
+            } else {
+                val digestOid = getTspHashAlgorithmByOid(certificate.sigAlgOID)
+                val hashIndex = CmsArchiveTimestamp.hashIndex(signed, signer, digestOid, provider)
+                val imprintInput = CmsArchiveTimestamp.imprintInput(signed, signer, digestOid, hashIndex, provider)
+                val token = tspService.create(imprintInput, digestOid, policyId)
+                CmsArchiveTimestamp.attach(signer, CmsArchiveTimestamp.embedHashIndex(token, hashIndex))
+            }
         }
 
         return CMSSignedData.replaceSigners(signed, SignerInformationStore(archived))
     }
 
-    private fun addSignatureTimestamps(
-        signed: CMSSignedData,
-        certificates: List<X509Certificate>,
-        tsaPolicy: TsaPolicy?,
-    ): CMSSignedData {
+    private fun hasArchiveTimestamp(signer: SignerInformation): Boolean =
+        signer.unsignedAttributes?.get(CmsArchiveTimestamp.ARCHIVE_TIMESTAMP_V3) != null
+
+    /**
+     * Ставит метку времени тем подписантам, у кого её ещё нет.
+     *
+     * Сертификат ищется по SID подписанта, а не по позиции: при доподписании
+     * порядок подписантов и порядок сертификатов в контейнере уже не совпадают.
+     * Пропуск уже проштампованных — тоже про доподписание: вторая метка поверх
+     * чужой подписи означала бы, что мы задним числом свидетельствуем о времени,
+     * которого не наблюдали.
+     */
+    private fun addSignatureTimestamps(signed: CMSSignedData, tsaPolicy: TsaPolicy?): CMSSignedData {
         val policyId = (tsaPolicy ?: TsaPolicy.TSA_GOST2015_POLICY).policyId
-        val timestamped = signed.signerInfos.signers.mapIndexed { index, signerObject ->
-            tspService.addTspToSigner(signerObject as SignerInformation, certificates[index], policyId)
+        val timestamped = signed.signerInfos.signers.map { signerObject ->
+            val signer = signerObject as SignerInformation
+            val certificate = signerCertificateOf(signed, signer)
+            if (certificate == null || tspService.hasTimestampAttribute(signer)) {
+                signer
+            } else {
+                tspService.addTspToSigner(signer, certificate, policyId)
+            }
         }
         return CMSSignedData.replaceSigners(signed, SignerInformationStore(timestamped))
     }

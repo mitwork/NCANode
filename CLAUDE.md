@@ -19,7 +19,7 @@
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
 - **Состояние v4:** functional + 256 тестов / **82% coverage**
-  (на `feature/ades-levels` — 330 тестов / **85%**).
+  (на `feature/ades-levels` — 339 тестов / **85%**).
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -110,6 +110,12 @@ partial-response (per-item status + payload):
 | CAdES | `/cades/sign`, `/cades/verify` | `CmsService` |
 | XAdES | `/xades/sign`, `/xades/verify` | `XmlService` |
 | PAdES | `/pades/sign`, `/pades/verify` | `PdfService` |
+
+Доподписание (подписант «вторым по маршруту»): для XAdES и PAdES — подать
+подписанный документ на подпись снова, для CAdES — `PATCH /cades/sign`
+(поле `cms`). Для AdES-контейнеров НЕ использовать `PATCH /cms/sign`: он
+теряет поле `crls` с материалом уровня LT и добавляет подписанта без
+AdES-атрибутов.
 
 Старые `/cms/*`, `/xml/*`, `/pdf/*` **не легаси** — работают как раньше.
 Новые сервисы ходят в них через швы с дефолтным параметром `prepare`

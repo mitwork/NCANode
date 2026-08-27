@@ -28,10 +28,10 @@ tags:
   description: "Подпись и проверка PAdES (ETSI EN 319 142-1), уровни B, T, LT и LTA"
 - name: PDF
   description: Подпись и верификация PDF (PAdES/CAdES-T)
-- name: CMS
-  description: "PKCS#7/CMS подписи (attached/detached), addSigners, CAdES-T"
 - name: CAdES
   description: "Подпись и проверка CAdES (ETSI EN 319 122-1), уровни B, T, LT и LTA"
+- name: CMS
+  description: "PKCS#7/CMS подписи (attached/detached), addSigners, CAdES-T"
 - name: X509
   description: Чтение/валидация x509-сертификатов и SBA-verify
 - name: XML
@@ -806,6 +806,23 @@ paths:
       tags:
       - CAdES
       operationId: sign_6
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CadesSignRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CadesResponse"
+    patch:
+      tags:
+      - CAdES
+      operationId: coSign
       requestBody:
         content:
           application/json:
@@ -2473,6 +2490,8 @@ components:
       type: object
       properties:
         data:
+          type: string
+        cms:
           type: string
         signers:
           type: array

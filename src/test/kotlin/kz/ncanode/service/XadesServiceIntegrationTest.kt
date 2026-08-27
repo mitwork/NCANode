@@ -427,4 +427,28 @@ class XadesServiceIntegrationTest(
         response.results[1].valid shouldBe false
         response.results[1].status shouldBe 200
     }
+
+    test("signing an already signed document adds a signature and keeps the first one valid") {
+        // Бизнес-поток «подписал один, через день второй»: документ приходит
+        // обратно уже подписанным. Для XAdES отдельный эндпойнт не нужен —
+        // подписывается тот же XML.
+        val first = xadesService.sign(request(level = AdesLevel.T)).xml.shouldNotBeNull()
+        val second = xadesService.sign(
+            XadesSignRequest().apply {
+                this.xml = first
+                this.signers = listOf(signerRequest("legal_ceo_valid.p12"))
+                this.level = AdesLevel.T
+            },
+        ).xml.shouldNotBeNull()
+
+        val document = DocumentWrapper(second)
+        elements(document, dsNamespace, "Signature").size shouldBe 2
+
+        // Обе подписи проверяются: каждая — на документе в том виде, в каком
+        // её видел автор, поэтому более ранняя не ломается более поздней.
+        val result = xadesService.verify(XadesVerifyRequest().apply { this.xml = second })
+        result.valid shouldBe true
+        result.signatures.size shouldBe 2
+        result.signatures.map { it.verifiedLevel }.toSet() shouldBe setOf(AdesLevel.T)
+    }
 })

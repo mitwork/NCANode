@@ -657,4 +657,25 @@ class PadesServiceIntegrationTest(
         response.results[1].valid shouldBe false
         response.results[1].status shouldBe 404
     }
+
+    test("signing an already signed PDF adds a revision and keeps both signatures valid") {
+        // Тот же бизнес-поток, что и в XAdES, но в PDF он устроен иначе:
+        // подпись добавляется ревизией поверх, и последняя накрывает файл
+        // целиком вместе с предыдущей.
+        val first = padesService.sign(request(level = AdesLevel.T)).pdf.shouldNotBeNull()
+        val second = padesService.sign(
+            PadesSignRequest().apply {
+                pdf = first
+                signers = listOf(signerOf("legal_ceo_valid.p12"))
+                level = AdesLevel.T
+            },
+        ).pdf.shouldNotBeNull()
+
+        val result = padesService.verify(PadesVerifyRequest().apply { pdf = second })
+        result.valid shouldBe true
+        result.signatures.size shouldBe 2
+        result.signatures.map { it.signer?.isValid }.toSet() shouldBe setOf(true)
+        // Ранняя подпись файл целиком уже не покрывает, последняя покрывает.
+        result.signatures.map { it.signer?.coversWholeDocument } shouldBe listOf(false, true)
+    }
 })

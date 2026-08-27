@@ -15,6 +15,13 @@ import kz.ncanode.dto.tsp.TsaPolicy
 class CadesSignRequest {
     var data: String? = null
 
+    /**
+     * Готовый контейнер для доподписания (`PATCH /cades/sign`). Для подписи
+     * с нуля не используется; для отсоединённой подписи вместе с ним нужен
+     * [data] — содержимого в контейнере нет.
+     */
+    var cms: String? = null
+
     @NotEmpty
     @Valid
     var signers: List<SignerRequest> = emptyList()
