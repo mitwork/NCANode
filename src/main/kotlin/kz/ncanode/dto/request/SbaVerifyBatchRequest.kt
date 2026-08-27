@@ -12,8 +12,7 @@ import jakarta.validation.constraints.NotEmpty
  */
 class SbaVerifyBatchRequest : VerifyRequest() {
     @NotEmpty
-    @Valid
-    var items: List<Item> = emptyList()
+    var items: List<@Valid Item> = emptyList()
 
     class Item {
         @NotEmpty

@@ -26,6 +26,11 @@ kotlin {
     jvmToolchain(25)
     compilerOptions {
         freeCompilerArgs.add("-Xjsr305=strict")
+        // Без этого Kotlin не пишет в байткод аннотации на аргументах типа, и
+        // `List<@Valid Signer>` молча перестаёт каскадировать валидацию.
+        // Форма с аннотацией на самом списке объявлена устаревшей в Hibernate
+        // Validator (HV000271), так что нужна именно эта.
+        freeCompilerArgs.add("-Xemit-jvm-type-annotations")
     }
 }
 

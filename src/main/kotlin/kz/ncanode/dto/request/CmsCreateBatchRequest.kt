@@ -21,8 +21,7 @@ class CmsCreateBatchRequest {
     var data: List<String> = emptyList()
 
     @NotEmpty
-    @Valid
-    var signers: List<SignerRequest> = emptyList()
+    var signers: List<@Valid SignerRequest> = emptyList()
 
     var isWithTsp: Boolean = false
     var tsaPolicy: TsaPolicy? = null

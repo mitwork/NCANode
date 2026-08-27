@@ -5,6 +5,5 @@ import jakarta.validation.constraints.NotEmpty
 
 class Pkcs12InfoRequest : VerifyRequest() {
     @NotEmpty
-    @Valid
-    var keys: List<SignerRequest> = emptyList()
+    var keys: List<@Valid SignerRequest> = emptyList()
 }

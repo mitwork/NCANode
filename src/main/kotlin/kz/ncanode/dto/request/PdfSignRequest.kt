@@ -10,8 +10,7 @@ class PdfSignRequest {
     var pdf: String = ""
 
     @NotEmpty
-    @Valid
-    var signers: List<PdfSigner> = emptyList()
+    var signers: List<@Valid PdfSigner> = emptyList()
 
     var isWithTsp: Boolean = false
 

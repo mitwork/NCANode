@@ -29,6 +29,7 @@ import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.KeyStoreWrapper
 import org.apache.pdfbox.Loader
+import org.apache.pdfbox.cos.COSName
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.SignatureInterface
 import org.slf4j.LoggerFactory
@@ -225,6 +226,10 @@ class PdfService(
         coversWholeDocument: Boolean,
         prepare: (CertificateWrapper, Date) -> Unit = { _, _ -> },
     ): PdfSignerInfo {
+        if (isDocumentTimestamp(signature)) {
+            return verifyDocumentTimestamp(signature, pdfVerifyRequest, originalPdfBytes, coversWholeDocument)
+        }
+
         try {
             // 1) Extract raw CMS (the /Contents) and the signed content (ByteRange)
             val signatureContent = signature.contents
@@ -279,6 +284,49 @@ class PdfService(
             log.error("Error verifying signature", e)
             return PdfSignerInfo(isValid = false, reason = "Verification error: ${e.message}")
         }
+    }
+
+    private fun isDocumentTimestamp(signature: PDSignature): Boolean =
+        "DocTimeStamp" == signature.cosObject.getNameAsString(COSName.TYPE)
+
+    /**
+     * Проверяет документную метку времени.
+     *
+     * Раньше она шла общим путём и падала с «content hash found in signed
+     * attributes different»: в её `/Contents` лежит токен RFC 3161, чьи
+     * подписанные атрибуты описывают TSTInfo, а не байты `/ByteRange`. То есть
+     * ошибка была не в документе, а в том, что мы проверяли метку как подпись —
+     * и валидный LTA-документ объявлялся недействительным.
+     */
+    private fun verifyDocumentTimestamp(
+        signature: PDSignature,
+        pdfVerifyRequest: PdfVerifyRequest,
+        originalPdfBytes: ByteArray,
+        coversWholeDocument: Boolean,
+    ): PdfSignerInfo = try {
+        val token = CMSSignedData(signature.getContents(originalPdfBytes))
+        val covered = signature.getSignedContent(originalPdfBytes)
+        val info = tspService.verify(
+            token, covered, pdfVerifyRequest.checkOcsp, pdfVerifyRequest.checkCrl,
+        )
+
+        PdfSignerInfo(
+            isValid = info != null,
+            reason = if (info == null) "Document timestamp failed verification" else null,
+            signDate = info?.genTime,
+            signatureAlgorithm = signature.subFilter,
+            coversWholeDocument = coversWholeDocument,
+            documentTimestamp = true,
+        )
+    } catch (e: Exception) {
+        log.warn("Cannot verify the document timestamp: {}", e.message)
+        PdfSignerInfo(
+            isValid = false,
+            reason = "Document timestamp error: ${e.message}",
+            signatureAlgorithm = signature.subFilter,
+            coversWholeDocument = coversWholeDocument,
+            documentTimestamp = true,
+        )
     }
 
     private data class PdfSignerAttempt(

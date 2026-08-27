@@ -8,8 +8,7 @@ class XmlSignRequest {
     var xml: String = ""
 
     @NotEmpty
-    @Valid
-    var signers: List<SignerRequest> = emptyList()
+    var signers: List<@Valid SignerRequest> = emptyList()
 
     var isClearSignatures: Boolean = false
 

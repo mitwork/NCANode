@@ -17,8 +17,7 @@ class PadesSignBatchRequest {
     var pdfs: List<String> = emptyList()
 
     @NotEmpty
-    @Valid
-    var signers: List<PadesSignRequest.PadesSigner> = emptyList()
+    var signers: List<@Valid PadesSignRequest.PadesSigner> = emptyList()
 
     /** Требуемый уровень подписи. По умолчанию базовый. */
     var level: AdesLevel = AdesLevel.B

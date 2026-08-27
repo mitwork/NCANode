@@ -157,7 +157,11 @@ class PadesService(
         val signatures = mutableListOf<PadesSignatureInfo>()
         var documentTimestamps = 0
         var bindingsValid = true
-        val documentTimestampsValid = documentTimestampsValid(pdfBytes, request.checkOcsp, request.checkCrl)
+        // Вердикт по документным меткам берём из общей проверки: PdfService
+        // теперь проверяет их как метки, а не как подписи, и второй раз
+        // разбирать документ незачем.
+        val stamps = base.signers.filter { it.documentTimestamp }
+        val documentTimestampsValid = stamps.isNotEmpty() && stamps.all { it.isValid }
 
         base.signers.forEachIndexed { index, signer ->
             val signatureFacts = facts.getOrNull(index)
@@ -257,30 +261,6 @@ class PadesService(
         claimed.isAtLeast(AdesLevel.LT) && embeddedUsed -> AdesLevel.LT
         claimed.isAtLeast(AdesLevel.T) && timestamped -> AdesLevel.T
         else -> AdesLevel.B
-    }
-
-    /**
-     * Проверяет документные метки времени: каждая должна быть настоящим
-     * токеном RFC 3161 над теми байтами, которые она покрывает. Меток нет —
-     * подтверждать нечего.
-     */
-    private fun documentTimestampsValid(
-        pdfBytes: ByteArray,
-        checkOcsp: Boolean,
-        checkCrl: Boolean,
-    ): Boolean = try {
-        Loader.loadPDF(pdfBytes).use { document ->
-            val stamps = document.signatureDictionaries.filter {
-                "DocTimeStamp" == it.cosObject.getNameAsString(COSName.TYPE)
-            }
-            stamps.isNotEmpty() && stamps.all { stamp ->
-                val token = CMSSignedData(stamp.getContents(pdfBytes))
-                tspService.verify(token, stamp.getSignedContent(pdfBytes), checkOcsp, checkCrl) != null
-            }
-        }
-    } catch (e: Exception) {
-        log.warn("Cannot verify the document timestamp: {}", e.message)
-        false
     }
 
     /**

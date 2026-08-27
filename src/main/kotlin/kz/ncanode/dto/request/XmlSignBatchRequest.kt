@@ -17,8 +17,7 @@ class XmlSignBatchRequest {
     var xmls: List<String> = emptyList()
 
     @NotEmpty
-    @Valid
-    var signers: List<SignerRequest> = emptyList()
+    var signers: List<@Valid SignerRequest> = emptyList()
 
     var isClearSignatures: Boolean = false
 

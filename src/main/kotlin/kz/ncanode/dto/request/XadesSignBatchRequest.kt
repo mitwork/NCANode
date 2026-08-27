@@ -15,8 +15,7 @@ class XadesSignBatchRequest {
     var xmls: List<String> = emptyList()
 
     @NotEmpty
-    @Valid
-    var signers: List<SignerRequest> = emptyList()
+    var signers: List<@Valid SignerRequest> = emptyList()
 
     /** Требуемый уровень подписи. По умолчанию базовый. */
     var level: AdesLevel = AdesLevel.B
