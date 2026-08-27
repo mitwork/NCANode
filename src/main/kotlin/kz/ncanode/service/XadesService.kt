@@ -393,8 +393,7 @@ class XadesService(
 
     /** Доказанное время существования подписи — genTime её метки, если она есть. */
     private fun proofOfExistence(signatureElement: Element): Date? = try {
-        val facts = XadesInspector.inspect(signatureElement, null, kalkanWrapper.kalkanProvider)
-        facts.timestampToken
+        XadesInspector.signatureTimestampToken(signatureElement)
             ?.let { tspService.verify(it, XadesInspector.timestampedBytes(signatureElement), false, false) }
             ?.genTime
     } catch (e: Exception) {

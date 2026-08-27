@@ -2,6 +2,7 @@ package kz.ncanode.service
 
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
@@ -450,5 +451,19 @@ class XadesServiceIntegrationTest(
         result.valid shouldBe true
         result.signatures.size shouldBe 2
         result.signatures.map { it.verifiedLevel }.toSet() shouldBe setOf(AdesLevel.T)
+    }
+
+    test("the signature timestamp is readable without knowing the signer certificate") {
+        // Момент существования подписи нужен до того, как разобран сертификат,
+        // поэтому доступ к метке отдельный. Раньше за ним ходили в inspect с
+        // null вместо сертификата, и тот честно ругался на «пропавший»
+        // сертификат — предупреждение было ложным, а работа лишней.
+        val signed = xadesService.sign(request(level = AdesLevel.T)).xml.shouldNotBeNull()
+        val withTimestamp = elements(DocumentWrapper(signed), dsNamespace, "Signature").single()
+        XadesInspector.signatureTimestampToken(withTimestamp).shouldNotBeNull()
+
+        val plain = xadesService.sign(request()).xml.shouldNotBeNull()
+        val withoutTimestamp = elements(DocumentWrapper(plain), dsNamespace, "Signature").single()
+        XadesInspector.signatureTimestampToken(withoutTimestamp).shouldBeNull()
     }
 })

@@ -202,6 +202,16 @@ object XadesInspector {
     }
 
     /** Архивные метки подписи в порядке добавления. */
+    /**
+     * Токен метки времени подписи (`xades:SignatureTimeStamp`), если она есть.
+     *
+     * Отдельно от [inspect]: тому нужен сертификат подписанта, чтобы сверить
+     * привязку, и вызов «дай только метку» с `null` вместо сертификата
+     * оборачивался ложным предупреждением о ненайденном сертификате.
+     */
+    fun signatureTimestampToken(signatureElement: Element): CMSSignedData? =
+        firstDescendant(signatureElement, XADES_NAMESPACE, "SignatureTimeStamp")?.let { encapsulatedToken(it) }
+
     fun archiveTimestamps(signatureElement: Element): List<Element> {
         val nodes = signatureElement.getElementsByTagNameNS(XADES141_NAMESPACE, "ArchiveTimeStamp")
         return (0 until nodes.length).map { nodes.item(it) as Element }
