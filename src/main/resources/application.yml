@@ -50,6 +50,12 @@ ncanode:
         enabled: false
         url:
         ttl:
+  xades:
+    # Экспериментально: ссылка на документ исключает ВСЕ подписи, а не только
+    # свою. Делает документ с несколькими подписями проверяемым для тех, кто
+    # не снимает более поздние подписи. Меняет формат выпускаемых подписей,
+    # поэтому по умолчанию выключено.
+    excludeSignatures: ${NCANODE_XADES_EXCLUDE_SIGNATURES:false}
   tsp:
     url: ${NCANODE_TSP_URL:http://tsp.pki.gov.kz/}
     retries: ${NCANODE_TSP_RETRIES:3}

@@ -33,6 +33,7 @@ import kz.ncanode.wrapper.KeyStoreWrapper
 import kz.ncanode.wrapper.XMLSignatureWrapper
 import org.apache.xml.security.signature.ObjectContainer
 import org.apache.xml.security.transforms.Transforms
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import org.w3c.dom.Element
 import java.security.cert.X509Certificate
@@ -57,6 +58,23 @@ class XadesService(
     private val xmlService: XmlService,
     private val validationDataService: ValidationDataService,
 ) {
+
+    /**
+     * Экспериментальный режим: ссылка на документ исключает **все** подписи,
+     * а не только свою (`NCANODE_XADES_EXCLUDE_SIGNATURES`).
+     *
+     * Обычный `enveloped-signature` вырезает из покрытия только ту подпись,
+     * которая его содержит. Поэтому вторая подпись, добавленная позже, попадает
+     * в покрытие первой и ломает её дайджест — если проверяющий не умеет
+     * снимать более поздние подписи, как это делаем мы. XPath снимает все, и
+     * документ с несколькими подписями остаётся проверяемым «в лоб».
+     *
+     * Пока выключен по умолчанию: меняет формат выпускаемых подписей, и прежде
+     * чем менять формат, нужно знать, принимает ли такой трансформ валидатор
+     * НУЦ.
+     */
+    @field:Value("\${ncanode.xades.excludeSignatures:false}")
+    private var excludeSignatures: Boolean = false
 
     fun sign(request: XadesSignRequest): XadesResponse {
         requirePackagingSupported(request.packaging)
@@ -140,7 +158,11 @@ class XadesService(
         document.documentElement.appendChild(xmlSignature.element)
 
         val transforms = Transforms(document.document).apply {
-            addTransform(Transforms.TRANSFORM_ENVELOPED_SIGNATURE)
+            if (excludeSignatures) {
+                addTransform(Transforms.TRANSFORM_XPATH, excludeSignaturesXPath(document.document))
+            } else {
+                addTransform(Transforms.TRANSFORM_ENVELOPED_SIGNATURE)
+            }
             addTransform(CANONICALIZATION)
         }
         val dataReferenceId = "$signatureId-ref0"
@@ -462,6 +484,20 @@ class XadesService(
      * попросивший detached, не должен получить enveloped и считать, что
      * получил заказанное.
      */
+    /** `<ds:XPath>not(ancestor-or-self::ds:Signature)</ds:XPath>` для трансформа. */
+    private fun excludeSignaturesXPath(document: org.w3c.dom.Document): Element {
+        val element = document.createElementNS(DS_NAMESPACE, "ds:XPath")
+        element.setAttributeNS(
+            "http://www.w3.org/2000/xmlns/",
+            "xmlns:ds",
+            DS_NAMESPACE,
+        )
+        element.appendChild(
+            document.createTextNode(XMLSignatureWrapper.EXCLUDE_ALL_SIGNATURES_XPATH),
+        )
+        return element
+    }
+
     private fun requirePackagingSupported(packaging: SignaturePackaging) {
         if (packaging != SignaturePackaging.ENVELOPED) {
             throw ClientException("XAdES packaging $packaging is not supported yet, use ENVELOPED")

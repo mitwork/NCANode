@@ -6,6 +6,8 @@ import org.apache.xml.security.keys.keyresolver.KeyResolverException
 import org.apache.xml.security.signature.Reference
 import org.apache.xml.security.signature.XMLSignature
 import org.apache.xml.security.signature.XMLSignatureException
+import org.apache.xml.security.utils.Constants
+import org.apache.xml.security.transforms.Transform
 import org.apache.xml.security.transforms.Transforms
 import org.apache.xml.security.utils.XMLUtils
 import org.slf4j.LoggerFactory
@@ -133,10 +135,32 @@ class XMLSignatureWrapper {
     private fun transformsWholeDocumentSafe(reference: Reference): Boolean = try {
         val transforms = reference.transforms ?: return true
         (0 until transforms.length).all { i ->
-            transforms.item(i).uri in ALLOWED_WHOLE_DOC_TRANSFORMS
+            val transform = transforms.item(i)
+            transform.uri in ALLOWED_WHOLE_DOC_TRANSFORMS || excludesAllSignatures(transform)
         }
     } catch (e: XMLSecurityException) {
         false
+    }
+
+    /**
+     * XPath, вырезающий из покрытия **все** подписи, а не только свою.
+     *
+     * Это единственное исключение из запрета на XPath: произвольное выражение
+     * сужает node-set непредсказуемо (XML Signature Wrapping), поэтому
+     * сравниваем текст выражения дословно. Смысл у него ровно тот же, что у
+     * enveloped-signature, но действует на все подписи сразу — так документ с
+     * несколькими подписями остаётся проверяемым для тех, кто не умеет
+     * снимать более поздние подписи.
+     */
+    private fun excludesAllSignatures(transform: Transform): Boolean {
+        if (transform.uri != Transforms.TRANSFORM_XPATH) return false
+        val expression = transform.element
+            .getElementsByTagNameNS(Constants.SignatureSpecNS, "XPath")
+            .item(0)
+            ?.textContent
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+        return expression == EXCLUDE_ALL_SIGNATURES_XPATH
     }
 
     companion object {
@@ -155,6 +179,9 @@ class XMLSignatureWrapper {
          * (XPath, XSLT, base64, …) потенциально меняет node-set и не считается
          * покрывающим весь документ.
          */
+        /** Выражение, исключающее из покрытия все `ds:Signature`. */
+        const val EXCLUDE_ALL_SIGNATURES_XPATH = "not(ancestor-or-self::ds:Signature)"
+
         private val ALLOWED_WHOLE_DOC_TRANSFORMS = setOf(
             Transforms.TRANSFORM_ENVELOPED_SIGNATURE,
             Transforms.TRANSFORM_C14N_OMIT_COMMENTS,
