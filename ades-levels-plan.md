@@ -150,8 +150,9 @@ XAdES и PAdES это умеют без отдельного эндпойнта 
   `id-ri-ocsp-response`), как у НУЦ, а не в устаревших `certValues` /
   `revocationValues`. LTA — `archive-timestamp-v3` (`0.4.0.1733.2.4`) с
   `ATSHashIndex-v3` (`0.4.0.19122.1.5`).
-- **XAdES**: только ENVELOPED (основной сценарий РК), прочие размещения
-  отклоняются явным `ClientException`. Exclusive c14n — как у НУЦ.
+- **XAdES**: два размещения — ENVELOPED (подпись внутри документа) и
+  ENVELOPING (документ внутри подписи, один подписант); DETACHED отклоняется.
+  Exclusive c14n — как у НУЦ.
 - **PAdES**: несколько подписей отдельными инкрементальными ревизиями, видимая
   подпись с логотипом, `/DSS`, `/DocTimeStamp`. В CMS — только
   `signingCertificateV2`, без `signingTime` (его несёт `/M` словаря подписи).
