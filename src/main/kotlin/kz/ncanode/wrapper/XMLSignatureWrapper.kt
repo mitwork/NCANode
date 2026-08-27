@@ -125,11 +125,34 @@ class XMLSignatureWrapper {
         val signedInfo = xmlSignature.signedInfo
         (0 until signedInfo.length).any { i ->
             val ref = signedInfo.item(i)
-            ref.uri.isNullOrEmpty() && transformsWholeDocumentSafe(ref)
+            (ref.uri.isNullOrEmpty() && transformsWholeDocumentSafe(ref)) || coversEnvelopedContent(ref)
         }
     } catch (e: XMLSecurityException) {
         log.warn("Failed to inspect XML signature references for whole-document coverage", e)
         false
+    }
+
+    /**
+     * Подпись, внутри которой лежит сам документ (`ENVELOPING`): содержимое
+     * находится в `ds:Object`, а корень документа — сама подпись.
+     *
+     * Требование «покрывать весь документ» здесь выполняется иначе: вне подписи
+     * ничего нет, поэтому достаточно, чтобы ссылка вела на `ds:Object` этой же
+     * подписи. Так подписывает NCALayer в режиме «присоединённая (содержимое
+     * внутри)».
+     */
+    private fun coversEnvelopedContent(reference: Reference): Boolean {
+        val signatureElement = xmlSignature.element
+        if (signatureElement.ownerDocument?.documentElement !== signatureElement) return false
+
+        val uri = reference.uri ?: return false
+        if (!uri.startsWith("#")) return false
+        if (!transformsWholeDocumentSafe(reference)) return false
+
+        val objects = signatureElement.getElementsByTagNameNS(Constants.SignatureSpecNS, "Object")
+        return (0 until objects.length).any { index ->
+            (objects.item(index) as? Element)?.getAttribute("Id") == uri.substring(1)
+        }
     }
 
     private fun transformsWholeDocumentSafe(reference: Reference): Boolean = try {

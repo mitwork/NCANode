@@ -82,8 +82,18 @@ class XadesService(
         return try {
             val document = DocumentWrapper(request.xml)
 
-            for (keyStore in kalkanWrapper.read(request.signers)) {
-                appendSignature(document, keyStore, request.level, request.tsaPolicy)
+            val keyStores = kalkanWrapper.read(request.signers)
+            if (request.packaging == SignaturePackaging.ENVELOPING) {
+                // Корень документа один, и им становится подпись — второй
+                // подписи там просто негде разместиться.
+                if (keyStores.size > 1) {
+                    throw ClientException("ENVELOPING packaging supports a single signer")
+                }
+                envelopeSignature(document, keyStores.first(), request.level, request.tsaPolicy)
+            } else {
+                for (keyStore in keyStores) {
+                    appendSignature(document, keyStore, request.level, request.tsaPolicy)
+                }
             }
 
             XadesResponse(xml = document.toString(), level = request.level)
@@ -484,6 +494,91 @@ class XadesService(
      * попросивший detached, не должен получить enveloped и считать, что
      * получил заказанное.
      */
+    /**
+     * Подпись, внутрь которой кладётся сам документ (`ENVELOPING`).
+     *
+     * Корнем становится `ds:Signature`, а исходный документ переезжает в
+     * `ds:Object` и подписывается по ссылке на него. Тот же вид, что у
+     * NCALayer в режиме «присоединённая (содержимое внутри)».
+     */
+    private fun envelopeSignature(
+        document: DocumentWrapper,
+        keyStore: KeyStoreWrapper,
+        level: AdesLevel,
+        tsaPolicy: TsaPolicy?,
+    ) {
+        val certificate = keyStore.certificate
+        val x509 = certificate.x509Certificate
+        val dom = document.document
+
+        val signature = XMLSignatureWrapper(dom, certificate.signAlgorithmId, CANONICALIZATION)
+        val xmlSignature = signature.xmlSignature
+        val signatureId = "sig-${UUID.randomUUID()}"
+        xmlSignature.setId(signatureId)
+
+        // Документ переезжает внутрь подписи: сначала снимаем его с корня,
+        // иначе один узел оказался бы и корнем, и потомком.
+        val payload = dom.documentElement
+        dom.removeChild(payload)
+        dom.appendChild(xmlSignature.element)
+
+        val objectId = "$signatureId-obj0"
+        val container = ObjectContainer(dom).apply {
+            setId(objectId)
+            appendChild(payload)
+        }
+        xmlSignature.appendObject(container)
+        // Ссылка `#objectId` резолвится только если Id объявлен настоящим ID.
+        runCatching { container.element.setIdAttribute("Id", true) }
+
+        val dataReferenceId = "$signatureId-ref0"
+        val transforms = Transforms(dom).apply { addTransform(CANONICALIZATION) }
+        xmlSignature.addDocument(
+            "#$objectId",
+            transforms,
+            certificate.hashAlgorithmId,
+            dataReferenceId,
+            OBJECT_REFERENCE_TYPE,
+        )
+        xmlSignature.addKeyInfo(x509)
+
+        val signedPropertiesId = "$signatureId-signedprops"
+        val qualifyingProperties = XadesQualifyingProperties.build(
+            document = dom,
+            certificate = x509,
+            signatureId = signatureId,
+            signedPropertiesId = signedPropertiesId,
+            dataReferenceId = dataReferenceId,
+            digestUri = certificate.hashAlgorithmId,
+            digestOid = getDigestAlgorithmOidBYSignAlgorithmOid(x509.sigAlgOID),
+            provider = kalkanWrapper.kalkanProvider,
+        )
+        val propertiesContainer = ObjectContainer(dom)
+        propertiesContainer.appendChild(qualifyingProperties)
+        xmlSignature.appendObject(propertiesContainer)
+
+        val propertiesTransforms = Transforms(dom).apply { addTransform(CANONICALIZATION) }
+        xmlSignature.addDocument(
+            "#$signedPropertiesId",
+            propertiesTransforms,
+            certificate.hashAlgorithmId,
+            null,
+            XadesQualifyingProperties.SIGNED_PROPERTIES_TYPE,
+        )
+
+        signature.sign(keyStore.privateKey)
+
+        if (level.isAtLeast(AdesLevel.T)) {
+            appendSignatureTimeStamp(xmlSignature.element, qualifyingProperties, x509, tsaPolicy)
+        }
+        if (level.isAtLeast(AdesLevel.LT)) {
+            appendValidationData(dom, qualifyingProperties, x509)
+        }
+        if (level.isAtLeast(AdesLevel.LTA)) {
+            appendArchiveTimeStamp(xmlSignature.element, qualifyingProperties, x509, tsaPolicy)
+        }
+    }
+
     /** `<ds:XPath>not(ancestor-or-self::ds:Signature)</ds:XPath>` для трансформа. */
     private fun excludeSignaturesXPath(document: org.w3c.dom.Document): Element {
         val element = document.createElementNS(DS_NAMESPACE, "ds:XPath")
@@ -499,8 +594,8 @@ class XadesService(
     }
 
     private fun requirePackagingSupported(packaging: SignaturePackaging) {
-        if (packaging != SignaturePackaging.ENVELOPED) {
-            throw ClientException("XAdES packaging $packaging is not supported yet, use ENVELOPED")
+        if (packaging == SignaturePackaging.DETACHED) {
+            throw ClientException("XAdES packaging DETACHED is not supported yet")
         }
     }
 
@@ -510,5 +605,8 @@ class XadesService(
         /** Exclusive c14n — та же канонизация, что использует NCALayer. */
         const val CANONICALIZATION = XadesInspector.CANONICALIZATION
         const val DS_NAMESPACE = "http://www.w3.org/2000/09/xmldsig#"
+
+        /** Type ссылки на `ds:Object` — так помечает её и NCALayer. */
+        const val OBJECT_REFERENCE_TYPE = "http://www.w3.org/2000/09/xmldsig#Object"
     }
 }

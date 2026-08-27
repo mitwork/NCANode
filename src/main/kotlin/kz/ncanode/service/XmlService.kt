@@ -14,6 +14,7 @@ import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.DocumentWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.XMLSignatureWrapper
+import org.apache.xml.security.utils.Constants
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.w3c.dom.Document
@@ -138,7 +139,12 @@ class XmlService(
         warnIfRevocationDisabled(checkOcsp, checkCrl)
         val document = read(xml, false)
         val root = document.documentElement
-        val initial = root.getElementsByTagName("ds:Signature").length
+
+        // Подпись может быть и самим корнем — тогда документ лежит внутри неё
+        // (ENVELOPING). `getElementsByTagName` ищет только потомков, поэтому
+        // такой документ выглядел как «подписей нет» и отвергался.
+        val rootIsSignature = root.namespaceURI == Constants.SignatureSpecNS && root.localName == "Signature"
+        val initial = if (rootIsSignature) 1 else root.getElementsByTagName("ds:Signature").length
 
         var valid = initial > 0
         val certs = mutableListOf<CertificateWrapper?>()
@@ -146,10 +152,14 @@ class XmlService(
 
         // NodeList "живой": removeChild уменьшает длину, поэтому всегда берём
         // последний элемент. Так каждый ds:Signature обрабатывается ровно раз.
-        while (root.getElementsByTagName("ds:Signature").length > 0) {
-            val live = root.getElementsByTagName("ds:Signature")
-            val signature = live.item(live.length - 1) as? Element
-                ?: throw ClientException("Bad signature: Element 'ds:Reference' is not found in XML document")
+        while (if (rootIsSignature) certs.isEmpty() else root.getElementsByTagName("ds:Signature").length > 0) {
+            val signature = if (rootIsSignature) {
+                root
+            } else {
+                val live = root.getElementsByTagName("ds:Signature")
+                live.item(live.length - 1) as? Element
+                    ?: throw ClientException("Bad signature: Element 'ds:Reference' is not found in XML document")
+            }
 
             val xmlSignature = XMLSignatureWrapper(signature)
             val cert = xmlSignature.certificate
