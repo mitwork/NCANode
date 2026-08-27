@@ -14,6 +14,7 @@ import kz.gov.pki.kalkan.asn1.cms.Attribute
 import java.util.Date
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.ades.CadesSignerInfo
+import kz.ncanode.dto.request.CadesExtendRequest
 import kz.ncanode.dto.request.CadesSignBatchRequest
 import kz.ncanode.dto.request.CadesSignRequest
 import kz.ncanode.dto.request.CadesVerifyBatchRequest
@@ -236,6 +237,53 @@ class CadesService(
                 "certificate id will reject the archive timestamp of the new signature",
             certificate.subjectX500Principal,
         )
+    }
+
+    /**
+     * Повышает уровень готовой подписи, не добавляя подписантов.
+     *
+     * Уровни выше B ничего не подписывают заново — метка времени, данные об
+     * отзыве и архивная метка надстраиваются поверх. Поэтому ключ здесь не
+     * нужен, и подпись, сделанную клиентом (в браузере через NCALayer доступны
+     * только B и T), сервер может довести до LT/LTA сам.
+     *
+     * Понижение и повторение — ошибка: уровень нельзя снять, а «повышение» до
+     * уже достигнутого молча ничего не сделало бы.
+     */
+    fun extend(request: CadesExtendRequest): CadesResponse {
+        val cmsBytes = decodeCms(request.cms)
+
+        return try {
+            val cms = CMSSignedData(cmsBytes)
+            val content = cms.signedContent?.let { signedContent ->
+                ByteArrayOutputStream().use { out ->
+                    signedContent.write(out)
+                    out.toByteArray()
+                }
+            } ?: decodeData(request.data)
+
+            val current = documentLevel(cmsBytes)
+            requireHigher(request.level, current)
+
+            val extended = applyLevel(
+                CMSSignedData(CMSProcessableByteArray(content), cmsBytes),
+                signerCertificates(cms),
+                request.level,
+                request.tsaPolicy,
+                content,
+                carried = CmsValidationData.extract(cmsBytes),
+            )
+
+            val encoded = extended.encoded
+            CadesResponse(
+                cms = Base64.getEncoder().encodeToString(encoded),
+                level = documentLevel(encoded),
+            )
+        } catch (e: ApplicationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ServerException("Error extending CAdES: ${e.message}", e)
+        }
     }
 
     /** Сертификаты всех подписантов контейнера — по их SID. */
@@ -617,6 +665,12 @@ class CadesService(
             Base64.getDecoder().decode(encoded)
         } catch (e: IllegalArgumentException) {
             throw ClientException("Data is not valid base64")
+        }
+    }
+
+    private fun requireHigher(requested: AdesLevel, current: AdesLevel?) {
+        if (current != null && current.isAtLeast(requested)) {
+            throw ClientException("Signature is already at level $current, nothing to extend to $requested")
         }
     }
 

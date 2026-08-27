@@ -3,6 +3,7 @@ package kz.ncanode.controller
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
 import kz.ncanode.service.CadesService
+import kz.ncanode.dto.request.CadesExtendRequest
 import kz.ncanode.dto.request.CadesSignBatchRequest
 import kz.ncanode.dto.request.CadesSignRequest
 import kz.ncanode.dto.request.CadesVerifyBatchRequest
@@ -35,6 +36,15 @@ class CadesController(private val cadesService: CadesService) {
     @PatchMapping("/sign")
     fun coSign(@Valid @RequestBody request: CadesSignRequest): ResponseEntity<CadesResponse> =
         ResponseEntity.ok(cadesService.coSign(request))
+
+    /**
+     * Повышает уровень готовой подписи, не добавляя подписантов и не требуя
+     * ключа. Отдельно от `/sign`: операция другая по смыслу — надстройка
+     * поверх существующей подписи, а не создание новой.
+     */
+    @PostMapping("/extend")
+    fun extend(@Valid @RequestBody request: CadesExtendRequest): ResponseEntity<CadesResponse> =
+        ResponseEntity.ok(cadesService.extend(request))
 
     @PostMapping("/verify")
     fun verify(@Valid @RequestBody request: CadesVerifyRequest): ResponseEntity<CadesVerificationResponse> =

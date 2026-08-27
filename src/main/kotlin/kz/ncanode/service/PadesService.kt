@@ -13,6 +13,7 @@ import kz.ncanode.ades.PdfDocumentSecurityStore
 import kz.ncanode.ades.PdfIncrementalUpdate
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.ades.PadesSignatureInfo
+import kz.ncanode.dto.request.PadesExtendRequest
 import kz.ncanode.dto.request.PadesSignBatchRequest
 import kz.ncanode.dto.request.PadesSignRequest
 import kz.ncanode.dto.request.PadesVerifyBatchRequest
@@ -25,6 +26,7 @@ import kz.ncanode.dto.response.PadesVerificationResponse
 import kz.ncanode.dto.tsp.TsaPolicy
 import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
+import kz.ncanode.exception.NoSignaturesFoundException
 import kz.ncanode.exception.ServerException
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getTspHashAlgorithmByOid
@@ -98,6 +100,72 @@ class PadesService(
             throw ServerException("Error signing PAdES: ${e.message}", e)
         }
     }
+
+    /**
+     * Повышает уровень готового документа, не подписывая заново.
+     *
+     * Доступны LT и LTA: и материал проверки, и документная метка добавляются
+     * отдельными ревизиями файла, не трогая уже поставленные подписи. Уровень
+     * T так добрать нельзя — метка подписи лежит внутри самой подписи, в
+     * области фиксированного размера, и её изменение означало бы переподписать
+     * документ.
+     */
+    fun extend(request: PadesExtendRequest): PadesResponse {
+        if (!request.level.isAtLeast(AdesLevel.LT)) {
+            throw ClientException("Only levels LT and LTA can be added to a signed PDF")
+        }
+
+        return try {
+            var pdf = decodePdf(request.pdf)
+            val facts = PadesInspector.inspect(pdf, kalkanWrapper.kalkanProvider)
+            val signatures = facts.filter { !it.documentTimestamp }
+            if (signatures.isEmpty()) {
+                throw NoSignaturesFoundException("PDF document contains no digital signatures")
+            }
+
+            val current = signatures.minByOrNull { it.level.ordinal }?.level
+            if (current != null && current.isAtLeast(request.level)) {
+                throw ClientException(
+                    "Signature is already at level $current, nothing to extend to ${request.level}",
+                )
+            }
+
+            val certificates = signerCertificatesOf(pdf)
+            if (certificates.isEmpty()) {
+                throw ClientException("Cannot read signer certificates from the document")
+            }
+
+            if (current == null || !current.isAtLeast(AdesLevel.LT)) {
+                pdf = embedValidationData(pdf, certificates)
+            }
+            if (request.level.isAtLeast(AdesLevel.LTA)) {
+                pdf = addDocumentTimestamp(pdf, certificates.last(), request.tsaPolicy)
+            }
+
+            PadesResponse(pdf = Base64.getEncoder().encodeToString(pdf), level = request.level)
+        } catch (e: ApplicationException) {
+            throw e
+        } catch (e: Exception) {
+            log.error("Error extending PAdES", e)
+            throw ServerException("Error extending PAdES: ${e.message}", e)
+        }
+    }
+
+    /** Сертификаты подписантов документа — из CMS каждой подписи. */
+    private fun signerCertificatesOf(pdf: ByteArray): List<X509Certificate> =
+        Loader.loadPDF(pdf).use { document ->
+            document.signatureDictionaries
+                .filter { "DocTimeStamp" != it.cosObject.getNameAsString(COSName.TYPE) }
+                .flatMap { dictionary ->
+                    val cms = CMSSignedData(dictionary.getContents(pdf))
+                    val store = cms.getCertificatesAndCRLs("Collection", KalkanProvider.PROVIDER_NAME)
+                    cms.signerInfos.signers.flatMap { signer ->
+                        store.getCertificates((signer as SignerInformation).sid)
+                            .filterIsInstance<X509Certificate>()
+                    }
+                }
+                .distinct()
+        }
 
     /**
      * Проверяет PAdES и сообщает уровень.

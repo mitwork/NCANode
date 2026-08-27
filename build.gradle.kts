@@ -101,6 +101,10 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
     finalizedBy(tasks.jacocoTestReport)
+    // Spring-контексты (их несколько: разные профили и property-переопределения)
+    // живут в кэше до конца прогона, и вместе с разобранными CRL дефолтной кучи
+    // тестовой JVM перестало хватать — прогон падал с OutOfMemoryError.
+    maxHeapSize = "2g"
 }
 
 tasks.jacocoTestReport {

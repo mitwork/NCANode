@@ -3,6 +3,7 @@ package kz.ncanode.controller
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
 import kz.ncanode.service.XadesService
+import kz.ncanode.dto.request.XadesExtendRequest
 import kz.ncanode.dto.request.XadesSignBatchRequest
 import kz.ncanode.dto.request.XadesSignRequest
 import kz.ncanode.dto.request.XadesVerifyBatchRequest
@@ -25,6 +26,15 @@ class XadesController(private val xadesService: XadesService) {
     @PostMapping("/sign")
     fun sign(@Valid @RequestBody request: XadesSignRequest): ResponseEntity<XadesResponse> =
         ResponseEntity.ok(xadesService.sign(request))
+
+    /**
+     * Повышает уровень готовой подписи, не добавляя подписантов и не требуя
+     * ключа. Отдельно от `/sign`: операция другая по смыслу — надстройка
+     * поверх существующей подписи, а не создание новой.
+     */
+    @PostMapping("/extend")
+    fun extend(@Valid @RequestBody request: XadesExtendRequest): ResponseEntity<XadesResponse> =
+        ResponseEntity.ok(xadesService.extend(request))
 
     @PostMapping("/verify")
     fun verify(@Valid @RequestBody request: XadesVerifyRequest): ResponseEntity<XadesVerificationResponse> =

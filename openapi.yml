@@ -188,6 +188,24 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/XadesSignBatchResponse"
+  /xades/extend:
+    post:
+      tags:
+      - XAdES
+      operationId: extend
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/XadesExtendRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/XadesResponse"
   /x509/verify:
     post:
       tags:
@@ -548,6 +566,24 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/PadesSignBatchResponse"
+  /pades/extend:
+    post:
+      tags:
+      - PAdES
+      operationId: extend_1
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PadesExtendRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/PadesResponse"
   /jwt/encode:
     post:
       tags:
@@ -854,6 +890,24 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/CadesSignBatchResponse"
+  /cades/extend:
+    post:
+      tags:
+      - CAdES
+      operationId: extend_2
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CadesExtendRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/CadesResponse"
   /actuator:
     get:
       tags:
@@ -1412,6 +1466,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Item"
+    XadesExtendRequest:
+      type: object
+      properties:
+        xml:
+          type: string
+          minLength: 1
+        level:
+          type: string
+          enum:
+          - B
+          - T
+          - LT
+          - LTA
+        tsaPolicy:
+          type: string
+          enum:
+          - TSA_GOST2015_POLICY
+          - TSA_GOST_POLICY
+          - TSA_GOSTGT_POLICY
+      required:
+      - xml
     SbaVerifyRequest:
       type: object
       properties:
@@ -2068,6 +2143,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Item"
+    PadesExtendRequest:
+      type: object
+      properties:
+        pdf:
+          type: string
+          minLength: 1
+        level:
+          type: string
+          enum:
+          - B
+          - T
+          - LT
+          - LTA
+        tsaPolicy:
+          type: string
+          enum:
+          - TSA_GOST2015_POLICY
+          - TSA_GOST_POLICY
+          - TSA_GOSTGT_POLICY
+      required:
+      - pdf
     JwtEncodeRequest:
       type: object
       properties:
@@ -2577,6 +2673,29 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Item"
+    CadesExtendRequest:
+      type: object
+      properties:
+        cms:
+          type: string
+          minLength: 1
+        data:
+          type: string
+        level:
+          type: string
+          enum:
+          - B
+          - T
+          - LT
+          - LTA
+        tsaPolicy:
+          type: string
+          enum:
+          - TSA_GOST2015_POLICY
+          - TSA_GOST_POLICY
+          - TSA_GOSTGT_POLICY
+      required:
+      - cms
     Link:
       type: object
       properties:

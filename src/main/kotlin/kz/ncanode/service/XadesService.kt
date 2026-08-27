@@ -10,6 +10,7 @@ import kz.ncanode.dto.ades.AdesLevel
 import java.util.Date
 import kz.ncanode.dto.ades.SignaturePackaging
 import kz.ncanode.dto.ades.XadesSignatureInfo
+import kz.ncanode.dto.request.XadesExtendRequest
 import kz.ncanode.dto.request.XadesSignBatchRequest
 import kz.ncanode.dto.request.XadesSignRequest
 import kz.ncanode.dto.request.XadesVerifyBatchRequest
@@ -22,6 +23,7 @@ import kz.ncanode.dto.tsp.TsaPolicy
 import kz.ncanode.dto.tsp.TspInfo
 import kz.ncanode.exception.ApplicationException
 import kz.ncanode.exception.ClientException
+import kz.ncanode.exception.NoSignaturesFoundException
 import kz.ncanode.exception.ServerException
 import kz.ncanode.util.getDigestAlgorithmOidBYSignAlgorithmOid
 import kz.ncanode.util.getHashingAlgorithmByOID
@@ -102,6 +104,85 @@ class XadesService(
         } catch (e: Exception) {
             throw ServerException("Error signing XAdES: ${e.message}", e)
         }
+    }
+
+    /**
+     * Повышает уровень готовых подписей, не подписывая заново.
+     *
+     * Ключ не нужен: всё, что добавляют уровни выше B, живёт в неподписанных
+     * свойствах. Поднимаются все подписи документа сразу — уровень документа
+     * определяется слабейшей.
+     */
+    fun extend(request: XadesExtendRequest): XadesResponse {
+        return try {
+            val document = DocumentWrapper(request.xml)
+            val provider = kalkanWrapper.kalkanProvider
+            val signatures = signatureElements(document)
+            if (signatures.isEmpty()) {
+                throw NoSignaturesFoundException("XML document contains no signatures")
+            }
+
+            val current = signatures.minOfOrNull { element ->
+                XadesInspector.inspect(
+                    element,
+                    XMLSignatureWrapper(element).certificate?.x509Certificate,
+                    provider,
+                ).level.ordinal
+            }?.let { AdesLevel.entries[it] }
+            if (current != null && current.isAtLeast(request.level)) {
+                throw ClientException(
+                    "Signature is already at level $current, nothing to extend to ${request.level}",
+                )
+            }
+
+            for (element in signatures) {
+                extendSignature(document, element, request.level, request.tsaPolicy)
+            }
+
+            XadesResponse(xml = document.toString(), level = request.level)
+        } catch (e: ApplicationException) {
+            throw e
+        } catch (e: Exception) {
+            throw ServerException("Error extending XAdES: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Достраивает одной подписи то, чего ей не хватает до [level].
+     *
+     * Уже имеющееся не трогаем: чужую метку времени нельзя ни заменить, ни
+     * продублировать — она свидетельствует о моменте, которого мы не наблюдали.
+     */
+    private fun extendSignature(
+        document: DocumentWrapper,
+        signatureElement: Element,
+        level: AdesLevel,
+        tsaPolicy: TsaPolicy?,
+    ) {
+        val certificate = XMLSignatureWrapper(signatureElement).certificate?.x509Certificate
+            ?: throw ClientException("Signature has no certificate in KeyInfo")
+        val qualifyingProperties = qualifyingPropertiesOf(signatureElement)
+            ?: throw ClientException("Signature has no XAdES qualifying properties and cannot be extended")
+
+        val facts = XadesInspector.inspect(signatureElement, certificate, kalkanWrapper.kalkanProvider)
+
+        if (level.isAtLeast(AdesLevel.T) && !facts.level.isAtLeast(AdesLevel.T)) {
+            appendSignatureTimeStamp(signatureElement, qualifyingProperties, certificate, tsaPolicy)
+        }
+        if (level.isAtLeast(AdesLevel.LT) && !facts.level.isAtLeast(AdesLevel.LT)) {
+            appendValidationData(document.document, qualifyingProperties, certificate)
+        }
+        if (level.isAtLeast(AdesLevel.LTA)) {
+            appendArchiveTimeStamp(signatureElement, qualifyingProperties, certificate, tsaPolicy)
+        }
+    }
+
+    private fun qualifyingPropertiesOf(signatureElement: Element): Element? {
+        val nodes = signatureElement.getElementsByTagNameNS(
+            XadesQualifyingProperties.XADES_NAMESPACE,
+            "QualifyingProperties",
+        )
+        return nodes.item(0) as? Element
     }
 
     /**
