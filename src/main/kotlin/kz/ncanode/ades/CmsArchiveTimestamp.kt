@@ -80,6 +80,11 @@ object CmsArchiveTimestamp {
      * содержимого, поля `SignerInfo` **кроме неподписанных атрибутов** и
      * значение индекса.
      *
+     * [content] передаётся явно, а не берётся из `cms.signedContent`: у
+     * отсоединённой подписи содержимого в контейнере нет вовсе, и молчаливая
+     * подстановка пустого массива дала бы метку, которая сходится только у нас
+     * самих — свой же неверный расчёт мы повторили бы и при проверке.
+     *
      * Неподписанные атрибуты исключаются намеренно — именно в них попадёт сама
      * эта метка, и включение их сделало бы расчёт рекурсивным.
      */
@@ -89,14 +94,13 @@ object CmsArchiveTimestamp {
         digestOid: String,
         hashIndex: Attribute,
         provider: Provider,
+        content: ByteArray,
     ): ByteArray {
         val signedData = signedDataOf(cms)
         val digest = digester(digestOid, provider)
         val out = ByteArrayOutputStream()
 
         out.write(signedData.encapContentInfo.contentType.getDEREncoded())
-
-        val content = cms.signedContent?.content as? ByteArray ?: ByteArray(0)
         out.write(digest(content))
 
         val signerInfo = rawSignerInfo(signedData, signer)
@@ -173,15 +177,35 @@ object CmsArchiveTimestamp {
         return hashes
     }
 
-    /** Исходный `SignerInfo` этого подписанта — по совпадению SID. */
+    /**
+     * Исходный `SignerInfo` этого подписанта.
+     *
+     * Одного SID мало: он состоит из издателя и серийного номера сертификата,
+     * а один человек может подписать документ дважды — своим единственным
+     * ключом, «за себя и как руководитель». Тогда SID у подписей совпадает, и
+     * поиск по нему выдаёт обоим первый попавшийся `SignerInfo`. Метка,
+     * посчитанная не над тем `SignerInfo`, у нас же и сойдётся (ошибку мы
+     * повторим при проверке), а внешний проверяющий её отвергнет.
+     *
+     * Поэтому различаем по значению подписи: оно уникально даже у одного
+     * ключа над одним содержимым.
+     */
     private fun rawSignerInfo(signedData: SignedData, signer: SignerInformation): ASN1Sequence {
-        val wanted = signer.toSignerInfo().sid.getDERObject().getDEREncoded()
+        val wantedSid = signer.toSignerInfo().sid.getDERObject().getDEREncoded()
+        val wantedSignature = signer.signature
         val signerInfos = signedData.signerInfos
+
+        var sameSid: ASN1Sequence? = null
         for (index in 0 until signerInfos.size()) {
             val candidate = signerInfos.getObjectAt(index).getDERObject() as ASN1Sequence
-            val sid = SignerInfo.getInstance(candidate).sid.getDERObject().getDEREncoded()
-            if (sid.contentEquals(wanted)) return candidate
+            val info = SignerInfo.getInstance(candidate)
+            if (!info.sid.getDERObject().getDEREncoded().contentEquals(wantedSid)) continue
+            if (info.encryptedDigest.octets.contentEquals(wantedSignature)) return candidate
+            if (sameSid == null) sameSid = candidate
         }
-        throw ServerException("SignerInfo not found while building the archive timestamp")
+
+        // Единственный кандидат по SID — берём его: значение подписи могло не
+        // сойтись из-за особенностей перекодировки, а не из-за путаницы.
+        return sameSid ?: throw ServerException("SignerInfo not found while building the archive timestamp")
     }
 }

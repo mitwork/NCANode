@@ -8,6 +8,7 @@ import io.kotest.matchers.ints.shouldBeGreaterThanOrEqual
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import kz.gov.pki.kalkan.asn1.ASN1Sequence
 import kz.gov.pki.kalkan.asn1.ASN1TaggedObject
@@ -71,6 +72,14 @@ class CadesServiceIntegrationTest(
 
     val kalkanWrapper = KalkanWrapper(KalkanProvider())
     val payload = Base64.getEncoder().encodeToString("CAdES compatibility payload".toByteArray())
+
+    val provider = kalkanWrapper.kalkanProvider
+
+    /** Встречается ли [needle] внутри [haystack] — как подстрока в строке. */
+    fun containsBytes(haystack: ByteArray, needle: ByteArray): Boolean =
+        (0..haystack.size - needle.size).any { start ->
+            needle.indices.all { haystack[start + it] == needle[it] }
+        }
 
     fun signer(): SignerRequest = SignerRequest().apply {
         key = TestResources.loadAsBase64("p12/individual_valid.p12")
@@ -349,7 +358,9 @@ class CadesServiceIntegrationTest(
 
         val digestOid = getTspHashAlgorithmByOid(signerCertificate.sigAlgOID)
         val recomputed = MessageDigest.getInstance(digestOid, provider).digest(
-            CmsArchiveTimestamp.imprintInput(cms, signer, digestOid, hashIndex, provider),
+            CmsArchiveTimestamp.imprintInput(
+            cms, signer, digestOid, hashIndex, provider, Base64.getDecoder().decode(payload),
+        ),
         )
         recomputed.contentEquals(token.timeStampInfo.messageImprintDigest) shouldBe true
     }
@@ -592,6 +603,82 @@ class CadesServiceIntegrationTest(
     test("coSign without a container is a client error") {
         shouldThrow<ClientException> {
             cadesService.coSign(CadesSignRequest().apply { signers = listOf(signer()) })
+        }
+    }
+
+    test("archive timestamp of a co-signer is built over its own SignerInfo") {
+        // Один и тот же ключ подписывает дважды — «за себя и как руководитель».
+        // SID у таких подписей совпадает, и поиск SignerInfo по нему выдавал бы
+        // обеим первую. Метка, посчитанная не над своим SignerInfo, у нас же и
+        // сойдётся (ту же ошибку повторит проверка), а чужой валидатор её
+        // отвергнет — что и произошло на живом NCALayer.
+        val first = cadesService.sign(request()).cms.shouldNotBeNull()
+        val both = cadesService.coSign(
+            CadesSignRequest().apply {
+                cms = first
+                signers = listOf(signer())
+            },
+        ).cms.shouldNotBeNull()
+
+        val cms = CMSSignedData(Base64.getDecoder().decode(both))
+        val signers = cms.signerInfos.signers.map { it as SignerInformation }
+        signers.size shouldBe 2
+        // Ключ один — значит и SID один на двоих, иначе тест ничего не ловит.
+        signers.map { it.sid.serialNumber }.toSet().size shouldBe 1
+
+        val digestOid = getTspHashAlgorithmByOid(signerCertificate.sigAlgOID)
+        signers.forEach { signerInfo ->
+            val hashIndex = CmsArchiveTimestamp.hashIndex(cms, signerInfo, digestOid, provider)
+            val input = CmsArchiveTimestamp.imprintInput(
+                cms, signerInfo, digestOid, hashIndex, provider, Base64.getDecoder().decode(payload),
+            )
+            // В расчёт метки должно попасть значение подписи ИМЕННО этого
+            // подписанта — по нему и различаются одноимённые SignerInfo.
+            containsBytes(input, signerInfo.signature) shouldBe true
+        }
+    }
+
+    test("archive timestamp of a detached signature covers the real content") {
+        // У отсоединённой подписи содержимого в контейнере нет. Если подставить
+        // вместо него пустоту, метка сойдётся только у нас: свой же неверный
+        // расчёт мы повторим и при проверке. Внешний проверяющий, у которого
+        // данные есть, её отвергнет — так и произошло на живом NCALayer.
+        val signed = cadesService.sign(request(level = AdesLevel.LTA, detached = true)).cms.shouldNotBeNull()
+        val data = Base64.getDecoder().decode(payload)
+
+        val cms = CMSSignedData(CMSProcessableByteArray(data), Base64.getDecoder().decode(signed))
+        val signerInfo = cms.signerInfos.signers.first() as SignerInformation
+
+        val archive = signerInfo.unsignedAttributes.shouldNotBeNull()
+            .get(CmsArchiveTimestamp.ARCHIVE_TIMESTAMP_V3).shouldNotBeNull()
+        val token = CMSSignedData(archive.attrValues.getObjectAt(0).getDERObject().getDEREncoded())
+        val hashIndex = (token.signerInfos.signers.first() as SignerInformation)
+            .unsignedAttributes.shouldNotBeNull().get(CmsArchiveTimestamp.ATS_HASH_INDEX_V3).shouldNotBeNull()
+
+        // Пересчитываем imprint так, как это сделает сторонний проверяющий:
+        // по настоящим данным, которые он получил отдельным файлом.
+        val digestOid = getTspHashAlgorithmByOid(signerCertificate.sigAlgOID)
+        val input = CmsArchiveTimestamp.imprintInput(cms, signerInfo, digestOid, hashIndex, provider, data)
+        tspService.verify(token, input, false, false).shouldNotBeNull()
+
+        val result = cadesService.verify(
+            CadesVerifyRequest().apply {
+                this.cms = signed
+                this.data = payload
+                revocationCheck = setOf(CertificateRevocation.OCSP, CertificateRevocation.CRL)
+            },
+        )
+        result.valid shouldBe true
+        result.verifiedLevel shouldBe AdesLevel.LTA
+    }
+
+    test("detached signature without the data is a client error, not a verdict") {
+        // Пересчитать нечего — ни подпись, ни метку. Отвечать «недействительна»
+        // было бы неправдой: мы не проверили, а не проверили и отвергли.
+        val signed = cadesService.sign(request(level = AdesLevel.LTA, detached = true)).cms.shouldNotBeNull()
+
+        shouldThrow<ClientException> {
+            cadesService.verify(CadesVerifyRequest().apply { this.cms = signed })
         }
     }
 })

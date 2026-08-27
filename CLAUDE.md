@@ -19,7 +19,7 @@
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
 - **Состояние v4:** functional + 256 тестов / **82% coverage**
-  (на `feature/ades-levels` — 339 тестов / **85%**).
+  (на `feature/ades-levels` — 342 теста / **85%**).
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -110,6 +110,13 @@ partial-response (per-item status + payload):
 | CAdES | `/cades/sign`, `/cades/verify` | `CmsService` |
 | XAdES | `/xades/sign`, `/xades/verify` | `XmlService` |
 | PAdES | `/pades/sign`, `/pades/verify` | `PdfService` |
+
+⚠️ Архивная метка CAdES: содержимое передаётся в `imprintInput` **явно**
+(у detached его в контейнере нет — раньше в расчёт уходил хэш пустоты), а
+`SignerInfo` ищется по значению подписи, а не по SID (у двух подписей одним
+ключом SID одинаков). Обе ошибки своей же проверкой не ловились — она
+повторяла тот же расчёт; нашлись на живом валидаторе NCALayer. Многоподписный
+XAdES с ним пока несовместим, см. `ades-levels-plan.md`.
 
 Доподписание (подписант «вторым по маршруту»): для XAdES и PAdES — подать
 подписанный документ на подпись снова, для CAdES — `PATCH /cades/sign`

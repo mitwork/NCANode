@@ -90,7 +90,7 @@ class CadesService(
                 KalkanProvider.PROVIDER_NAME,
             )
 
-            signed = applyLevel(signed, certificates, level, request.tsaPolicy)
+            signed = applyLevel(signed, certificates, level, request.tsaPolicy, data)
 
             CadesResponse(
                 cms = Base64.getEncoder().encodeToString(signed.encoded),
@@ -168,6 +168,7 @@ class CadesService(
                 signerCertificates(signed),
                 request.level,
                 request.tsaPolicy,
+                content,
                 carried = CmsValidationData.extract(cmsBytes),
             )
 
@@ -266,8 +267,13 @@ class CadesService(
             verifiedBySerial[wrapper.x509Certificate.serialNumber] = answered
         }
 
+        // Для отсоединённой подписи содержимое приносит клиент — без него
+        // архивную метку пересчитать не над чем.
+        val content = cms.signedContent?.content as? ByteArray
+            ?: request.data?.let { decodeData(it) }
+
         val archiveVerified = signers.mapIndexed { index, signer ->
-            index to archiveTimestampsValid(cms, signer, request.checkOcsp, request.checkCrl)
+            index to archiveTimestampsValid(cms, signer, request.checkOcsp, request.checkCrl, content)
         }.toMap()
 
         val verified = base.signers.mapIndexed { index, info ->
@@ -366,10 +372,16 @@ class CadesService(
         signer: SignerInformation,
         checkOcsp: Boolean,
         checkCrl: Boolean,
+        content: ByteArray?,
     ): Boolean = try {
         val provider = kalkanWrapper.kalkanProvider
         val archives = signer.unsignedAttributes?.getAll(CmsArchiveTimestamp.ARCHIVE_TIMESTAMP_V3)
-        if (archives == null || archives.size() == 0) {
+        if (content == null) {
+            // Отсоединённая подпись без данных: пересчитать imprint не над чем,
+            // а объявлять метку проверенной на основании пустоты нельзя.
+            log.warn("Cannot verify the archive timestamp: the detached content was not provided")
+            false
+        } else if (archives == null || archives.size() == 0) {
             false
         } else {
             (0 until archives.size()).all { index ->
@@ -386,7 +398,8 @@ class CadesService(
                     val digestOid = getTspHashAlgorithmByOid(
                         signerCertificateOf(cms, signer)?.sigAlgOID ?: return@all false,
                     )
-                    val input = CmsArchiveTimestamp.imprintInput(cms, signer, digestOid, hashIndex, provider)
+                    val input =
+                        CmsArchiveTimestamp.imprintInput(cms, signer, digestOid, hashIndex, provider, content)
                     tspService.verify(tokenCms, input, checkOcsp, checkCrl) != null
                 }
             }
@@ -452,6 +465,7 @@ class CadesService(
         certificates: List<X509Certificate>,
         level: AdesLevel,
         tsaPolicy: TsaPolicy?,
+        content: ByteArray,
         carried: CmsValidationData.Embedded? = null,
     ): CMSSignedData {
         var result = signed
@@ -464,7 +478,7 @@ class CadesService(
             result = CmsValidationData.embed(result, emptyList(), carried.crls, carried.ocspResponses)
         }
         if (level.isAtLeast(AdesLevel.LTA)) {
-            result = addArchiveTimestamps(result, tsaPolicy)
+            result = addArchiveTimestamps(result, tsaPolicy, content)
         }
         return result
     }
@@ -513,7 +527,11 @@ class CadesService(
      * ничего не добавит: индекс `ATSHashIndex-v3` перечисляет то, что метка
      * покрыла, и появление нового подписанта его не ломает.
      */
-    private fun addArchiveTimestamps(signed: CMSSignedData, tsaPolicy: TsaPolicy?): CMSSignedData {
+    private fun addArchiveTimestamps(
+        signed: CMSSignedData,
+        tsaPolicy: TsaPolicy?,
+        content: ByteArray,
+    ): CMSSignedData {
         val policyId = (tsaPolicy ?: TsaPolicy.TSA_GOST2015_POLICY).policyId
         val provider = kalkanWrapper.kalkanProvider
 
@@ -526,7 +544,8 @@ class CadesService(
             } else {
                 val digestOid = getTspHashAlgorithmByOid(certificate.sigAlgOID)
                 val hashIndex = CmsArchiveTimestamp.hashIndex(signed, signer, digestOid, provider)
-                val imprintInput = CmsArchiveTimestamp.imprintInput(signed, signer, digestOid, hashIndex, provider)
+                val imprintInput =
+                    CmsArchiveTimestamp.imprintInput(signed, signer, digestOid, hashIndex, provider, content)
                 val token = tspService.create(imprintInput, digestOid, policyId)
                 CmsArchiveTimestamp.attach(signer, CmsArchiveTimestamp.embedHashIndex(token, hashIndex))
             }
