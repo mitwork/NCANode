@@ -20,7 +20,10 @@ class XadesSignBatchRequest {
     /** Требуемый уровень подписи. По умолчанию базовый. */
     var level: AdesLevel = AdesLevel.B
 
-    /** Размещение подписи. Реализовано вкладывание подписи в документ. */
+    /**
+     * Размещение подписи: `ENVELOPED` — подпись внутри документа,
+     * `ENVELOPING` — документ внутри подписи (один подписант).
+     */
     var packaging: SignaturePackaging = SignaturePackaging.ENVELOPED
 
     /** Политика TSA; применяется начиная с уровня T. */

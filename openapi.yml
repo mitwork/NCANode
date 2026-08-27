@@ -1729,6 +1729,8 @@ components:
           type: string
         coversWholeDocument:
           type: boolean
+        documentTimestamp:
+          type: boolean
         valid:
           type: boolean
     PdfVerificationResponse:
