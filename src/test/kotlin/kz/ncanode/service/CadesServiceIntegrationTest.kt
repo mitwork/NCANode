@@ -10,12 +10,17 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
+import kz.gov.pki.kalkan.asn1.ASN1Object
+import kz.gov.pki.kalkan.asn1.ASN1Set
+import kz.gov.pki.kalkan.asn1.DEROctetString
 import kz.gov.pki.kalkan.asn1.ASN1Sequence
 import kz.gov.pki.kalkan.asn1.ASN1TaggedObject
 import kz.gov.pki.kalkan.asn1.DERObjectIdentifier
 import kz.gov.pki.kalkan.asn1.ASN1EncodableVector
 import kz.gov.pki.kalkan.asn1.cms.Attribute
 import kz.gov.pki.kalkan.asn1.cms.AttributeTable
+import kz.gov.pki.kalkan.asn1.cms.ContentInfo
+import kz.gov.pki.kalkan.asn1.cms.SignedData
 import kz.gov.pki.kalkan.asn1.cms.CMSAttributes
 import kz.gov.pki.kalkan.asn1.ess.SigningCertificateV2
 import kz.gov.pki.kalkan.asn1.pkcs.PKCSObjectIdentifiers
@@ -679,6 +684,60 @@ class CadesServiceIntegrationTest(
 
         shouldThrow<ClientException> {
             cadesService.verify(CadesVerifyRequest().apply { this.cms = signed })
+        }
+    }
+
+    test("ATSHashIndex of every signer matches the final container") {
+        // Внешний проверяющий сверяет индекс архивной метки с тем, что реально
+        // лежит в контейнере. Если после расчёта метки контейнер изменился —
+        // например, пересобрался при подстановке подписантов — индекс начнёт
+        // ссылаться на то, чего уже нет, и метка будет отвергнута. Своя
+        // проверка этого не ловит: она берёт индекс из самой метки.
+        val first = cadesService.sign(request(level = AdesLevel.LTA)).cms.shouldNotBeNull()
+        val both = cadesService.coSign(
+            CadesSignRequest().apply {
+                cms = first
+                signers = listOf(signer())
+                level = AdesLevel.LTA
+            },
+        ).cms.shouldNotBeNull()
+
+        val bytes = Base64.getDecoder().decode(both)
+        val signedData = SignedData.getInstance(
+            ContentInfo.getInstance(ASN1Object.fromByteArray(bytes)).content,
+        )
+        val present = mutableListOf<ByteArray>()
+        fun collect(set: ASN1Set?) {
+            if (set == null) return
+            for (index in 0 until set.size()) {
+                present.add(set.getObjectAt(index).getDERObject().getDEREncoded())
+            }
+        }
+        collect(signedData.certificates)
+        collect(signedData.getCRLs())
+
+        val signers = CMSSignedData(bytes).signerInfos.signers.map { it as SignerInformation }
+        signers.forEach { signerInfo ->
+            val archive = signerInfo.unsignedAttributes.shouldNotBeNull()
+                .get(CmsArchiveTimestamp.ARCHIVE_TIMESTAMP_V3).shouldNotBeNull()
+            val token = CMSSignedData(archive.attrValues.getObjectAt(0).getDERObject().getDEREncoded())
+            val hashIndex = (token.signerInfos.signers.first() as SignerInformation)
+                .unsignedAttributes.shouldNotBeNull().get(CmsArchiveTimestamp.ATS_HASH_INDEX_V3).shouldNotBeNull()
+
+            val index = ASN1Sequence.getInstance(hashIndex.attrValues.getObjectAt(0))
+            val digestOid = AlgorithmIdentifier.getInstance(index.getObjectAt(0)).objectId.id
+            val digest = MessageDigest.getInstance(digestOid, provider)
+
+            // certificatesHashIndex и crlsHashIndex — каждый хэш обязан
+            // соответствовать элементу, который в контейнере есть.
+            listOf(1, 2).forEach { position ->
+                val hashes = ASN1Sequence.getInstance(index.getObjectAt(position))
+                for (i in 0 until hashes.size()) {
+                    val wanted = (hashes.getObjectAt(i).getDERObject() as DEROctetString).octets
+                    val found = present.any { digest.digest(it).contentEquals(wanted) }
+                    found shouldBe true
+                }
+            }
         }
     }
 })
