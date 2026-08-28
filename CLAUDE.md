@@ -11,15 +11,15 @@
   - `feature/ades-levels` — CAdES/XAdES/PAdES уровней B/T/LT/LTA под
     обновлённый NCALayer. Подписание и проверка готовы, осталось batch и
     сверка на эталонных подписях НУЦ. План — `ades-levels-plan.md`,
-    quirk #34.
+    quirk #38.
   - `perf/crl-memory` — экономия памяти на CRL (mmap-индекс, cap на размер,
     LRU для on-demand). PR #11 в `v4`.
 - **Параллельная ветка:** `improvements` — Java версия с теми же
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 256 тестов / **82% coverage**
-  (на `feature/ades-levels` — 342 теста / **85%**).
+- **Состояние v4:** functional + 384 теста / **86% coverage**
+  (после вливания `feature/ades-levels`).
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -46,7 +46,7 @@ Build clean (zero warnings). `./gradlew bootJar` зелёный.
 ```
 src/main/kotlin/kz/ncanode/
   NCANode.kt                  ← @SpringBootApplication + main + banner
-  ades/                       ← машинерия AdES-форматов (без Spring), quirk #34
+  ades/                       ← машинерия AdES-форматов (без Spring), quirk #38
   configuration/              ← @Configuration beans + RequestLoggingFilter
     crl/                      ← CrlConfiguration interface + 2 наследника
   constants/MessageConstants  ← object с const val (error message keys)
@@ -982,7 +982,7 @@ UNKNOWN — по разделению quirk #28 пригодного ответ�
 это тот же вызов): попутно пустое тело больше не превращается в пустой файл на
 диске. Итоговое поведение то же — `downloadCert` вернёт null и `checkCertForNull`
 остановит приложение, — но без порчи кэша.
-### 35. AdES-уровни: три вещи, которые стоили времени
+### 38. AdES-уровни: три вещи, которые стоили времени
 Полная картина — `ades-levels-plan.md`. Здесь то, что можно наступить снова.
 
 - **`/xml/verify` не проверял НИ ОДНУ XAdES-подпись** — и это баг старого
@@ -1018,7 +1018,7 @@ AdES-часть берёт только из боевого набора, а B �
 разрешаются; и путь вида `/cms/*` внутри KDoc открывает вложенный комментарий
 («Unclosed comment»).
 
-### 35. `@Valid` на списках: `List<@Valid X>` + флаг компилятора
+### 39. `@Valid` на списках: `List<@Valid X>` + флаг компилятора
 Hibernate Validator ругается на `@Valid` над самим списком (HV000271,
 устаревшая форма) и требует аннотацию на аргументе типа. Но Kotlin **не пишет
 аннотации аргументов типа в байткод** без `-Xemit-jvm-type-annotations` — с
@@ -1026,7 +1026,7 @@ Hibernate Validator ругается на `@Valid` над самим списк�
 проходит без валидации (`ExceptionHandlingMvcTest` это ловит: 500 вместо 400).
 Флаг добавлен в `build.gradle.kts`, все DTO переведены на `List<@Valid X>`.
 
-### 36. `/DocTimeStamp` проверяется как метка, а не как подпись
+### 40. `/DocTimeStamp` проверяется как метка, а не как подпись
 `PdfService.verify` перебирает `document.signatureDictionaries`, куда попадают
 и документные метки времени. Раньше метка шла общим CMS-путём и падала с
 `content hash found in signed attributes different`: в её `/Contents` лежит
@@ -1038,7 +1038,7 @@ Hibernate Validator ругается на `@Valid` над самим списк�
 `PadesService` берёт вердикт по меткам оттуда же — второй разбор документа
 не нужен.
 
-### 37. `NoClassDefFoundError: ThrowableProxy` при Ctrl+C
+### 41. `NoClassDefFoundError: ThrowableProxy` при Ctrl+C
 Симптом: при остановке приложения из терминала иногда падает
 `Exception in thread "SpringApplicationShutdownHook"
 java.lang.NoClassDefFoundError: ch/qos/logback/classic/spi/ThrowableProxy`.

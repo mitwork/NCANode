@@ -54,6 +54,15 @@ class CrlServiceTest : FunSpec({
     }
 
     val gostCrlFull: CrlIndex = indexOf("nca_gost2022_test.crl")
+
+    /**
+     * Тот же список, но разобранный: вшитый в подпись материал приходит
+     * объектами `X509CRL`, а не файлами, — индекса под него нет.
+     */
+    val gostCrlParsed: java.security.cert.X509CRL =
+        java.security.cert.CertificateFactory.getInstance("X.509")
+            .generateCRL(TestResources.loadBytes("crl/nca_gost2022_test.crl").inputStream())
+                as java.security.cert.X509CRL
     val gostCrlDelta: CrlIndex = indexOf("nca_gost2022_d_test.crl")
 
     // Индекс-заглушка: издатель совпадает, критичных расширений нет, ничего не
@@ -493,9 +502,9 @@ class CrlServiceTest : FunSpec({
             TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
         )
         val cert = ks.certificate.apply { issuerCertificate = issuerWrapper() }
-        val inside = Date(gostCrlFull.thisUpdate.time + 1000)
+        val inside = Date(gostCrlParsed.thisUpdate.time + 1000)
 
-        val status = buildService().statusOf(cert, listOf(gostCrlFull), inside)
+        val status = buildService().statusOf(cert, listOf(gostCrlParsed), inside)
         status.result shouldBe CrlResult.ACTIVE
         status.fresh shouldBe true
     }
@@ -509,7 +518,7 @@ class CrlServiceTest : FunSpec({
         )
         val cert = ks.certificate.apply { issuerCertificate = issuerWrapper() }
 
-        buildService().statusOf(cert, listOf(gostCrlFull), Date()).result shouldBe CrlResult.UNAVAILABLE
+        buildService().statusOf(cert, listOf(gostCrlParsed), Date()).result shouldBe CrlResult.UNAVAILABLE
     }
 
     test("embedded CRL is rejected when its signature does not verify") {
@@ -525,9 +534,9 @@ class CrlServiceTest : FunSpec({
                 as java.security.cert.X509Certificate,
         )
         val cert = ks.certificate.apply { issuerCertificate = foreignIssuer }
-        val inside = Date(gostCrlFull.thisUpdate.time + 1000)
+        val inside = Date(gostCrlParsed.thisUpdate.time + 1000)
 
-        buildService().statusOf(cert, listOf(gostCrlFull), inside).result shouldBe CrlResult.UNAVAILABLE
+        buildService().statusOf(cert, listOf(gostCrlParsed), inside).result shouldBe CrlResult.UNAVAILABLE
     }
 
     test("verify() returns ACTIVE for cert from different CA (CRL issuer mismatch)") {
