@@ -27,7 +27,6 @@ import java.math.BigInteger
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.security.GeneralSecurityException
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
@@ -246,13 +245,16 @@ class TspService(
             .build()
 
         try {
-            val response = client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray())
-            val statusCode = response.statusCode()
+            // Ответ читается под потолком `ncanode.http-client.maxResponseSizeKb`:
+            // TSP-токен — единицы килобайт, а неограниченное чтение в кучу
+            // делает нас заложником поведения чужого сервера.
+            val response = httpClientConfiguration.sendBounded(client, httpRequest)
+            val statusCode = response.statusCode
             if (statusCode != 200) {
                 log.error("Invalid TSP response status: {}", statusCode)
                 throw TspException("Invalid TSP response status: $statusCode")
             }
-            return TimeStampResponse(ByteArrayInputStream(response.body()))
+            return TimeStampResponse(ByteArrayInputStream(response.body))
         } catch (e: IOException) {
             throw TspException("TSP request failure.", e)
         } catch (e: InterruptedException) {

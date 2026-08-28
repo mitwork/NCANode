@@ -14,6 +14,8 @@ ncanode:
     cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
     warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:true}
     strict: ${NCANODE_CRL_STRICT:false}
+    maxSizeMb: ${NCANODE_CRL_MAX_SIZE_MB:64}
+    onDemandMaxEntries: ${NCANODE_CRL_ONDEMAND_MAX:64}
     ttl: ${NCANODE_CRL_TTL:1440}
     url: ${NCANODE_CRL_URL:http://crl.pki.gov.kz/nca_rsa_2022.crl http://crl.pki.gov.kz/nca_gost_2022.crl}
     delta:
@@ -22,6 +24,7 @@ ncanode:
   http-client:
     connectTimeout: ${NCANODE_HTTP_CLIENT_CONNECT_TIMEOUT:5}
     requestTimeout: ${NCANODE_HTTP_CLIENT_REQUEST_TIMEOUT:30}
+    maxResponseSizeKb: ${NCANODE_HTTP_CLIENT_MAX_RESPONSE_KB:1024}
     userAgent: ${NCANODE_HTTP_CLIENT_USER_AGENT:}
     proxy:
       url: ${NCANODE_PROXY_URL:}
@@ -39,6 +42,8 @@ ncanode:
       cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
       warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:false}
       strict: ${NCANODE_CRL_STRICT:false}
+      maxSizeMb: ${NCANODE_CRL_MAX_SIZE_MB:64}
+      onDemandMaxEntries: ${NCANODE_CRL_ONDEMAND_MAX:64}
       ttl: ${NCANODE_CA_CRL_TTL:1440}
       url: ${NCANODE_CA_CRL_URL:http://crl.root.gov.kz/gost.crl http://crl.root.gov.kz/rsa.crl http://crl.root.gov.kz/gost2015_2022.crl http://crl.root.gov.kz/rsa2020.crl}
       delta:

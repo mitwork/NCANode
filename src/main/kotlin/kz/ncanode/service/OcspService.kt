@@ -27,7 +27,6 @@ import java.net.URI
 import java.net.URL
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.security.GeneralSecurityException
 import java.security.NoSuchProviderException
 import java.security.SecureRandom
@@ -334,13 +333,22 @@ class OcspService(
         return null
     }
 
+    /**
+     * Отправляет OCSP-запрос и читает ответ под потолком
+     * `ncanode.http-client.maxResponseSizeKb`.
+     *
+     * Потолок здесь не формальность: в нестрогом режиме адрес респондера
+     * берётся из AIA проверяемого сертификата, то есть его выбирает автор
+     * сертификата. Превышение приходит как [IOException] и классифицируется
+     * вызывающим как UNAVAILABLE — пригодного ответа мы не получили.
+     */
     @Throws(IOException::class, InterruptedException::class)
     private fun makeRequest(url: String, data: ByteArray): ByteArray {
         val httpRequest = httpClientConfiguration.requestBuilder(URI(url))
             .header("Content-Type", "application/ocsp-request")
             .POST(HttpRequest.BodyPublishers.ofByteArray(data))
             .build()
-        return client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray()).body()
+        return httpClientConfiguration.sendBounded(client, httpRequest).body
     }
 
     private fun unknownStatus(url: String? = null, message: String?): OcspStatus =
