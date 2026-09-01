@@ -713,7 +713,7 @@ open class CrlService(
                     continue
                 }
 
-                downloadCrl(cacheDirectory, url)
+                downloadCrlWithRetries(cacheDirectory, url, crlConfiguration.retries)
                 updatedCount++
             }
 
@@ -887,22 +887,68 @@ open class CrlService(
     }
 
     /**
-     * Скачивает CRL файл в директорию.
+     * Скачивает CRL файл в директорию. Одна попытка — для загрузки по ссылке
+     * из сертификата, которая идёт внутри проверки подписи.
      */
     fun downloadCrl(cacheDirName: String, url: URL) {
         try {
-            val crlUrl = url.toString()
-            val crlFileName = sha1(crlUrl) + CRL_FILE_EXTENSION
-
-            log.info("Downloading CRL file from: {}", crlUrl)
-            val downloadedFile = download(crlUrl, getCrlCacheFilePathFor(cacheDirName, crlFileName).toPath())
-            log.info(
-                "CRL file \"{}\" successfully downloaded. Size: {} bytes",
-                crlFileName, downloadedFile.length(),
-            )
+            downloadCrlOrThrow(cacheDirName, url)
         } catch (e: CrlException) {
             log.error("CRL File download failure", e.cause)
         }
+    }
+
+    /**
+     * То же, но с повторами — для планового обновления кэша.
+     *
+     * Хост НУЦ через раз не отвечает вовсе: соединение уходит в пустоту и
+     * обрывается по таймауту, тогда как следующая попытка проходит за
+     * миллисекунды. Расплата за единственную неудачу непропорциональна —
+     * список остаётся прежним до следующего срабатывания расписания, то есть
+     * на весь TTL (у CA-CRL это сутки).
+     *
+     * Повторяем только здесь: загрузку по ссылке из сертификата ждёт клиент,
+     * и лишние попытки растянули бы ему ответ.
+     */
+    fun downloadCrlWithRetries(cacheDirName: String, url: URL, attempts: Int) {
+        val total = attempts.coerceAtLeast(1)
+        for (attempt in 1..total) {
+            try {
+                downloadCrlOrThrow(cacheDirName, url)
+                return
+            } catch (e: CrlException) {
+                if (attempt == total) {
+                    log.error("CRL File download failure", e.cause)
+                    return
+                }
+                log.warn(
+                    "CRL download from {} failed (attempt {} of {}): {} — retrying",
+                    url, attempt, total, e.cause?.message ?: e.message,
+                )
+                if (!pauseBeforeRetry(attempt)) return
+            }
+        }
+    }
+
+    /** Пауза перед повтором. `false` — нас остановили, повторять не нужно. */
+    private fun pauseBeforeRetry(attempt: Int): Boolean = try {
+        Thread.sleep(RETRY_BACKOFF_MS * attempt)
+        true
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        false
+    }
+
+    internal open fun downloadCrlOrThrow(cacheDirName: String, url: URL) {
+        val crlUrl = url.toString()
+        val crlFileName = sha1(crlUrl) + CRL_FILE_EXTENSION
+
+        log.info("Downloading CRL file from: {}", crlUrl)
+        val downloadedFile = download(crlUrl, getCrlCacheFilePathFor(cacheDirName, crlFileName).toPath())
+        log.info(
+            "CRL file \"{}\" successfully downloaded. Size: {} bytes",
+            crlFileName, downloadedFile.length(),
+        )
     }
 
     /**
@@ -1007,6 +1053,9 @@ open class CrlService(
     }
 
     companion object {
+        /** База паузы между попытками: 1-я — 1 с, 2-я — 2 с. */
+        private const val RETRY_BACKOFF_MS = 1000L
+
         private val log = LoggerFactory.getLogger(CrlService::class.java)
         const val CRL_DEFAULT = "default"
         const val CRL_CA = "ca-crl"

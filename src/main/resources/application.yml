@@ -14,6 +14,7 @@ ncanode:
     cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
     warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:true}
     strict: ${NCANODE_CRL_STRICT:false}
+    retries: ${NCANODE_CRL_RETRIES:3}
     maxSizeMb: ${NCANODE_CRL_MAX_SIZE_MB:64}
     onDemandMaxEntries: ${NCANODE_CRL_ONDEMAND_MAX:64}
     ttl: ${NCANODE_CRL_TTL:1440}
@@ -42,6 +43,7 @@ ncanode:
       cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
       warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:false}
       strict: ${NCANODE_CRL_STRICT:false}
+      retries: ${NCANODE_CRL_RETRIES:3}
       maxSizeMb: ${NCANODE_CRL_MAX_SIZE_MB:64}
       onDemandMaxEntries: ${NCANODE_CRL_ONDEMAND_MAX:64}
       ttl: ${NCANODE_CA_CRL_TTL:1440}

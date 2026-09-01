@@ -18,7 +18,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 384 теста / **86% coverage**
+- **Состояние v4:** functional + 387 тестов / **86% coverage**
   (после вливания `feature/ades-levels`).
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
@@ -1056,6 +1056,19 @@ java.lang.NoClassDefFoundError: ch/qos/logback/classic/spi/ThrowableProxy`.
 когда причина — прерывание потока. Первое проверяемо: с фиксом
 `ch.qos.logback.classic.spi.ThrowableProxy` появляется в `-verbose:class` на
 старте, без фикса — не появляется.
+
+### 42. Плановая загрузка CRL — с повторами, on-demand — без
+`crl.root.gov.kz` через раз не отвечает вовсе: соединение уходит в пустоту и
+обрывается по `connectTimeout` (5 с), при этом соседняя попытка проходит за
+~8 мс — замерено. Расплата за единственную неудачу непропорциональна: список
+остаётся прежним до следующего срабатывания расписания, а у `ca.crl` TTL по
+умолчанию 1440 минут.
+
+Поэтому `downloadCrlWithRetries` (`NCANODE_CRL_RETRIES`, по умолчанию 3, пауза
+1 с × номер попытки) — но **только в плановом обновлении**. Загрузку по CRL DP
+из сертификата ждёт клиент внутри verify, и повторы там растянули бы ответ:
+она осталась однопопыточной (`downloadCrl`). Поднимать `connectTimeout` смысла
+нет — там не «чуть не хватило», там тишина дольше 30 с.
 
 ## Что не покрыто тестами (≈494 lines)
 

@@ -10,6 +10,7 @@ import io.mockk.spyk
 import io.mockk.verify
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
+import kz.ncanode.exception.CrlException
 import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.crl.CrlConfiguration
 import kz.ncanode.crl.CrlIndex
@@ -551,5 +552,49 @@ class CrlServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         buildService().verify(ks.certificate).result shouldBe CrlResult.ACTIVE
+    }
+
+    // ---- повторы при плановой загрузке ----
+
+    test("scheduled download retries after a failure and succeeds") {
+        // Хост НУЦ через раз не отвечает вовсе, а следующая попытка проходит
+        // мгновенно. Без повтора одна такая неудача оставляла бы список
+        // неизменным до следующего срабатывания расписания — сутки для CA-CRL.
+        val service = buildService()
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            if (attempts == 1) throw CrlException("HTTP connect timed out", RuntimeException("timeout"))
+        }
+
+        service.downloadCrlWithRetries("default", java.net.URI("http://crl.example/test.crl").toURL(), 3)
+
+        attempts shouldBe 2
+    }
+
+    test("scheduled download gives up after the configured number of attempts") {
+        val service = buildService()
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            throw CrlException("HTTP connect timed out", RuntimeException("timeout"))
+        }
+
+        service.downloadCrlWithRetries("default", java.net.URI("http://crl.example/test.crl").toURL(), 3)
+
+        attempts shouldBe 3
+    }
+
+    test("on-demand download is not retried: the client is waiting for it") {
+        val service = buildService()
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            throw CrlException("HTTP connect timed out", RuntimeException("timeout"))
+        }
+
+        service.downloadCrl("default", java.net.URI("http://crl.example/test.crl").toURL())
+
+        attempts shouldBe 1
     }
 })
