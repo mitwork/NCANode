@@ -18,7 +18,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 387 тестов / **86% coverage**
+- **Состояние v4:** functional + 391 тест / **86% coverage**
   (после вливания `feature/ades-levels`).
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
@@ -1069,6 +1069,28 @@ java.lang.NoClassDefFoundError: ch/qos/logback/classic/spi/ThrowableProxy`.
 из сертификата ждёт клиент внутри verify, и повторы там растянули бы ответ:
 она осталась однопопыточной (`downloadCrl`). Поднимать `connectTimeout` смысла
 нет — там не «чуть не хватило», там тишина дольше 30 с.
+
+### 43. Отказ TSA и недоступность CA больше не выглядят как сбой сервиса
+Два случая, найденные на живых адресах НУЦ, где чужая недоступность
+превращалась в нашу проблему.
+
+**TSA ответила отказом → `NullPointerException`.** При не-granted статусе
+токена в ответе нет вовсе, а код делал `return response.timeStampToken` —
+Kotlin вставлял null-проверку, и наружу шло
+`ServerException: getTimeStampToken(...) must not be null` без единого намёка
+на причину. Теперь `tokenOf` разбирает `status`/`failInfo`/`statusString`:
+отказ по существу запроса (badAlg, badRequest, badDataFormat,
+unacceptedPolicy, unacceptedExtension) → 400 без повторов, всё остальное →
+500 с повторами. Значения `PKIFailureInfo` — **битовые маски**
+(`badAlg` = 128, а не 0), проверка через `and`.
+
+**Недоступный адрес CA гасил процесс.** `checkCertForNull` звал `System.exit`:
+один неответивший адрес — и сервис выключен, а после перезапуска всё
+повторяется, потому что адрес всё ещё молчит (замерено: `pki.gov.kz` уходит в
+тишину дольше таймаута). Теперь при неудаче берётся прежняя копия из кэша,
+а если её нет — сертификат пропускается; пустой бандл — громкая ошибка в лог,
+но не выход. Побочно это ломало и прогон тестов: `System.exit` из
+`AdesReferenceCompatibilityTest` убивал Gradle-executor (exit 32).
 
 ## Что не покрыто тестами (≈494 lines)
 
