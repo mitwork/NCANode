@@ -2,10 +2,14 @@ package kz.ncanode.controller
 
 import io.swagger.v3.oas.annotations.tags.Tag
 import jakarta.validation.Valid
+import kz.ncanode.dto.request.SbaSignBatchRequest
+import kz.ncanode.dto.request.SbaSignRequest
 import kz.ncanode.dto.request.SbaVerifyBatchRequest
 import kz.ncanode.dto.request.SbaVerifyRequest
 import kz.ncanode.dto.request.X509InfoBatchRequest
 import kz.ncanode.dto.request.X509InfoRequest
+import kz.ncanode.dto.response.SbaSignBatchResponse
+import kz.ncanode.dto.response.SbaSignResponse
 import kz.ncanode.dto.response.SbaVerifyBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.X509InfoBatchResponse
@@ -34,6 +38,18 @@ class X509Controller(private val certificateService: CertificateService) {
     @PostMapping("/info/batch")
     fun infoBatch(@Valid @RequestBody request: X509InfoBatchRequest): ResponseEntity<X509InfoBatchResponse> =
         ResponseEntity.ok(certificateService.infoBatch(request))
+
+    /**
+     * Подпись произвольных данных ключом, без контейнера — парная операция к
+     * `/x509/verify`.
+     */
+    @PostMapping("/sign")
+    fun sign(@Valid @RequestBody request: SbaSignRequest): ResponseEntity<SbaSignResponse> =
+        ResponseEntity.ok(certificateService.sign(request))
+
+    @PostMapping("/sign/batch")
+    fun signBatch(@Valid @RequestBody request: SbaSignBatchRequest): ResponseEntity<SbaSignBatchResponse> =
+        ResponseEntity.ok(certificateService.signBatch(request))
 
     @PostMapping("/verify")
     fun verify(@Valid @RequestBody request: SbaVerifyRequest): ResponseEntity<VerificationResponse> =

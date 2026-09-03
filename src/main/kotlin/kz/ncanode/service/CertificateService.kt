@@ -7,11 +7,15 @@ import kz.ncanode.dto.certificate.CertificateInfo
 import kz.ncanode.dto.request.Pkcs12AliasesBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoBatchRequest
 import kz.ncanode.dto.request.Pkcs12InfoRequest
+import kz.ncanode.dto.request.SbaSignBatchRequest
+import kz.ncanode.dto.request.SbaSignRequest
 import kz.ncanode.dto.request.SbaVerifyBatchRequest
 import kz.ncanode.dto.request.SignerRequest
 import kz.ncanode.dto.request.X509InfoBatchRequest
 import kz.ncanode.dto.response.Pkcs12AliasesBatchResponse
 import kz.ncanode.dto.response.Pkcs12InfoBatchResponse
+import kz.ncanode.dto.response.SbaSignBatchResponse
+import kz.ncanode.dto.response.SbaSignResponse
 import kz.ncanode.dto.response.SbaVerifyBatchResponse
 import kz.ncanode.dto.response.VerificationResponse
 import kz.ncanode.dto.response.X509InfoBatchResponse
@@ -23,6 +27,7 @@ import kz.ncanode.util.mapPartial
 import kz.ncanode.util.warnIfRevocationDisabled
 import org.springframework.http.HttpStatus
 import kz.ncanode.wrapper.CertificateWrapper
+import kz.ncanode.wrapper.KeyStoreWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import org.springframework.stereotype.Service
 import java.io.ByteArrayInputStream
@@ -316,6 +321,51 @@ class CertificateService(
         } catch (e: IOException) {
             throw ServerException(e.message, e)
         }
+    }
+
+    /**
+     * Подписывает произвольные данные ключом — без контейнера
+     * (SIGN_BYTES_ARRAY). Парная операция к [verify].
+     *
+     * Данные трактуются как строка в UTF-8, ровно как при проверке: иначе
+     * пара «подписал — проверил» не сошлась бы на первом же не-ASCII символе.
+     * Алгоритм берётся из сертификата подписанта, провайдер — Kalkan: ключи
+     * НУЦ живут в нём.
+     */
+    fun sign(request: SbaSignRequest): SbaSignResponse {
+        val signer = request.signer ?: throw ClientException("signer must be specified")
+        val keyStore = kalkanWrapper.read(listOf(signer))[0]
+
+        return SbaSignResponse(
+            certificate = Base64.getEncoder().encodeToString(keyStore.certificate.x509Certificate.encoded),
+            signature = signData(keyStore, request.data),
+        )
+    }
+
+    /**
+     * Batch-подпись: каждая строка подписывается независимо одним ключом.
+     * Ошибка на одном элементе не валит остальные — она в `results[n].status`.
+     */
+    fun signBatch(request: SbaSignBatchRequest): SbaSignBatchResponse {
+        val signer = request.signer ?: throw ClientException("signer must be specified")
+        val keyStore = kalkanWrapper.read(listOf(signer))[0]
+
+        val items = request.data.mapPartial({ status, message ->
+            SbaSignBatchResponse.Item(status = status, message = message)
+        }) { data ->
+            SbaSignBatchResponse.Item(signature = signData(keyStore, data))
+        }
+        return SbaSignBatchResponse(results = items)
+    }
+
+    private fun signData(keyStore: KeyStoreWrapper, data: String): String = try {
+        val x509 = keyStore.certificate.x509Certificate
+        val signature = Signature.getInstance(x509.sigAlgName, KalkanProvider.PROVIDER_NAME)
+        signature.initSign(keyStore.privateKey)
+        signature.update(data.toByteArray(StandardCharsets.UTF_8))
+        Base64.getEncoder().encodeToString(signature.sign())
+    } catch (e: GeneralSecurityException) {
+        throw ServerException("Cannot sign data: ${'$'}{e.message}", e)
     }
 
     companion object {
