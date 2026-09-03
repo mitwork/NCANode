@@ -22,6 +22,8 @@ tags:
   description: JWT encode/decode (GG2015/GG2004/ES*/RS*)
 - name: PKCS12
   description: "Чтение p12-хранилищ: info и aliases"
+- name: JWS
+  description: Подпись JWS (RFC 7515) в формате JSON Serialization
 - name: WSSE
   description: WS-Security X.509 подпись SOAP-конвертов (для SmartBridge sb.egov.kz)
 - name: PAdES
@@ -656,11 +658,64 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/JwtDecodeBatchResponse"
+  /jws/verify:
+    post:
+      tags:
+      - JWS
+      operationId: verify_6
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JwsVerifyRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/JwsVerifyResponse"
+  /jws/sign:
+    post:
+      tags:
+      - JWS
+      operationId: sign_5
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JwsSignRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/JwsSignResponse"
+    patch:
+      tags:
+      - JWS
+      operationId: addSigners
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JwsSignRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/JwsSignResponse"
   /cms/verify:
     post:
       tags:
       - CMS
-      operationId: verify_6
+      operationId: verify_7
       requestBody:
         content:
           application/json:
@@ -696,7 +751,7 @@ paths:
     post:
       tags:
       - CMS
-      operationId: sign_5
+      operationId: sign_6
       requestBody:
         content:
           application/json:
@@ -805,7 +860,7 @@ paths:
     post:
       tags:
       - CAdES
-      operationId: verify_7
+      operationId: verify_8
       requestBody:
         content:
           application/json:
@@ -841,7 +896,7 @@ paths:
     post:
       tags:
       - CAdES
-      operationId: sign_6
+      operationId: sign_7
       requestBody:
         content:
           application/json:
@@ -2378,6 +2433,157 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/JwtDecodeResponse"
+    JsonNode:
+      type: object
+      properties:
+        number:
+          type: boolean
+        nodeType:
+          type: string
+          enum:
+          - ARRAY
+          - BINARY
+          - BOOLEAN
+          - MISSING
+          - "NULL"
+          - NUMBER
+          - OBJECT
+          - POJO
+          - STRING
+        string:
+          type: boolean
+        integralNumber:
+          type: boolean
+        missingNode:
+          type: boolean
+        valueNode:
+          type: boolean
+        container:
+          type: boolean
+        pojo:
+          type: boolean
+        short:
+          type: boolean
+        int:
+          type: boolean
+        long:
+          type: boolean
+        double:
+          type: boolean
+        bigDecimal:
+          type: boolean
+        bigInteger:
+          type: boolean
+        textual:
+          type: boolean
+          deprecated: true
+        boolean:
+          type: boolean
+        binary:
+          type: boolean
+        floatingPointNumber:
+          type: boolean
+        empty:
+          type: boolean
+        array:
+          type: boolean
+        "null":
+          type: boolean
+        object:
+          type: boolean
+        float:
+          type: boolean
+        embeddedValue:
+          type: boolean
+    JwsVerifyRequest:
+      type: object
+      properties:
+        revocationCheck:
+          type: array
+          items:
+            type: string
+            enum:
+            - OCSP
+            - CRL
+          uniqueItems: true
+        jws:
+          $ref: "#/components/schemas/JsonNode"
+        payload:
+          $ref: "#/components/schemas/JsonNode"
+      required:
+      - jws
+    JwsSignerInfo:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        header:
+          type: object
+          additionalProperties: {}
+        certificate:
+          $ref: "#/components/schemas/CertificateInfo"
+    JwsVerifyResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        valid:
+          type: boolean
+        signers:
+          type: array
+          items:
+            $ref: "#/components/schemas/JwsSignerInfo"
+        payload:
+          $ref: "#/components/schemas/JsonNode"
+    JwsSignRequest:
+      type: object
+      properties:
+        jws:
+          $ref: "#/components/schemas/JsonNode"
+        payload:
+          $ref: "#/components/schemas/JsonNode"
+        detached:
+          type: boolean
+        typ:
+          type: string
+        signers:
+          type: array
+          items:
+            $ref: "#/components/schemas/JwsSignerRequest"
+          minItems: 1
+      required:
+      - signers
+    JwsSignerRequest:
+      type: object
+      properties:
+        alg:
+          type: string
+          minLength: 1
+        key:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+        keyAlias:
+          type: string
+      required:
+      - alg
+      - key
+      - password
+    JwsSignResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        jws:
+          $ref: "#/components/schemas/JsonNode"
     CmsVerifyRequest:
       type: object
       properties:
