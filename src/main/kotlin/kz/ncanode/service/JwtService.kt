@@ -18,6 +18,8 @@ import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.KeyException
 import kz.ncanode.exception.ServerException
 import kz.ncanode.util.mapPartial
+import kz.ncanode.util.signingAlgorithm
+import kz.ncanode.util.verificationAlgorithm
 import kz.ncanode.wrapper.KalkanWrapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -54,7 +56,7 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
                 addClaim(builder, claimKey, claimValue)
             }
 
-            val algorithm = resolveAlgorithm(
+            val algorithm = signingAlgorithm(
                 jwtEncodeRequest.jwt.header.alg,
                 cert.publicKey,
                 keystore.privateKey,
@@ -125,7 +127,7 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
                 throw ClientException(e.message, e)
             }
 
-            val algorithm = resolveAlgorithm(data.algorithm, x509.publicKey)
+            val algorithm = verificationAlgorithm(data.algorithm, x509.publicKey)
 
             try {
                 JWT.require(algorithm).build().verify(jwtDecodeRequest.jwt)
@@ -153,42 +155,6 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
             throw ClientException(e.message, e)
         }
     }
-
-    private fun resolveAlgorithm(alg: String, publicKey: PublicKey, privateKey: PrivateKey): Algorithm = when (alg) {
-        "GG2015" -> Algorithm.GG2015(ecPub(alg, publicKey), ecPriv(alg, privateKey))
-        "GG2004" -> Algorithm.GG2004(ecPub(alg, publicKey), ecPriv(alg, privateKey))
-        "ES256" -> Algorithm.ECDSA256(ecPub(alg, publicKey), ecPriv(alg, privateKey))
-        "ES384" -> Algorithm.ECDSA384(ecPub(alg, publicKey), ecPriv(alg, privateKey))
-        "ES512" -> Algorithm.ECDSA512(ecPub(alg, publicKey), ecPriv(alg, privateKey))
-        "RS256" -> Algorithm.RSA256(rsaPub(alg, publicKey), rsaPriv(alg, privateKey))
-        "RS384" -> Algorithm.RSA384(rsaPub(alg, publicKey), rsaPriv(alg, privateKey))
-        "RS512" -> Algorithm.RSA512(rsaPub(alg, publicKey), rsaPriv(alg, privateKey))
-        else -> throw ClientException("Unsupported algorithm: $alg")
-    }
-
-    private fun resolveAlgorithm(alg: String, publicKey: PublicKey): Algorithm = when (alg) {
-        "GG2015" -> Algorithm.GG2015(ecPub(alg, publicKey))
-        "GG2004" -> Algorithm.GG2004(ecPub(alg, publicKey))
-        "ES256" -> Algorithm.ECDSA256(ecPub(alg, publicKey))
-        "ES384" -> Algorithm.ECDSA384(ecPub(alg, publicKey))
-        "ES512" -> Algorithm.ECDSA512(ecPub(alg, publicKey))
-        "RS256" -> Algorithm.RSA256(rsaPub(alg, publicKey))
-        "RS384" -> Algorithm.RSA384(rsaPub(alg, publicKey))
-        "RS512" -> Algorithm.RSA512(rsaPub(alg, publicKey))
-        else -> throw ClientException("Unsupported algorithm: $alg")
-    }
-
-    private fun ecPub(alg: String, key: PublicKey): ECPublicKey = key as? ECPublicKey
-        ?: throw ClientException("Algorithm $alg requires an EC public key, got ${key.javaClass.simpleName}")
-
-    private fun ecPriv(alg: String, key: PrivateKey): ECPrivateKey = key as? ECPrivateKey
-        ?: throw ClientException("Algorithm $alg requires an EC private key, got ${key.javaClass.simpleName}")
-
-    private fun rsaPub(alg: String, key: PublicKey): RSAPublicKey = key as? RSAPublicKey
-        ?: throw ClientException("Algorithm $alg requires an RSA public key, got ${key.javaClass.simpleName}")
-
-    private fun rsaPriv(alg: String, key: PrivateKey): RSAPrivateKey = key as? RSAPrivateKey
-        ?: throw ClientException("Algorithm $alg requires an RSA private key, got ${key.javaClass.simpleName}")
 
     private fun addClaim(builder: JWTCreator.Builder, key: String, value: Any?) {
         when (value) {

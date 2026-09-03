@@ -24,6 +24,7 @@
 - Подпись и верификация PDF (CAdES-T)
 - Форматы AdES — CAdES, XAdES и PAdES уровней B, T, LT и LTA (совместимо с NCALayer)
 - Кодирование и верификация JWT (алгоритм GG2015)
+- JWS (RFC 7515) в формате JSON Serialization, в том числе с несколькими подписантами
 - Поддержка OCSP и CRL (при сетевой недоступности OCSP — автоматический fallback на свежий CRL)
 - Проверка валидности сертификатов (включая цепочку доверия)
 - Поддержка [CMS](https://en.wikipedia.org/wiki/Cryptographic_Message_Syntax)
