@@ -242,6 +242,42 @@ paths:
             '*/*':
               schema:
                 $ref: "#/components/schemas/SbaVerifyBatchResponse"
+  /x509/sign:
+    post:
+      tags:
+      - X509
+      operationId: sign_2
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SbaSignRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/SbaSignResponse"
+  /x509/sign/batch:
+    post:
+      tags:
+      - X509
+      operationId: signBatch_2
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SbaSignBatchRequest"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/SbaSignBatchResponse"
   /x509/info:
     post:
       tags:
@@ -318,7 +354,7 @@ paths:
     post:
       tags:
       - WSSE
-      operationId: sign_2
+      operationId: sign_3
       requestBody:
         content:
           application/json:
@@ -336,7 +372,7 @@ paths:
     post:
       tags:
       - WSSE
-      operationId: signBatch_2
+      operationId: signBatch_3
       requestBody:
         content:
           application/json:
@@ -462,7 +498,7 @@ paths:
     post:
       tags:
       - PDF
-      operationId: sign_3
+      operationId: sign_4
       requestBody:
         content:
           application/json:
@@ -480,7 +516,7 @@ paths:
     post:
       tags:
       - PDF
-      operationId: signBatch_3
+      operationId: signBatch_4
       requestBody:
         content:
           application/json:
@@ -534,7 +570,7 @@ paths:
     post:
       tags:
       - PAdES
-      operationId: sign_4
+      operationId: sign_5
       requestBody:
         content:
           application/json:
@@ -552,7 +588,7 @@ paths:
     post:
       tags:
       - PAdES
-      operationId: signBatch_4
+      operationId: signBatch_5
       requestBody:
         content:
           application/json:
@@ -696,7 +732,7 @@ paths:
     post:
       tags:
       - CMS
-      operationId: sign_5
+      operationId: sign_6
       requestBody:
         content:
           application/json:
@@ -731,7 +767,7 @@ paths:
     post:
       tags:
       - CMS
-      operationId: signBatch_5
+      operationId: signBatch_6
       requestBody:
         content:
           application/json:
@@ -841,7 +877,7 @@ paths:
     post:
       tags:
       - CAdES
-      operationId: sign_6
+      operationId: sign_7
       requestBody:
         content:
           application/json:
@@ -876,7 +912,7 @@ paths:
     post:
       tags:
       - CAdES
-      operationId: signBatch_6
+      operationId: signBatch_7
       requestBody:
         content:
           application/json:
@@ -1571,6 +1607,54 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VerificationResponse"
+    SbaSignRequest:
+      type: object
+      properties:
+        data:
+          type: string
+          minLength: 1
+        signer:
+          $ref: "#/components/schemas/SignerRequest"
+      required:
+      - data
+      - signer
+    SbaSignResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        certificate:
+          type: string
+        signature:
+          type: string
+    SbaSignBatchRequest:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        signer:
+          $ref: "#/components/schemas/SignerRequest"
+      required:
+      - data
+      - signer
+    SbaSignBatchResponse:
+      type: object
+      properties:
+        status:
+          type: integer
+          format: int32
+        message:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/Item"
     X509InfoRequest:
       type: object
       properties:
