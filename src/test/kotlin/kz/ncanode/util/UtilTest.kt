@@ -75,4 +75,18 @@ class UtilTest : FunSpec({
         isInternalHost(u("http://10.0.0.5/a.crl")) shouldBe false
         isInternalHost(u("http://192.168.1.10/a.crl")) shouldBe false
     }
+
+    test("createNewUrl returns null for every way a URL string can be unusable") {
+        // Адрес приходит из расширений сертификата: любой мусор там — повод
+        // пропустить эту точку распространения, а не уронить проверку.
+        createNewUrl("http://[::1", log) shouldBe null           // синтаксис
+        createNewUrl("foo://bar/baz.crl", log) shouldBe null     // неизвестная схема
+        createNewUrl("/crl/nca.crl", log) shouldBe null          // без схемы вообще
+    }
+
+    test("isInternalHost lets an unresolvable host through") {
+        // Резолва нет — блокировать нечего: запрос всё равно упадёт сам, и
+        // отзыв станет UNAVAILABLE. Считать такой адрес внутренним неверно.
+        isInternalHost(java.net.URI("http://nonexistent.invalid/a.crl").toURL()) shouldBe false
+    }
 })

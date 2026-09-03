@@ -4,12 +4,15 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldStartWith
+import io.kotest.assertions.throwables.shouldThrow
 import kz.ncanode.TestResources
 import kz.ncanode.dto.request.JwtDecodeBatchRequest
 import kz.ncanode.dto.request.JwtDecodeRequest
 import kz.ncanode.dto.request.JwtEncodeBatchRequest
 import kz.ncanode.dto.request.JwtEncodeRequest
+import kz.ncanode.dto.response.JwtDecodeResponse
 import kz.ncanode.exception.ClientException
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -179,5 +182,101 @@ class JwtServiceIntegrationTest(
             e
         }
         ex.shouldNotBeNull()
+    }
+
+    test("claims of every supported type survive the roundtrip") {
+        // Каждый тип раскладывается в свою ветку builder'а. Перепутанная
+        // ветка не ломает подпись — она молча меняет тип в токене, и ловится
+        // это уже у потребителя, на разборе.
+        val claims = mapOf(
+            "строка" to "значение",
+            "целое" to 42,
+            "длинное" to 9_000_000_000L,
+            "дробное" to 3.5,
+            "флаг" to true,
+            "пусто" to null,
+            "список" to listOf(1, 2, 3),
+        )
+
+        val encoded = jwtService.encode(encodeRequest("individual_valid.p12", claims)).jwt.shouldNotBeNull()
+        val decoded = jwtService.decode(
+            JwtDecodeRequest().apply {
+                jwt = encoded
+                key = certBase64Of("individual_valid.p12")
+            },
+        )
+
+        decoded.valid shouldBe true
+        val payload = decoded.jwt.shouldNotBeNull().payload.shouldNotBeNull()
+        payload["строка"] shouldBe "значение"
+        payload["целое"] shouldBe 42
+        payload["флаг"] shouldBe true
+        // Неизвестный тип кладётся строкой — это лучше, чем потерять claim.
+        payload["список"].shouldNotBeNull()
+        // null-claim не попадает в токен вовсе: пустое значение нечего подписывать.
+        payload.containsKey("пусто") shouldBe false
+    }
+
+    test("an unsupported algorithm name is a client error") {
+        shouldThrow<ClientException> {
+            jwtService.encode(
+                encodeRequest("individual_valid.p12", mapOf("sub" to "x")).apply {
+                    jwt.header.alg = "HS256"
+                },
+            )
+        }
+    }
+
+    test("asking for an algorithm the key cannot do is a client error") {
+        // Ключи НУЦ — ГОСТовые. Запрошенный RSA отсекается по типу ключа
+        // сразу, а ES* — только на самой подписи: ГОСТовый ключ формально
+        // реализует ECPublicKey. Разницы для клиента быть не должно: и то и
+        // другое — ошибка запроса, а не сбой сервиса.
+        listOf("RS256", "RS384", "RS512").forEach { algorithm ->
+            val error = shouldThrow<ClientException> {
+                jwtService.encode(
+                    encodeRequest("individual_valid.p12", mapOf("sub" to "x")).apply {
+                        jwt.header.alg = algorithm
+                    },
+                )
+            }
+            error.message.orEmpty() shouldContain algorithm
+        }
+
+        listOf("ES256", "ES384", "ES512").forEach { algorithm ->
+            shouldThrow<ClientException> {
+                jwtService.encode(
+                    encodeRequest("individual_valid.p12", mapOf("sub" to "x")).apply {
+                        jwt.header.alg = algorithm
+                    },
+                )
+            }
+        }
+    }
+
+    test("the algorithm named in someone else's token is checked against the key") {
+        // alg в заголовке приходит извне. Семейство, которого ключ не умеет
+        // вовсе, — ошибка запроса; подходящее по типу, но не сходящееся —
+        // просто неверная подпись, и это ответ, а не отказ.
+        val payload = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString("""{"sub":"x"}""".toByteArray())
+
+        fun decodeWith(algorithm: String): JwtDecodeResponse {
+            val header = java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("""{"alg":"$algorithm","typ":"JWT"}""".toByteArray())
+            return jwtService.decode(
+                JwtDecodeRequest().apply {
+                    jwt = "$header.$payload.c2ln"
+                    key = certBase64Of("individual_valid.p12")
+                },
+            )
+        }
+
+        listOf("RS256", "RS384", "RS512", "HS256").forEach { algorithm ->
+            shouldThrow<ClientException> { decodeWith(algorithm) }
+        }
+        listOf("ES256", "ES384", "ES512").forEach { algorithm ->
+            decodeWith(algorithm).valid shouldBe false
+        }
     }
 })

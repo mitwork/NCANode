@@ -18,8 +18,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 405 тестов / **86% coverage**
-  (после вливания `feature/ades-levels`).
+- **Состояние v4:** functional + 467 тестов / **90% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -206,7 +205,7 @@ JWT/PDF/X509/PKCS12) начнёт возвращать `valid=false` из-за `
 NCA SDK 2.0 test pack, заменить p12 в `p12/`, сверить новый период валидности,
 обновить эту дату.
 
-256 тестов / **82% line coverage**.
+467 тестов / **90% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -233,7 +232,7 @@ REVOKED-ветка покрывается через mock'нутый `CrlIndex`,
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 256 тестов + JaCoCo report
+./gradlew test                   # 467 тестов + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -1100,15 +1099,57 @@ unacceptedPolicy, unacceptedExtension) → 400 без повторов, всё �
 но не выход. Побочно это ломало и прогон тестов: `System.exit` из
 `AdesReferenceCompatibilityTest` убивал Gradle-executor (exit 32).
 
-## Что не покрыто тестами (≈494 lines)
+### 44. Поход за 90%: две находки и один пропускаемый прогон
+Довод покрытия с 86% до **90%** был поводом пройтись по необслуженным веткам.
+Тесты писались от поведения, поэтому попутно нашлись два расхождения в
+таксономии ошибок — оба сводились к тому, что ошибка клиента отдавалась как
+наш сбой:
 
-| Слой | % | Что осталось |
+- **`/cms/sign` с не-CMS в поле `cms`** давал 500. `verify` для того же входа
+  давно отдаёт 400 (аудит P0), а `addSigners` из этой политики выпадал:
+  `CMSSignedData(garbage)` летел в общий `catch(Exception)`. Теперь разбор
+  контейнера и его base64 — `ClientException`.
+- **`/jwt/encode` с `alg: ES256`** давал 500. Тип ключа это не ловит:
+  ГОСТовый ключ НУЦ формально реализует `ECPublicKey`, и несоответствие
+  вылезает уже при подписании — `SignatureGenerationException` из auth0.
+  Теперь она классифицируется как 400. `RS*` отсекается раньше, по типу.
+  На `decode` то же различие видно иначе и корректно: `RS*`/`HS*` в чужом
+  заголовке — 400, `ES*` — просто `valid=false` (подпись не сошлась).
+
+**`AdesReferenceCompatibilityTest` теперь пропускается, если `pki.gov.kz`
+молчит.** Эталоны подписаны боевыми ключами, поэтому проверяются боевыми CA и
+OCSP, а адреса НУЦ отвечают через раз (замерено в этой же сессии: то 25 мс,
+то тишина дольше 12 с). Спека и раньше включалась только при наличии
+локальных файлов; к этому добавлена проверка доступности хоста (connect на
+`pki.gov.kz:80`, 3 с). Красный прогон из-за молчащего сервера дороже
+пропуска: по нему не отличить сломанную совместимость от отсутствия сети.
+Следствие: замер покрытия немного плавает (±10 строк) в зависимости от того,
+отработала спека или пропущена; 90% держится в обоих случаях.
+
+Что покрыто заново (полезное, а не ради процента): `PdfIncrementalUpdate`
+целиком — это защита от подделки дописыванием ревизии (законный `/DSS` принять,
+подменённую страницу, новую аннотацию и лишний ключ каталога отвергнуть);
+DER-ридер CRL на обрезанных и не-DER входах; повторы плановой загрузки CRL;
+загрузка CA (не-200, пустое тело, обрыв, прерывание) — с проверкой, что после
+неудачи на диске не остаётся пустого файла, который следующий проход примет
+за кэш; ветки WSSE, где сертификат подписанта не достаётся из
+`SecurityTokenReference`.
+
+## Что не покрыто тестами (≈441 line)
+
+| Пакет | % | Что осталось |
 |---|---|---|
-| `service` overall | 74% | TspService.verify negative paths (битый imprint, missing EKU) — нужны hand-crafted ASN.1 TSP-токены; CaService.shutdown() — System.exit |
-| `controller` | 98% | HomePageController IO error path (один невозможный case) |
+| `ades` | 94% | Инспекторы XAdES/PAdES — ветки под форматы, которых НУЦ не выпускает |
+| `crl` | 95% | Defensive-ветки индексации |
+| `service` | 89% | `TspService.verify` negative paths (нужны hand-crafted ASN.1 TSP-токены), `OcspService.findVerifiedResponderCertificate` (delegated responder — НУЦ такие не выдаёт), `CaService.shutdown` (System.exit) |
+| `util` | 95% | Недостижимые catch (SHA-1 отсутствует в JDK) |
+| `wrapper` | 83% | Defensive-ветки `DocumentWrapper` (подмена фабрик XML) и `KalkanWrapper` |
+| `controller` | 84% | HomePageController IO error path |
 | `controller/advice` | 100% | — |
-| `util` | 78% | Defensive branches в KalkanUtil |
-| `wrapper` | 78% | Defensive branches в DocumentWrapper |
+
+Оставшееся — почти целиком ветки, недостижимые без подмены библиотек или без
+данных, которых НУЦ не выпускает. Дешёвых строк в остатке нет: следующие
+проценты стоят hand-crafted ASN.1 и HTTP-фикстур (см. вариант A).
 
 OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bin` ответы
 для оффлайн-тестов REVOKED/ACTIVE/UNKNOWN на mismatch nonce) — пока
@@ -1132,11 +1173,14 @@ OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bi
 2. Detached CAdES в их валидаторе — единственный не прогнанный вручную случай;
    как его туда скормить, описано в `ades-levels-plan.md`.
 
-### A. Дальнейший рост покрытия (76% → 80%)
+### A. Дальнейший рост покрытия (90% → выше)
 
-Самые крупные оставшиеся гэпы:
-- TspService.verify negative paths — нужны hand-crafted ASN.1 TSP-токены
+Дешёвое кончилось. Что осталось и чего стоит:
+- `TspService.verify` negative paths — hand-crafted ASN.1 TSP-токены
   (битый messageImprint, missing EKU id-kp-timeStamping). +~30 lines.
+- `OcspService.findVerifiedResponderCertificate` — delegated responder;
+  НУЦ подписывает ответы самим CA, поэтому нужны сохранённые чужие ответы
+  либо свой мини-responder. +~23 lines.
 - OCSP fixtures bootstrap (опциональный @Tags("bootstrap") test'ник
   для генерации `.bin` ответов с известным nonce; затем pure-unit
   REVOKED/ACTIVE/UNKNOWN-mismatch-nonce). +~20 lines.

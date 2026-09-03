@@ -10,27 +10,51 @@ import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CadesVerifyRequest
 import kz.ncanode.dto.request.PadesVerifyRequest
 import kz.ncanode.dto.request.XadesVerifyRequest
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.ActiveProfiles
+import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.Base64
 import kotlin.reflect.KClass
 
 /**
- * Спека целиком включается только когда эталонные файлы лежат на месте.
+ * Спека целиком включается только когда эталонные файлы лежат на месте **и**
+ * доступна боевая инфраструктура НУЦ.
  *
  * Именно спека, а не отдельные тесты: без этого Spring поднимал бы контекст
  * с боевыми адресами, а `CaService` по `@Scheduled(initialDelay = 0)` тянул бы
  * боевой CA-бандл на каждом прогоне CI — ради тестов, которые всё равно
  * пропущены.
+ *
+ * Про доступность: эталоны подписаны боевыми ключами, поэтому их проверка
+ * опирается на боевые CA и OCSP. Адреса НУЦ отвечают не всегда — наблюдалась
+ * тишина дольше любого разумного таймаута. Молчащий сервер — это среда, а не
+ * расхождение форматов, и красить им прогон нельзя: иначе первым делом станет
+ * непонятно, сломали мы совместимость или просто нет сети.
  */
 class ReferenceSignaturesPresent : Condition {
     override fun evaluate(kclass: KClass<out Spec>): Boolean =
         javaClass.classLoader.getResource("ades/cades") != null &&
-            SAMPLES.any { javaClass.classLoader.getResource("ades/$it") != null }
+            SAMPLES.any { javaClass.classLoader.getResource("ades/$it") != null } &&
+            productionPkiReachable()
+
+    private fun productionPkiReachable(): Boolean = try {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress("pki.gov.kz", 80), REACHABILITY_TIMEOUT_MS)
+            true
+        }
+    } catch (e: IOException) {
+        LoggerFactory.getLogger(ReferenceSignaturesPresent::class.java)
+            .warn("Skipping the reference signatures: production PKI is unreachable ({})", e.message)
+        false
+    }
 
     private companion object {
         val SAMPLES = listOf("cades/b.cms", "xades/b.xml", "pades/b.pdf")
+        const val REACHABILITY_TIMEOUT_MS = 3000
     }
 }
 

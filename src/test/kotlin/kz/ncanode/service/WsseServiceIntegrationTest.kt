@@ -1,5 +1,6 @@
 package kz.ncanode.service
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -114,5 +115,54 @@ class WsseServiceIntegrationTest(
         response.results[1].xml shouldBe null
         response.results[2].status shouldBe 200
         response.results[2].xml.shouldNotBeNull()
+    }
+
+    test("malformed XML is a client error, not a server failure") {
+        // Конверт приходит от клиента: битый XML — его ошибка, и отвечать на
+        // неё пятисоткой значит валить вину на себя.
+        shouldThrow<kz.ncanode.exception.ApplicationException> {
+            wsseService.verify("<soap:Envelope", false, false)
+        }
+    }
+
+    test("signing with a wrong password is a client error") {
+        shouldThrow<kz.ncanode.exception.ClientException> {
+            wsseService.sign(
+                WsseSignRequest().apply {
+                    xml = sampleSoap
+                    key = TestResources.loadAsBase64("p12/individual_valid.p12")
+                    password = "неверный"
+                },
+            )
+        }
+    }
+
+    test("verify: a signature whose certificate cannot be resolved is rejected, not an error") {
+        // Сертификат подписанта в WSSE приходит через SecurityTokenReference.
+        // Нет его или он указывает не туда — проверять подпись нечем, и это
+        // ответ «недействительна», а не отказ сервиса.
+        val signed = wsseService.sign(
+            WsseSignRequest().apply {
+                xml = sampleSoap
+                key = TestResources.loadAsBase64("p12/individual_valid.p12")
+                password = TestResources.P12_PASSWORD
+            },
+        ).xml.shouldNotBeNull()
+
+        val withoutReference = signed.replace(
+            Regex("""<wsse:SecurityTokenReference.*?</wsse:SecurityTokenReference>""", RegexOption.DOT_MATCHES_ALL),
+            "",
+        )
+        withoutReference shouldNotBe signed
+        wsseService.verify(withoutReference, checkOcsp = false, checkCrl = false).valid shouldBe false
+
+        // Ссылка на месте, но ведёт на BinarySecurityToken — способ, который
+        // мы не поддерживаем: сертификат из неё не достать.
+        val otherReference = signed.replace(
+            Regex("""<wsse:KeyIdentifier.*?</wsse:KeyIdentifier>""", RegexOption.DOT_MATCHES_ALL),
+            """<wsse:Reference URI="#binary-security-token"/>""",
+        )
+        otherReference shouldNotBe signed
+        wsseService.verify(otherReference, checkOcsp = false, checkCrl = false).valid shouldBe false
     }
 })

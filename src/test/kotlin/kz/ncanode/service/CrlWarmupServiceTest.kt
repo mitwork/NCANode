@@ -40,4 +40,67 @@ class CrlWarmupServiceTest : FunSpec({
         }
         warmup.isWarmupComplete shouldBe true
     }
+
+    test("a failed warmup still completes: health must not hang on DOWN") {
+        // Прогрев — оптимизация, а не условие работоспособности. Если он упал,
+        // флаг всё равно обязан подняться, иначе HealthIndicator навсегда
+        // оставит инстанс вне балансировки.
+        val crlService: CrlService = mockk(relaxed = true)
+        every { crlService.warmCache(any()) } throws IllegalStateException("cache is broken")
+        val caService: CaService = mockk()
+        every { caService.rootCertificates } returns listOf(mockk())
+
+        val warmup = CrlWarmupService(crlService, mockk(relaxed = true), caService).apply {
+            isWarmupEnabled = true
+        }
+
+        warmup.warmupOnReady()
+        waitForCompletion(warmup)
+
+        warmup.isWarmupComplete shouldBe true
+    }
+
+    test("interruption during shutdown completes the warmup without an error") {
+        // Остановку приложения прогрев видит как прерывание потока. Это не
+        // сбой: приложение уходит, а не ломается (см. quirk про Ctrl+C).
+        val crlService: CrlService = mockk(relaxed = true)
+        every { crlService.warmCache(any()) } throws RuntimeException(
+            "interrupted", InterruptedException("shutdown"),
+        )
+        val caService: CaService = mockk()
+        every { caService.rootCertificates } returns listOf(mockk())
+
+        val warmup = CrlWarmupService(crlService, mockk(relaxed = true), caService).apply {
+            isWarmupEnabled = true
+        }
+
+        warmup.warmupOnReady()
+        waitForCompletion(warmup)
+
+        warmup.isWarmupComplete shouldBe true
+    }
+
+    test("an empty CA bundle does not stop the warmup") {
+        // CRL всё равно разбираются — просто без проверки подписи издателя.
+        val crlService: CrlService = mockk(relaxed = true)
+        val caService: CaService = mockk()
+        every { caService.rootCertificates } returns emptyList()
+
+        val warmup = CrlWarmupService(crlService, mockk(relaxed = true), caService).apply {
+            isWarmupEnabled = true
+        }
+
+        // Ожидание CA-бандла ограничено таймаутом, поэтому прогрев здесь
+        // намеренно не дожидается завершения — проверяем, что поток стартовал
+        // и сервис не упал.
+        warmup.warmupOnReady()
+        warmup.isWarmupComplete shouldBe false
+    }
 })
+
+private fun waitForCompletion(warmup: CrlWarmupService) {
+    val deadline = System.currentTimeMillis() + 5_000
+    while (!warmup.isWarmupComplete && System.currentTimeMillis() < deadline) {
+        Thread.sleep(50)
+    }
+}
