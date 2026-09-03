@@ -86,8 +86,8 @@ dependencies {
     implementation("org.apache.pdfbox:pdfbox:3.0.8")
 
     // BouncyCastle — bcprov-jdk18on (Java 17+ artifacts).
-    implementation("org.bouncycastle:bcprov-jdk18on:1.85")
-    implementation("org.bouncycastle:bcpkix-jdk18on:1.85")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85.2")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.85.2")
 
     // Тесты — Kotest (JUnit 5 runner) + MockK + Spring Boot Test.
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
