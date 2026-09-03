@@ -20,7 +20,7 @@ jobs:
           # (gh берёт PR'ы между last release и текущим tag'ом).
           fetch-depth: 0
       - name: Set up JDK 25
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
