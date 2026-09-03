@@ -10,6 +10,7 @@ import io.mockk.spyk
 import io.mockk.verify
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
+import kz.ncanode.exception.CrlException
 import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.crl.CrlConfiguration
 import kz.ncanode.crl.CrlIndex
@@ -54,6 +55,15 @@ class CrlServiceTest : FunSpec({
     }
 
     val gostCrlFull: CrlIndex = indexOf("nca_gost2022_test.crl")
+
+    /**
+     * Тот же список, но разобранный: вшитый в подпись материал приходит
+     * объектами `X509CRL`, а не файлами, — индекса под него нет.
+     */
+    val gostCrlParsed: java.security.cert.X509CRL =
+        java.security.cert.CertificateFactory.getInstance("X.509")
+            .generateCRL(TestResources.loadBytes("crl/nca_gost2022_test.crl").inputStream())
+                as java.security.cert.X509CRL
     val gostCrlDelta: CrlIndex = indexOf("nca_gost2022_d_test.crl")
 
     // Индекс-заглушка: издатель совпадает, критичных расширений нет, ничего не
@@ -477,6 +487,59 @@ class CrlServiceTest : FunSpec({
         verify(exactly = 0) { service.downloadCrl(any(), any()) }
     }
 
+    // ---- вшитые CRL: выбор по покрытию момента ----
+
+    fun issuerWrapper(): kz.ncanode.wrapper.CertificateWrapper =
+        kz.ncanode.wrapper.CertificateWrapper(
+            java.security.cert.CertificateFactory.getInstance("X.509", KalkanProvider.PROVIDER_NAME)
+                .generateCertificate(TestResources.loadBytes("ca/nca_gost2022_test.cer").inputStream())
+                as java.security.cert.X509Certificate,
+        )
+
+    test("embedded CRL covering the moment gives a verdict") {
+        // Проверка подписи на момент её создания: CRL той поры покрывает этот
+        // момент и потому авторитетен, хотя сегодня давно протух.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate.apply { issuerCertificate = issuerWrapper() }
+        val inside = Date(gostCrlParsed.thisUpdate.time + 1000)
+
+        val status = buildService().statusOf(cert, listOf(gostCrlParsed), inside)
+        status.result shouldBe CrlResult.ACTIVE
+        status.fresh shouldBe true
+    }
+
+    test("the same embedded CRL says nothing about today") {
+        // Тот же список на текущий момент уже не авторитетен: он его не
+        // покрывает (RFC 5280 §5.1.2.4–5.1.2.5). Это и есть причина, по которой
+        // старая подпись проверяется вшитыми данными, а свежая — живыми.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate.apply { issuerCertificate = issuerWrapper() }
+
+        buildService().statusOf(cert, listOf(gostCrlParsed), Date()).result shouldBe CrlResult.UNAVAILABLE
+    }
+
+    test("embedded CRL is rejected when its signature does not verify") {
+        // Материал приходит из проверяемого документа, поэтому подпись CRL
+        // сверяется ключом издателя так же, как у скачанного. Подставляем
+        // чужой ключ издателя — CRL обязан быть отброшен, а не принят на веру.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val foreignIssuer = kz.ncanode.wrapper.CertificateWrapper(
+            java.security.cert.CertificateFactory.getInstance("X.509", KalkanProvider.PROVIDER_NAME)
+                .generateCertificate(TestResources.loadBytes("ca/root_test_gost_2022.cer").inputStream())
+                as java.security.cert.X509Certificate,
+        )
+        val cert = ks.certificate.apply { issuerCertificate = foreignIssuer }
+        val inside = Date(gostCrlParsed.thisUpdate.time + 1000)
+
+        buildService().statusOf(cert, listOf(gostCrlParsed), inside).result shouldBe CrlResult.UNAVAILABLE
+    }
+
     test("verify() returns ACTIVE for cert from different CA (CRL issuer mismatch)") {
         // legal_ceo_valid тоже NCA GOST 2022 — issuer тот же. Используем
         // CRL'инский issuer'ный филтр непрямо: если CRL не от того CA, который
@@ -489,5 +552,49 @@ class CrlServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         buildService().verify(ks.certificate).result shouldBe CrlResult.ACTIVE
+    }
+
+    // ---- повторы при плановой загрузке ----
+
+    test("scheduled download retries after a failure and succeeds") {
+        // Хост НУЦ через раз не отвечает вовсе, а следующая попытка проходит
+        // мгновенно. Без повтора одна такая неудача оставляла бы список
+        // неизменным до следующего срабатывания расписания — сутки для CA-CRL.
+        val service = buildService()
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            if (attempts == 1) throw CrlException("HTTP connect timed out", RuntimeException("timeout"))
+        }
+
+        service.downloadCrlWithRetries("default", java.net.URI("http://crl.example/test.crl").toURL(), 3)
+
+        attempts shouldBe 2
+    }
+
+    test("scheduled download gives up after the configured number of attempts") {
+        val service = buildService()
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            throw CrlException("HTTP connect timed out", RuntimeException("timeout"))
+        }
+
+        service.downloadCrlWithRetries("default", java.net.URI("http://crl.example/test.crl").toURL(), 3)
+
+        attempts shouldBe 3
+    }
+
+    test("on-demand download is not retried: the client is waiting for it") {
+        val service = buildService()
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            throw CrlException("HTTP connect timed out", RuntimeException("timeout"))
+        }
+
+        service.downloadCrl("default", java.net.URI("http://crl.example/test.crl").toURL())
+
+        attempts shouldBe 1
     }
 })

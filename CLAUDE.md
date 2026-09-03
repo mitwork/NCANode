@@ -7,11 +7,19 @@
 
 - **Текущая ветка:** `v4`. Это полная переписка NCANode с Java/Spring Boot
   2.7 + Lombok на 100% Kotlin / Spring Boot 4.0 / Java 25 / Gradle 9.
+- **Ветки в работе:**
+  - `feature/ades-levels` — CAdES/XAdES/PAdES уровней B/T/LT/LTA под
+    обновлённый NCALayer. Подписание и проверка готовы, осталось batch и
+    сверка на эталонных подписях НУЦ. План — `ades-levels-plan.md`,
+    quirk #38.
+  - `perf/crl-memory` — экономия памяти на CRL (mmap-индекс, cap на размер,
+    LRU для on-demand). PR #11 в `v4`.
 - **Параллельная ветка:** `improvements` — Java версия с теми же
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 256 тестов / **82% coverage**.
+- **Состояние v4:** functional + 405 тестов / **86% coverage**
+  (после вливания `feature/ades-levels`).
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -26,7 +34,7 @@
 | **Gradle** | 9.5.1 |
 | **Jakarta EE** | jakarta.* (НЕ javax.* кроме JDK-native xml/naming/security.auth) |
 | **Jackson** | 3 (tools.jackson.*) через jackson-module-kotlin — без Jackson 2 fallback'а |
-| **Кriptoprovider** | Kalkan 0.7.5 + kalkancrypt-xmldsig 0.5 (flatDir `lib/`) |
+| **Кriptoprovider** | Kalkan 0.7.8 + kalkancrypt-xmldsig 0.5 (flatDir `lib/`) |
 | **TLS/PKI deps** | BouncyCastle bcprov/bcpkix-jdk18on 1.84, Santuario xmlsec 4.0.3, wss4j 4.0.0 (без OpenSAML), pdfbox 3.0.3, jaxws-rt 4.0.3 (SAAJ runtime для WsseService), springdoc 3.0.3 |
 | **HTTP client** | JDK `java.net.http.HttpClient` (Java 11+), без внешней зависимости |
 | **Тесты** | Kotest 6.2 (JUnit 5 runner) + MockK 1.14 + spring-boot-starter-test |
@@ -38,17 +46,17 @@ Build clean (zero warnings). `./gradlew bootJar` зелёный.
 ```
 src/main/kotlin/kz/ncanode/
   NCANode.kt                  ← @SpringBootApplication + main + banner
+  ades/                       ← машинерия AdES-форматов (без Spring), quirk #38
   configuration/              ← @Configuration beans + RequestLoggingFilter
     crl/                      ← CrlConfiguration interface + 2 наследника
   constants/MessageConstants  ← object с const val (error message keys)
-  controller/                 ← 8 @RestController + advice/
+  controller/                 ← 11 контроллеров (10 @RestController) + advice/
   crl/                        ← Der, CrlScanner, CrlIndex — потоковый разбор CRL
                                 и mmap-индекс отзывов (см. quirk #34)
   dto/
-    certificate/, cms/, crl/, http/, ocsp/, pdf/, request/, response/, tsp/
+    ades/, certificate/, cms/, crl/, http/, ocsp/, pdf/, request/, response/, tsp/
   exception/                  ← 8 классов, ApplicationException base
-  oid/                        ← NcaOids, NcaAlgorithms, KnownEkus (импортировано из demo-pki-center)
-  service/                    ← 15 @Service
+  service/                    ← 17 файлов (16 @Service + CrlService из @Configuration)
   util/                       ← Util, KalkanUtil, KeyUtil (top-level functions, @file:JvmName)
   wrapper/                    ← CertificateWrapper, KeyStoreWrapper, KalkanWrapper, DocumentWrapper, XMLSignatureWrapper
 ```
@@ -58,7 +66,7 @@ src/main/kotlin/kz/ncanode/
 
 ## Batch endpoints (issue malikzh/NCANode#212)
 
-15 batch endpoints, симметрично с одиночными. Каждый принимает массив
+21 batch endpoint, симметрично с одиночными. Каждый принимает массив
 вместо одного элемента + общие signers/key/cert и возвращает
 partial-response (per-item status + payload):
 
@@ -71,10 +79,15 @@ partial-response (per-item status + payload):
 | PDF | `/pdf/sign/batch`, `/pdf/verify/batch` |
 | X509 | `/x509/info/batch`, `/x509/verify/batch` |
 | Pkcs12 | `/pkcs12/info/batch`, `/pkcs12/aliases/batch` |
+| CAdES | `/cades/sign/batch`, `/cades/verify/batch` |
+| XAdES | `/xades/sign/batch`, `/xades/verify/batch` |
+| PAdES | `/pades/sign/batch`, `/pades/verify/batch` |
 
 Дизайн-инварианты:
 
-- **Общий signer/key на весь batch.** Mass-signing use case.
+- **Общий signer/key на весь batch.** Mass-signing use case. У AdES-семейств
+  общий и **уровень**: смешивать в одном запросе B и LTA незачем, а разный
+  уровень на элемент сделал бы неоднозначным частичный отказ на LT.
 - **Sequential обработка items.** KalkanProvider thread-safety на GOST 2015
   без аудита не доверяем. Parallel — возможная оптимизация после нагрузки.
 - **Top-level status — HTTP-уровень** (200 = "batch обработан до конца").
@@ -86,6 +99,54 @@ partial-response (per-item status + payload):
 - **DTO naming**: `<Operation>BatchRequest` / `<Operation>BatchResponse`
   с inner `Item` для sign-вариантов; verify-варианты возвращают массив
   существующих `VerificationResponse` без обёртки в Item.
+
+## AdES-эндпойнты (CAdES / XAdES / PAdES, уровни B–T–LT–LTA)
+
+Ветка `feature/ades-levels`. Подробности и обоснование решений —
+`ades-levels-plan.md`; здесь только карта.
+
+| Формат | Эндпойнты | Опирается на |
+|---|---|---|
+| CAdES | `/cades/sign`, `/cades/verify` | `CmsService` |
+| XAdES | `/xades/sign`, `/xades/verify` | `XmlService` |
+| PAdES | `/pades/sign`, `/pades/verify` | `PdfService` |
+
+⚠️ **LTA + одна и та же подпись дважды одним сертификатом**: контейнер
+корректен, но валидатор НУЦ отвергает архивную метку второй подписи — он ищет
+подписанта по SID, который у них совпадает (тот же баг, что мы у себя
+починили). Проверено парой контейнеров, отличавшихся только этим. `coSign`
+пишет об этом WARN. Разбор — `ades-levels-plan.md`.
+
+⚠️ Архивная метка CAdES: содержимое передаётся в `imprintInput` **явно**
+(у detached его в контейнере нет — раньше в расчёт уходил хэш пустоты), а
+`SignerInfo` ищется по значению подписи, а не по SID (у двух подписей одним
+ключом SID одинаков). Обе ошибки своей же проверкой не ловились — она
+повторяла тот же расчёт; нашлись на живом валидаторе NCALayer. Многоподписный
+XAdES с ним пока несовместим, см. `ades-levels-plan.md`.
+
+⚠️ Данные об отзыве считаются свидетельством о моменте `at`, если их интервал
+его накрывает **либо** они выпущены позже `at`, но до `notAfter` сертификата
+(отзыв необратим и датирован; после истечения запись могут убрать). Без второй
+половины `extend` бессмыслен — материал для него собирается уже после подписи.
+`fresh` — отдельное, строгое понятие: только оно решает, заменяет ли CRL
+упавший OCSP (quirk #28).
+
+Повышение уровня готовой подписи — `/{cades,xades,pades}/extend`, без ключа
+и без нового подписанта (у PAdES только LT и LTA). Нужно потому, что
+AdES-методы NCALayer живут только в его окнах: сайту через веб-сокет доступны
+лишь обычные CMS- и XML-подписи, то есть LT/LTA в браузере не получить.
+
+Доподписание (подписант «вторым по маршруту»): для XAdES и PAdES — подать
+подписанный документ на подпись снова, для CAdES — `PATCH /cades/sign`
+(поле `cms`). Для AdES-контейнеров НЕ использовать `PATCH /cms/sign`: он
+теряет поле `crls` с материалом уровня LT и добавляет подписанта без
+AdES-атрибутов.
+
+Старые `/cms/*`, `/xml/*`, `/pdf/*` **не легаси** — работают как раньше.
+Новые сервисы ходят в них через швы с дефолтным параметром `prepare`
+(без аргумента — прежний путь один в один).
+
+Batch есть у всех трёх — см. таблицу в разделе «Batch endpoints».
 
 ## Тестовая инфраструктура
 
@@ -113,6 +174,11 @@ src/test/kotlin/kz/ncanode/
     OcspServiceTest                    ← pure unit MockK: nonce, null issuer, HTTP errors
     TspServiceTest                     ← pure unit MockK: generateNonce, info(не-TSP)
     CrlWarmupServiceTest               ← pure unit MockK
+    CadesServiceIntegrationTest        ← B/T/LT/LTA, detached, негативы (18)
+    XadesServiceIntegrationTest        ← B/T/LT/LTA enveloped (20)
+    PadesServiceIntegrationTest        ← B/T/LT/LTA, /DSS, видимая подпись,
+                                         политика хвоста (22)
+  ades/CadesInspectorTest              ← разбор уровня и привязки (7)
   controller/                          ← 8 файлов + advice/, прямой вызов с MockK
     advice/ExceptionHandlerControllerAdviceTest
 
@@ -916,6 +982,123 @@ UNKNOWN — по разделению quirk #28 пригодного ответ�
 это тот же вызов): попутно пустое тело больше не превращается в пустой файл на
 диске. Итоговое поведение то же — `downloadCert` вернёт null и `checkCertForNull`
 остановит приложение, — но без порчи кэша.
+### 38. AdES-уровни: три вещи, которые стоили времени
+Полная картина — `ades-levels-plan.md`. Здесь то, что можно наступить снова.
+
+- **`/xml/verify` не проверял НИ ОДНУ XAdES-подпись** — и это баг старого
+  эндпойнта, а не новых. `Id` на `xades:SignedProperties` не регистрировался
+  как ID-атрибут, ссылка `#...` не резолвилась. Фикс — `registerXadesIds`
+  в конструкторе `XMLSignatureWrapper`, то есть чинится для всех потребителей
+  сразу. Та же причина всплыла второй раз в `XadesInspector`, когда
+  `XMLSignature` строился напрямую в обход обёртки: **любой разбор
+  XML-подписи должен идти через `XMLSignatureWrapper`.**
+- **Выбор данных об отзыве — по покрытию момента, а не «вшитый первичен»**
+  (RFC 6960 §2.2, RFC 5280 §5.1.2.4–5.1.2.5, §6.1). `CrlService.statusOf` /
+  `OcspService.statusOf` — чистые функции вердикта над переданным материалом,
+  без сети; непокрывающий момент ACTIVE понижается до UNAVAILABLE, REVOKED
+  сохраняется. `CertificateWrapper.isValid` **не менялся** — он и раньше
+  оценивал прикреплённые статусы, различаются только их поставщики. Отсюда
+  же совместимость со старыми эндпойнтами: живой путь не тронут.
+- **Статус проверки по ETSI (`validationStatus` + `subIndication`).** Флаг
+`valid` не различает «подпись плохая» и «подпись не удалось проверить», а
+действия при этом разные. Словарь взят из EN 319 102-1 — тот же, что показывает
+валидатор НУЦ, вердикты сравнимы напрямую. Считается в `AdesVerdict` из данных,
+которые у нас уже есть; недоказуемые причины (например, оборванная цепочка) НЕ
+выдаются — пустое поле честнее догадки. Имя `validationStatus`, а не `status`:
+`status` на верхнем уровне занят HTTP-кодом из `StatusResponse`.
+
+**`level` ≠ `verifiedLevel`.** Первое — что подпись о себе заявляет, второе
+  — до чего проверка её подтвердила. Заявленный LTA с непроверяемой меткой
+  даёт `verifiedLevel: LT`; без запрошенной проверки отзыва уровень не
+  поднимается выше T. Присутствие структуры — не доказательство.
+
+**NCALayer не выпускает LT/LTA тестовыми ключами** — доверенные корни его
+AdES-часть берёт только из боевого набора, а B и T корней не требуют. Значит
+эталоны выше T бывают только боевым ключом, а им в репозиторий нельзя
+(реальные ИИН/ФИО): лежат локально, исключены через `.git/info/exclude`,
+гоняются `AdesReferenceCompatibilityTest` под профилем `reference`
+(боевые адреса).
+Спека включается целиком только при наличии файлов — иначе `CaService`
+тянул бы боевой бандл на каждом прогоне CI. Прогон: **15/15 проходят**.
+
+Мелочь, но повторяемая: Kalkan — форк старого BC, геттеры `getDERObject()` /
+`getDEREncoded()` из Kotlin через property-access (`.dERObject`) НЕ
+разрешаются; и путь вида `/cms/*` внутри KDoc открывает вложенный комментарий
+(«Unclosed comment»).
+
+### 39. `@Valid` на списках: `List<@Valid X>` + флаг компилятора
+Hibernate Validator ругается на `@Valid` над самим списком (HV000271,
+устаревшая форма) и требует аннотацию на аргументе типа. Но Kotlin **не пишет
+аннотации аргументов типа в байткод** без `-Xemit-jvm-type-annotations` — с
+переносом и без флага каскад молча перестаёт работать, и вложенный объект
+проходит без валидации (`ExceptionHandlingMvcTest` это ловит: 500 вместо 400).
+Флаг добавлен в `build.gradle.kts`, все DTO переведены на `List<@Valid X>`.
+
+### 40. `/DocTimeStamp` проверяется как метка, а не как подпись
+`PdfService.verify` перебирает `document.signatureDictionaries`, куда попадают
+и документные метки времени. Раньше метка шла общим CMS-путём и падала с
+`content hash found in signed attributes different`: в её `/Contents` лежит
+токен RFC 3161, чьи подписанные атрибуты описывают TSTInfo, а не байты
+`/ByteRange`. Следствия были два: ERROR в логах на каждую проверку LTA-PDF и
+`valid=false` от `/pdf/verify` для совершенно валидного документа (метка
+считалась недействительной подписью). Теперь метка проверяется через
+`TspService.verify`, а в `PdfSignerInfo` есть флаг `documentTimestamp`.
+`PadesService` берёт вердикт по меткам оттуда же — второй разбор документа
+не нужен.
+
+### 41. `NoClassDefFoundError: ThrowableProxy` при Ctrl+C
+Симптом: при остановке приложения из терминала иногда падает
+`Exception in thread "SpringApplicationShutdownHook"
+java.lang.NoClassDefFoundError: ch/qos/logback/classic/spi/ThrowableProxy`.
+
+Механика: logback подгружает классы печати стек-трейсов **лениво** — только
+когда впервые логируется исключение (проверено `-verbose:class`: за обычный
+прогон `ThrowableProxy` не загружается вовсе, только конвертеры). Если первым
+таким случаем оказывается остановка — Ctrl+C прерывает фоновую загрузку CRL,
+та логирует ошибку — классы уже неоткуда взять: hook'и завершения работают
+параллельно, и загрузчик boot-jar'а успевает закрыться. Для приложения
+безобидно (оно и так завершается), но выглядит как падение.
+
+Закрыто с двух сторон: `NCANode.main` заранее трогает четыре класса logback
+(`preloadThrowableLogging`), а `CrlWarmupService` не печатает стек-трейс,
+когда причина — прерывание потока. Первое проверяемо: с фиксом
+`ch.qos.logback.classic.spi.ThrowableProxy` появляется в `-verbose:class` на
+старте, без фикса — не появляется.
+
+### 42. Плановая загрузка CRL — с повторами, on-demand — без
+`crl.root.gov.kz` через раз не отвечает вовсе: соединение уходит в пустоту и
+обрывается по `connectTimeout` (5 с), при этом соседняя попытка проходит за
+~8 мс — замерено. Расплата за единственную неудачу непропорциональна: список
+остаётся прежним до следующего срабатывания расписания, а у `ca.crl` TTL по
+умолчанию 1440 минут.
+
+Поэтому `downloadCrlWithRetries` (`NCANODE_CRL_RETRIES`, по умолчанию 3, пауза
+1 с × номер попытки) — но **только в плановом обновлении**. Загрузку по CRL DP
+из сертификата ждёт клиент внутри verify, и повторы там растянули бы ответ:
+она осталась однопопыточной (`downloadCrl`). Поднимать `connectTimeout` смысла
+нет — там не «чуть не хватило», там тишина дольше 30 с.
+
+### 43. Отказ TSA и недоступность CA больше не выглядят как сбой сервиса
+Два случая, найденные на живых адресах НУЦ, где чужая недоступность
+превращалась в нашу проблему.
+
+**TSA ответила отказом → `NullPointerException`.** При не-granted статусе
+токена в ответе нет вовсе, а код делал `return response.timeStampToken` —
+Kotlin вставлял null-проверку, и наружу шло
+`ServerException: getTimeStampToken(...) must not be null` без единого намёка
+на причину. Теперь `tokenOf` разбирает `status`/`failInfo`/`statusString`:
+отказ по существу запроса (badAlg, badRequest, badDataFormat,
+unacceptedPolicy, unacceptedExtension) → 400 без повторов, всё остальное →
+500 с повторами. Значения `PKIFailureInfo` — **битовые маски**
+(`badAlg` = 128, а не 0), проверка через `and`.
+
+**Недоступный адрес CA гасил процесс.** `checkCertForNull` звал `System.exit`:
+один неответивший адрес — и сервис выключен, а после перезапуска всё
+повторяется, потому что адрес всё ещё молчит (замерено: `pki.gov.kz` уходит в
+тишину дольше таймаута). Теперь при неудаче берётся прежняя копия из кэша,
+а если её нет — сертификат пропускается; пустой бандл — громкая ошибка в лог,
+но не выход. Побочно это ломало и прогон тестов: `System.exit` из
+`AdesReferenceCompatibilityTest` убивал Gradle-executor (exit 32).
 
 ## Что не покрыто тестами (≈494 lines)
 
@@ -933,6 +1116,21 @@ OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bi
 с live test.pki.gov.kz.
 
 ## Что дальше — варианты
+
+### 0. Довести `feature/ades-levels` (текущая задача)
+
+Совместимость проверена в обе стороны: эталоны NCALayer мы принимаем (15/15,
+`AdesReferenceCompatibilityTest`), наши подписи его валидатор принимает
+(14/14 вручную, «Подтверждённый уровень» совпал с нашим `verifiedLevel` на
+каждом файле). Документация и `openapi.yml` обновлены. PR — mitwork/NCANode#12.
+
+Осталось необязательное:
+
+1. Коммитабельные эталоны — генератором на библиотеке НУЦ с тестовыми корнями,
+   если понадобится покрытие совместимости в CI (сейчас оба направления
+   проверены вручную и на боевом ключе, поэтому в CI не живут).
+2. Detached CAdES в их валидаторе — единственный не прогнанный вручную случай;
+   как его туда скормить, описано в `ades-levels-plan.md`.
 
 ### A. Дальнейший рост покрытия (76% → 80%)
 
@@ -980,6 +1178,11 @@ OCSP/CRL/TSP HTTP-bootstrap fixtures (заранее сохранённые `.bi
    forced HTTP_1_1, NO_PROXY explicit. Все 4 сервиса (Ca/Crl/Ocsp/Tsp)
    + тесты. Apache deps удалены. Тесты 163 → 164, coverage 76% → 75%
    (-1% за счёт configureProxy без unit-теста).
+
+10. **AdES-уровни** (ветка `feature/ades-levels`): CAdES/XAdES/PAdES
+    уровней B/T/LT/LTA под обновлённый NCALayer, Kalkan 0.7.5 → 0.7.8,
+    сверка на эталонах НУЦ, batch для трёх новых семейств.
+    Тесты 233 → **330**, coverage 76% → **85%**. См. `ades-levels-plan.md`.
 
 Все коммиты подписаны `Co-Authored-By: Claude Opus 4.7`.
 

@@ -13,6 +13,7 @@ import kz.gov.pki.kalkan.ocsp.OCSPReq
 import kz.gov.pki.kalkan.ocsp.OCSPReqGenerator
 import kz.gov.pki.kalkan.ocsp.OCSPResp
 import kz.gov.pki.kalkan.ocsp.RevokedStatus
+import kz.gov.pki.kalkan.ocsp.SingleResp
 import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.dto.ocsp.OcspResult
@@ -69,7 +70,34 @@ class OcspService(
             )
         }
 
-        val statuses = mutableListOf<OcspStatus>()
+        return exchanges(cert, issuer).map { it.status }
+    }
+
+    /**
+     * Сырые OCSP-ответы для встраивания в подпись уровня LT.
+     *
+     * Возвращаются только ответы, прошедшие полную проверку (nonce, подпись
+     * респондера, совпадение серийника) и заявляющие ACTIVE: вшивать в подпись
+     * непроверенный или отрицательный ответ бессмысленно — он не подтвердит
+     * ничего, а на проверке будет выглядеть доказательством.
+     */
+    fun collectResponses(cert: CertificateWrapper, issuer: CertificateWrapper?): List<ByteArray> {
+        if (issuer == null) return emptyList()
+        return exchanges(cert, issuer)
+            .filter { it.status.result == OcspResult.ACTIVE && it.response != null }
+            .map { it.response!! }
+    }
+
+    /** Ответ респондера вместе с вердиктом по нему. */
+    private class OcspExchange(val status: OcspStatus, val response: ByteArray?)
+
+    /**
+     * Общий обмен с респондерами: один проход по URL'ам, из которого берут
+     * своё и [verify], и [collectResponses]. Раздельные реализации означали бы
+     * два похода в сеть и риск разойтись в трактовке ответа.
+     */
+    private fun exchanges(cert: CertificateWrapper, issuer: CertificateWrapper): List<OcspExchange> {
+        val exchanges = mutableListOf<OcspExchange>()
         for (ocspUrl in resolveOcspUrls(cert)) {
             val url = ocspUrl.toString()
             try {
@@ -78,26 +106,26 @@ class OcspService(
 
                 val response = makeRequest(url, request.encoded)
                 val status = processOcspResponse(response, nonce, issuer, cert.x509Certificate.serialNumber)
-                statuses.add(status.copy(url = url))
+                exchanges.add(OcspExchange(status.copy(url = url), response))
             } catch (e: IOException) {
                 // Транспортный сбой (сеть/DNS/таймаут) или unparseable body
                 // (OCSPResp тоже кидает IOException на мусоре) — OCSP-ответа
                 // НЕТ ВОВСЕ. Это UNAVAILABLE, а не UNKNOWN: при наличии свежего
                 // CRL верификация может деградировать на него (isValid).
-                statuses.add(unavailableStatus(url, e.message))
+                exchanges.add(OcspExchange(unavailableStatus(url, e.message), null))
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
-                statuses.add(unavailableStatus(url, e.message))
+                exchanges.add(OcspExchange(unavailableStatus(url, e.message), null))
             } catch (e: OCSPException) {
                 // Ответ был, но обработка/крипто не сошлись — fail-closed,
                 // деградация на CRL не допускается.
-                statuses.add(unknownStatus(url, e.message))
+                exchanges.add(OcspExchange(unknownStatus(url, e.message), null))
             } catch (e: GeneralSecurityException) {
-                statuses.add(unknownStatus(url, e.message))
+                exchanges.add(OcspExchange(unknownStatus(url, e.message), null))
             }
         }
 
-        return statuses
+        return exchanges
     }
 
     /**
@@ -227,23 +255,121 @@ class OcspService(
             log.debug("OCSP response is past its nextUpdate={}, still using", singleResp.nextUpdate)
         }
 
-        return when (val status = singleResp.certStatus) {
-            null -> OcspStatus(result = OcspResult.ACTIVE, message = "OK")
-            is RevokedStatus -> {
-                val reason = try {
-                    status.revocationReason
-                } catch (e: IllegalStateException) {
-                    -1
-                }
-                OcspStatus(
-                    result = OcspResult.REVOKED,
-                    revocationTime = status.revocationTime,
-                    revocationReason = reason,
-                    message = "OK",
-                )
+        return certStatus(singleResp)
+    }
+
+    /** Отображение статуса из ответа в наш вердикт. Общее для живых и вшитых ответов. */
+    private fun certStatus(singleResp: SingleResp): OcspStatus = when (val status = singleResp.certStatus) {
+        null -> OcspStatus(result = OcspResult.ACTIVE, message = "OK")
+        is RevokedStatus -> {
+            val reason = try {
+                status.revocationReason
+            } catch (e: IllegalStateException) {
+                -1
             }
-            else -> unknownStatus(message = "Unknown status")
+            OcspStatus(
+                result = OcspResult.REVOKED,
+                revocationTime = status.revocationTime,
+                revocationReason = reason,
+                message = "OK",
+            )
         }
+        else -> unknownStatus(message = "Unknown status")
+    }
+
+    /**
+     * Вердикты по OCSP-ответам, вшитым в подпись, на момент [at].
+     *
+     * От живой проверки отличается двумя вещами.
+     *
+     * Nonce не проверяется — и это не послабление: он защищает от повтора в
+     * живом обмене, а у архивного ответа нет запроса, с которым его можно
+     * сличить. От подмены здесь защищает подпись респондера и то, что сам
+     * ответ накрыт меткой времени подписи.
+     *
+     * Зато проверяется покрытие: ответ авторитетен только на своём интервале
+     * `[thisUpdate, nextUpdate]` (RFC 6960 §2.2), поэтому не покрывающий
+     * момент [at] даёт UNAVAILABLE — «данных на этот момент нет», а не
+     * «сертификат в порядке».
+     *
+     * Подпись респондера и совпадение серийника проверяются ровно так же, как
+     * у живого ответа: материал пришёл из проверяемого документа.
+     */
+    fun statusOf(
+        cert: CertificateWrapper,
+        issuer: CertificateWrapper?,
+        responses: List<ByteArray>,
+        at: Date,
+    ): List<OcspStatus> {
+        if (issuer == null || responses.isEmpty()) return emptyList()
+        val expectedSerial = cert.x509Certificate.serialNumber
+
+        return responses.mapNotNull { response ->
+            try {
+                embeddedStatus(response, issuer, expectedSerial, at, cert.x509Certificate.notAfter)
+            } catch (e: Exception) {
+                log.warn("Cannot read the embedded OCSP response: {}", e.message)
+                unknownStatus(message = "Embedded OCSP response could not be read")
+            }
+        }
+    }
+
+    private fun embeddedStatus(
+        response: ByteArray,
+        issuer: CertificateWrapper,
+        expectedSerial: BigInteger,
+        at: Date,
+        certNotAfter: Date,
+    ): OcspStatus? {
+        val resp = OCSPResp(response)
+        if (resp.status != 0) return unknownStatus(message = "OCSP response status: ${'$'}{resp.status}")
+
+        val brep = resp.responseObject as BasicOCSPResp
+        findVerifiedResponderCertificate(brep, issuer)
+            ?: return unknownStatus(message = "Embedded OCSP response signature could not be verified")
+
+        val singleResp = brep.responses?.firstOrNull()
+            ?: return unknownStatus(message = "OCSP response has no single responses")
+
+        if (singleResp.certID?.serialNumber != expectedSerial) {
+            // Ответ не про этот сертификат — он просто не относится к делу.
+            return null
+        }
+
+        if (!authoritativeAt(singleResp.thisUpdate, singleResp.nextUpdate, at, certNotAfter)) {
+            return unavailableStatus(null, "Embedded OCSP response does not testify about the validation time")
+        }
+
+        return certStatus(singleResp)
+    }
+
+    /**
+     * Свидетельствует ли ответ о состоянии сертификата на момент [at].
+     *
+     * Годится либо ответ, чей интервал `[thisUpdate, nextUpdate]` накрывает
+     * момент, либо выпущенный **позже** — но пока сертификат ещё действовал.
+     * Отзыв необратим и датирован: случись он до [at], более поздний ответ
+     * показал бы это с `revocationTime ≤ at`. На этом стоит повышение уровня
+     * подписи — данные об отзыве для него всегда собираются уже после
+     * подписания (ETSI EN 319 102-1).
+     *
+     * После истечения сертификата ответ о прошлом уже не свидетельствует:
+     * отвечающий вправе забыть про отозванный, но истёкший сертификат, и тот
+     * выглядел бы добропорядочным.
+     */
+    private fun authoritativeAt(
+        thisUpdate: Date?,
+        nextUpdate: Date?,
+        at: Date,
+        certNotAfter: Date,
+    ): Boolean {
+        if (thisUpdate == null) return false
+        val covers = thisUpdate.time <= at.time + CLOCK_SKEW_MS &&
+            (nextUpdate == null || nextUpdate.time + CLOCK_SKEW_MS >= at.time)
+        if (covers) return true
+
+        val issuedAfter = thisUpdate.time + CLOCK_SKEW_MS >= at.time
+        return issuedAfter && thisUpdate.time <= certNotAfter.time + CLOCK_SKEW_MS
     }
 
     /**

@@ -8,6 +8,7 @@ import kz.gov.pki.kalkan.asn1.pkcs.PKCSObjectIdentifiers
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedData
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
+import kz.gov.pki.kalkan.asn1.cmp.PKIFailureInfo
 import kz.gov.pki.kalkan.tsp.TSPException
 import kz.gov.pki.kalkan.tsp.TimeStampRequestGenerator
 import kz.gov.pki.kalkan.tsp.TimeStampResponse
@@ -15,6 +16,7 @@ import kz.gov.pki.kalkan.tsp.TimeStampToken
 import kz.gov.pki.kalkan.tsp.TimeStampTokenInfo
 import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.TspConfiguration
+import kz.ncanode.exception.ClientException
 import kz.ncanode.exception.TspException
 import kz.ncanode.util.byteToASN1
 import kz.ncanode.util.getTspHashAlgorithmByOid
@@ -89,7 +91,11 @@ class TspService(
                 try {
                     val response = makeRequest(reqData)
                     response.validate(request)
-                    return response.timeStampToken
+                    return tokenOf(response)
+                } catch (e: ClientException) {
+                    // Служба отказала по существу запроса — повтор ничего не
+                    // изменит, а клиент должен узнать причину сразу.
+                    throw e
                 } catch (e: RuntimeException) {
                     lastException = e
                 }
@@ -105,6 +111,38 @@ class TspService(
         } catch (e: TSPException) {
             log.error("TSP creation failure.", e)
             throw TspException("TSP creation failure", e)
+        }
+    }
+
+    /**
+     * Токен из ответа службы — либо внятная ошибка.
+     *
+     * При отказе (`PKIStatus` не granted) токена в ответе нет вовсе, и прежде
+     * это давало `NullPointerException` с текстом
+     * «getTimeStampToken(...) must not be null» — сообщение, по которому
+     * невозможно понять, что произошло на самом деле.
+     *
+     * Отказ по существу запроса (не тот алгоритм хэша, непринятая политика,
+     * некорректный запрос) — это 400: повтор с тем же запросом даст тот же
+     * ответ, менять нужно параметры подписи. Всё остальное (перегрузка,
+     * внутренний сбой службы) — 500 и повтор.
+     */
+    internal fun tokenOf(response: TimeStampResponse): TimeStampToken {
+        response.timeStampToken?.let { return it }
+
+        val failInfo = response.failInfo?.intValue()
+        val details = buildString {
+            append("TSA returned no timestamp token (status ").append(response.status)
+            failInfo?.let { append(", failInfo ").append(it) }
+            response.statusString?.let { append(", \"").append(it).append('"') }
+            append(')')
+        }
+        log.error(details)
+
+        return if (failInfo != null && failInfo and REQUEST_FAULT_FAIL_INFO != 0) {
+            throw ClientException(details)
+        } else {
+            throw TspException(details)
         }
     }
 
@@ -275,5 +313,20 @@ class TspService(
 
         /** OID расширения extendedKeyUsage (RFC 5280 §4.2.1.12) — для проверки criticality. */
         private const val EKU_EXTENSION_OID = "2.5.29.37"
+
+        /**
+         * Отказы, означающие, что не так с самим запросом (RFC 3161 §2.4.2):
+         * не тот алгоритм хэша, некорректный запрос или формат данных,
+         * непринятая политика или расширение. Повторять такой запрос
+         * бессмысленно — менять надо параметры подписи.
+         *
+         * Значения — битовые маски (`badAlg` = 128, а не 0), и в ответе их
+         * может быть несколько сразу, поэтому проверка через `and`.
+         */
+        private val REQUEST_FAULT_FAIL_INFO = PKIFailureInfo.badAlg or
+            PKIFailureInfo.badRequest or
+            PKIFailureInfo.badDataFormat or
+            PKIFailureInfo.unacceptedPolicy or
+            PKIFailureInfo.unacceptedExtension
     }
 }

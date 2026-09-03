@@ -47,8 +47,34 @@ open class NCANode {
         @JvmStatic
         fun main(args: Array<String>) {
             println(banner())
+            preloadThrowableLogging()
             SpringApplication.run(NCANode::class.java, *args)
         }
+
+        /**
+         * Заранее подгружает классы, которыми logback печатает стек-трейсы.
+         *
+         * Они загружаются лениво — при первом логировании исключения. Если это
+         * впервые случается уже при остановке (Ctrl+C прерывает фоновую
+         * загрузку CRL, та логирует ошибку), классы может оказаться неоткуда
+         * взять: hook'и завершения работают параллельно, и загрузчик boot-jar'а
+         * успевает закрыться. Вместо записи в лог тогда получается
+         * `NoClassDefFoundError: ch/qos/logback/classic/spi/ThrowableProxy` —
+         * пугающий, но безобидный: приложение к тому моменту уже завершается.
+         */
+        private fun preloadThrowableLogging() {
+            val loader = NCANode::class.java.classLoader
+            for (name in THROWABLE_LOGGING_CLASSES) {
+                runCatching { Class.forName(name, true, loader) }
+            }
+        }
+
+        private val THROWABLE_LOGGING_CLASSES = listOf(
+            "ch.qos.logback.classic.spi.ThrowableProxy",
+            "ch.qos.logback.classic.spi.ThrowableProxyUtil",
+            "ch.qos.logback.classic.spi.StackTraceElementProxy",
+            "ch.qos.logback.classic.spi.PackagingDataCalculator",
+        )
 
         fun banner(): String = """
             888b    888  .d8888b.        d8888 888b    888  .d88888b.  8888888b.  8888888888  d8888  ${" "}

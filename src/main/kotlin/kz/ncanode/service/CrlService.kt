@@ -13,6 +13,9 @@ import kz.ncanode.exception.ServerException
 import kz.ncanode.util.isInternalHost
 import kz.ncanode.util.sha1
 import kz.ncanode.wrapper.CertificateWrapper
+import org.bouncycastle.asn1.ASN1Integer
+import org.bouncycastle.asn1.ASN1OctetString
+import org.bouncycastle.asn1.ASN1Primitive
 import org.bouncycastle.asn1.x509.Extension
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -33,6 +36,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.GeneralSecurityException
 import java.security.PublicKey
+import java.security.cert.X509CRL
+import java.security.cert.CertificateFactory
 import java.security.cert.CRLReason
 import java.time.Duration
 import java.util.Collections
@@ -244,11 +249,21 @@ open class CrlService(
      * актуален ли CRL по `nextUpdate` на момент проверки.
      */
     private data class UsableCrl(
-        val index: CrlIndex,
+        /**
+         * Поиск записи об отзыве. Функцией, а не конкретным типом: из кэша
+         * записи ищет mmap-индекс, а у материала, вшитого в подпись, на руках
+         * разобранный `X509CRL` — вердикт для обоих должен быть один.
+         */
+        val find: (BigInteger) -> RevokedEntry?,
+        /** Файл в кэше; у вшитого материала его нет. */
+        val sourceFile: File?,
         val fileName: String,
         val crlNumber: BigInteger?,
         val baseCrlNumber: BigInteger?,
+        /** Список действует на момент проверки — от этого зависит fallback с OCSP. */
         val fresh: Boolean,
+        /** Список свидетельствует о состоянии на момент проверки — см. [authoritativeAt]. */
+        val authoritative: Boolean = fresh,
     ) {
         val isDelta: Boolean get() = baseCrlNumber != null
     }
@@ -301,8 +316,59 @@ open class CrlService(
         // schedule'ом и тоже остаются в cache (см. updateCache).
         fetchOnDemandCrls(cert)
 
-        // Собираем все пригодные CRL этого издателя из всех кэш-каталогов и
-        // делим на base (full) и delta по наличию deltaCRLIndicator.
+        val (base, delta) = selectCrls(certIssuer, issuerKey, now)
+        // Без base полную картину отзывов не построить — UNAVAILABLE.
+        if (base == null) {
+            return CrlStatus(
+                result = CrlResult.UNAVAILABLE,
+                reason = "No trusted CRL for certificate issuer in cache",
+            )
+        }
+
+        return verdict(base, delta, cert)
+    }
+
+    /**
+     * Вердикт по отобранным base и delta. Общий для проверки по кэшу и по
+     * материалу, вшитому в подпись: одни и те же данные не должны давать
+     * разный ответ в зависимости от того, откуда они пришли.
+     */
+    private fun verdict(base: UsableCrl, delta: UsableCrl?, cert: CertificateWrapper): CrlStatus {
+        val serial = cert.x509Certificate.serialNumber
+
+        // Delta авторитетна для изменений после base. Её запись про наш серийник
+        // либо отзывает (любой reason кроме removeFromCRL), либо снимает отзыв
+        // (removeFromCRL — сертификат больше не считается отозванным).
+        val deltaEntry = delta?.find?.invoke(serial)
+        if (deltaEntry != null && deltaEntry.reason != CRLReason.REMOVE_FROM_CRL) {
+            return revokedStatus(deltaEntry, delta.fileName)
+        }
+        if (deltaEntry == null) {
+            // Delta про серийник молчит — вердикт по base.
+            val baseEntry = base.find(serial)
+            if (baseEntry != null) return revokedStatus(baseEntry, base.fileName)
+        }
+
+        // Не отозван → ACTIVE. Свежесть — от применённой delta, иначе от base:
+        // объединённая картина «текущая», если текущей является самый свежий
+        // применённый источник (RFC 5280 §5.2.4).
+        val fresh = if (delta != null) delta.fresh else base.fresh
+        return CrlStatus(result = CrlResult.ACTIVE, fresh = fresh)
+    }
+
+    /**
+     * Отбирает пригодные CRL издателя из кэша: самый свежий base по `CRLNumber`
+     * и применимую к нему delta (RFC 5280 §5.2.4).
+     *
+     * Общий для [verify] и [collectCrls] — иначе проверка и встраивание могли
+     * бы опираться на разные наборы CRL, и подпись уровня LT содержала бы не
+     * тот материал, по которому мы сами выносим вердикт.
+     */
+    private fun selectCrls(
+        certIssuer: X500Principal,
+        issuerKey: PublicKey?,
+        now: Date,
+    ): Pair<UsableCrl?, UsableCrl?> {
         val usable = ArrayList<UsableCrl>()
         val onDemandDir = cacheOnDemandDir()
         for (cacheDirectory in listOf(cacheFullDir(), cacheDeltaDir(), onDemandDir)) {
@@ -318,39 +384,184 @@ open class CrlService(
             }
         }
 
-        // Самый свежий base по CRLNumber (null CRLNumber сортируется как самый
-        // старый). Без base полную картину отзывов не построить — UNAVAILABLE.
+        val base = usable.filter { !it.isDelta }.maxWithOrNull(compareBy { it.crlNumber })
+            ?: return null to null
+        val delta = usable
+            .filter { it.isDelta && isDeltaApplicable(base, it) }
+            .maxWithOrNull(compareBy { it.crlNumber })
+        return base to delta
+    }
+
+    /**
+     * CRL'и, применимые к издателю [cert] — для встраивания в подпись уровня
+     * LT. Отбор тот же, что при проверке; пустой список означает, что
+     * встраивать нечего.
+     */
+    fun collectCrls(cert: CertificateWrapper): List<X509CRL> {
+        if (!crlConfiguration.isEnabled) return emptyList()
+
+        val certIssuer = cert.issuerX500Principal
+        val selfSigned = certIssuer == cert.subjectX500Principal
+        val issuerKey: PublicKey? = cert.issuerCertificate?.publicKey
+            ?: if (selfSigned) cert.publicKey else null
+
+        fetchOnDemandCrls(cert)
+        val (base, delta) = selectCrls(certIssuer, issuerKey, Date())
+        return listOfNotNull(base, delta).mapNotNull { readCrl(it.sourceFile) }
+    }
+
+    /** Разбирает файл кэша в `X509CRL` — только для встраивания в подпись. */
+    private fun readCrl(file: File?): X509CRL? {
+        if (file == null) return null
+        return try {
+            file.inputStream().use {
+                CertificateFactory.getInstance("X.509").generateCRL(it) as X509CRL
+            }
+        } catch (e: Exception) {
+            log.warn("Cannot read CRL {} for embedding: {}", file.name, e.message)
+            null
+        }
+    }
+
+    /**
+     * Вердикт по CRL, вшитым в подпись, на момент [at].
+     *
+     * Два принципиальных отличия от проверки по кэшу. Момент — не «сейчас», а
+     * время, на которое проверяется подпись; годность списка относительно него
+     * решает [authoritativeAt]. И материал пришёл из проверяемого документа,
+     * поэтому подпись каждого CRL проверяется ключом издателя ровно так же, как
+     * у скачанного: иначе мы доверяли бы тому, что нам прислали.
+     */
+    fun statusOf(cert: CertificateWrapper, crls: List<X509CRL>, at: Date): CrlStatus {
+        if (crls.isEmpty()) {
+            return CrlStatus(result = CrlResult.UNAVAILABLE, reason = "No embedded CRL")
+        }
+
+        val certIssuer = cert.issuerX500Principal
+        val selfSigned = certIssuer == cert.subjectX500Principal
+        val issuerKey: PublicKey? = cert.issuerCertificate?.publicKey
+            ?: if (selfSigned) cert.publicKey else null
+
+        val usable = crls.mapIndexedNotNull { index, crl ->
+            embeddedCrl(crl, "embedded#${'$'}{index + 1}", certIssuer, issuerKey, at, cert.x509Certificate.notAfter)
+        }
         val base = usable.filter { !it.isDelta }.maxWithOrNull(compareBy { it.crlNumber })
             ?: return CrlStatus(
                 result = CrlResult.UNAVAILABLE,
-                reason = "No trusted CRL for certificate issuer in cache",
+                reason = "No embedded CRL covering the validation time",
             )
-
-        // Применимая к base delta с наибольшим CRLNumber (RFC 5280 §5.2.4).
         val delta = usable
             .filter { it.isDelta && isDeltaApplicable(base, it) }
             .maxWithOrNull(compareBy { it.crlNumber })
 
-        val serial = cert.x509Certificate.serialNumber
-
-        // Delta авторитетна для изменений после base. Её запись про наш серийник
-        // либо отзывает (любой reason кроме removeFromCRL), либо снимает отзыв
-        // (removeFromCRL — сертификат больше не считается отозванным).
-        val deltaEntry = delta?.index?.find(serial)
-        if (deltaEntry != null && deltaEntry.reason != CRLReason.REMOVE_FROM_CRL) {
-            return revokedStatus(deltaEntry, delta.fileName)
+        val status = verdict(base, delta, cert)
+        // ACTIVE от списка, который о моменте проверки ничего не говорит, — не
+        // свидетельство. А вот REVOKED остаётся в силе: отзывы не отменяются, и
+        // запись о нём говорит сама за себя. Без этого различия вшитые данные
+        // перебивали бы живые при проверке «на сейчас», хотя устарели.
+        val authoritative = if (delta != null) delta.authoritative else base.authoritative
+        return if (status.result == CrlResult.ACTIVE && !authoritative) {
+            CrlStatus(
+                result = CrlResult.UNAVAILABLE,
+                reason = "Embedded CRL does not cover the validation time",
+            )
+        } else {
+            status
         }
-        if (deltaEntry == null) {
-            // Delta про серийник молчит — вердикт по base.
-            val baseEntry = base.index.find(serial)
-            if (baseEntry != null) return revokedStatus(baseEntry, base.fileName)
+    }
+
+    /**
+     * Приводит вшитый в подпись CRL к [UsableCrl]. Фильтры те же, что у
+     * кэшированного: чужой издатель, непонятое critical-расширение,
+     * несходящаяся подпись — списком не пользуемся.
+     */
+    private fun embeddedCrl(
+        crl: X509CRL,
+        name: String,
+        certIssuer: X500Principal,
+        issuerKey: PublicKey?,
+        at: Date,
+        certNotAfter: Date,
+    ): UsableCrl? {
+        if (crl.issuerX500Principal != certIssuer) return null
+
+        val unhandledCritical = (crl.criticalExtensionOIDs ?: emptySet()) - SUPPORTED_CRITICAL_CRL_EXTENSIONS
+        if (unhandledCritical.isNotEmpty()) {
+            log.warn("Embedded CRL {} has critical extension(s) {} we do not process — skipping", name, unhandledCritical)
+            return null
         }
 
-        // Не отозван → ACTIVE. Свежесть — от применённой delta, иначе от base:
-        // объединённая картина «текущая», если текущей является самый свежий
-        // применённый источник (RFC 5280 §5.2.4).
-        val fresh = if (delta != null) delta.fresh else base.fresh
-        return CrlStatus(result = CrlResult.ACTIVE, fresh = fresh)
+        if (issuerKey != null) {
+            try {
+                crl.verify(issuerKey)
+            } catch (e: GeneralSecurityException) {
+                log.warn("Embedded CRL {} signature does not verify against issuer key: {}", name, e.message)
+                return null
+            }
+        }
+
+        val fresh = crl.nextUpdate != null && !crl.nextUpdate.before(at) && !crl.thisUpdate.after(at)
+        return UsableCrl(
+            find = { serial ->
+                crl.revokedCertificates
+                    ?.firstOrNull { it.serialNumber == serial }
+                    ?.let { RevokedEntry(it.revocationDate, it.revocationReason) }
+            },
+            sourceFile = null,
+            fileName = name,
+            crlNumber = readIntegerCrlExtension(crl, Extension.cRLNumber.id),
+            baseCrlNumber = readIntegerCrlExtension(crl, Extension.deltaCRLIndicator.id),
+            fresh = fresh,
+            authoritative = authoritativeAt(crl.thisUpdate, crl.nextUpdate, at, certNotAfter),
+        )
+    }
+
+    /**
+     * Читает INTEGER-расширение разобранного CRL (CRLNumber / BaseCRLNumber).
+     * У кэшированных списков эти числа берутся из индекса, а у вшитых в
+     * подпись — только отсюда. `null`, если расширения нет или оно не парсится.
+     */
+    private fun readIntegerCrlExtension(crl: X509CRL, oid: String): BigInteger? {
+        val raw = crl.getExtensionValue(oid) ?: return null
+        return try {
+            val octets = (ASN1Primitive.fromByteArray(raw) as ASN1OctetString).octets
+            (ASN1Primitive.fromByteArray(octets) as ASN1Integer).value
+        } catch (e: Exception) {
+            log.warn("Cannot parse CRL integer extension {}: {}", oid, e.message)
+            null
+        }
+    }
+
+    /**
+     * Свидетельствуют ли данные об отзыве о состоянии сертификата на момент [at].
+     *
+     * Два случая, и оба нужны:
+     *
+     *  - интервал `[thisUpdate, nextUpdate]` накрывает [at] — обычная проверка
+     *    «сейчас» и проверка старой подписи по вшитому в неё материалу;
+     *  - данные выпущены **позже** [at], но пока сертификат ещё действовал.
+     *    Отзыв необратим и попадает в списки с датой: если бы сертификат
+     *    отозвали до [at], более поздние данные показали бы это с
+     *    `revocationDate ≤ at`. Поэтому свежие данные свидетельствуют и о
+     *    прошлом — на этом стоит повышение уровня подписи (ETSI EN 319 102-1).
+     *
+     * Граница у второго случая принципиальна: после истечения сертификата
+     * издатель вправе убрать запись о нём из списка (RFC 5280 §5), и тогда
+     * отозванный сертификат выглядел бы добропорядочным.
+     */
+    private fun authoritativeAt(
+        thisUpdate: Date?,
+        nextUpdate: Date?,
+        at: Date,
+        certNotAfter: Date?,
+    ): Boolean {
+        if (thisUpdate == null) return false
+        val covers = nextUpdate != null && !nextUpdate.before(at) && !thisUpdate.after(at)
+        if (covers) return true
+
+        val issuedAfter = !thisUpdate.before(at)
+        val certificateStillValid = certNotAfter == null || !thisUpdate.after(certNotAfter)
+        return issuedAfter && certificateStillValid
     }
 
     /**
@@ -394,7 +605,6 @@ open class CrlService(
             log.warn("Skipping unreadable CRL file: {}", crlFile.name)
             return null
         }
-
         // CRL должен быть выпущен тем же CA, что и проверяемый сертификат.
         if (index.issuer != certIssuer) return null
 
@@ -437,26 +647,21 @@ open class CrlService(
             } catch (e: GeneralSecurityException) {
                 // Это уже реальная проблема — подпись CRL не сходится, либо ключ
                 // от другого CA. Такой CRL пропускаем.
-                log.warn(
-                    "CRL {} signature does not verify against issuer key: {}",
-                    crlFile.name, e.message,
-                )
+                log.warn("CRL {} signature does not verify against issuer key: {}", crlFile.name, e.message)
                 return null
             }
         } else {
             // Issuer'а нет в trust store (типично для легаси-CA). Криптопроверку
             // CRL пропускаем, но сам CRL используем для проверки серийников.
-            log.debug(
-                "Issuer certificate not available, using CRL {} without signature verification",
-                crlFile.name,
-            )
+            log.debug("Issuer certificate not available, using CRL {} without signature verification", crlFile.name)
         }
 
         // RFC 5280 §5.1.2.5 требует nextUpdate у conforming CRL; отсутствие поля
         // трактуем консервативно — как несвежий.
         val fresh = nextUpdate != null && !nextUpdate.before(now)
         return UsableCrl(
-            index = index,
+            find = index::find,
+            sourceFile = crlFile,
             fileName = crlFile.name,
             crlNumber = index.crlNumber,
             baseCrlNumber = index.baseCrlNumber,
@@ -508,7 +713,7 @@ open class CrlService(
                     continue
                 }
 
-                downloadCrl(cacheDirectory, url)
+                downloadCrlWithRetries(cacheDirectory, url, crlConfiguration.retries)
                 updatedCount++
             }
 
@@ -682,22 +887,68 @@ open class CrlService(
     }
 
     /**
-     * Скачивает CRL файл в директорию.
+     * Скачивает CRL файл в директорию. Одна попытка — для загрузки по ссылке
+     * из сертификата, которая идёт внутри проверки подписи.
      */
     fun downloadCrl(cacheDirName: String, url: URL) {
         try {
-            val crlUrl = url.toString()
-            val crlFileName = sha1(crlUrl) + CRL_FILE_EXTENSION
-
-            log.info("Downloading CRL file from: {}", crlUrl)
-            val downloadedFile = download(crlUrl, getCrlCacheFilePathFor(cacheDirName, crlFileName).toPath())
-            log.info(
-                "CRL file \"{}\" successfully downloaded. Size: {} bytes",
-                crlFileName, downloadedFile.length(),
-            )
+            downloadCrlOrThrow(cacheDirName, url)
         } catch (e: CrlException) {
             log.error("CRL File download failure", e.cause)
         }
+    }
+
+    /**
+     * То же, но с повторами — для планового обновления кэша.
+     *
+     * Хост НУЦ через раз не отвечает вовсе: соединение уходит в пустоту и
+     * обрывается по таймауту, тогда как следующая попытка проходит за
+     * миллисекунды. Расплата за единственную неудачу непропорциональна —
+     * список остаётся прежним до следующего срабатывания расписания, то есть
+     * на весь TTL (у CA-CRL это сутки).
+     *
+     * Повторяем только здесь: загрузку по ссылке из сертификата ждёт клиент,
+     * и лишние попытки растянули бы ему ответ.
+     */
+    fun downloadCrlWithRetries(cacheDirName: String, url: URL, attempts: Int) {
+        val total = attempts.coerceAtLeast(1)
+        for (attempt in 1..total) {
+            try {
+                downloadCrlOrThrow(cacheDirName, url)
+                return
+            } catch (e: CrlException) {
+                if (attempt == total) {
+                    log.error("CRL File download failure", e.cause)
+                    return
+                }
+                log.warn(
+                    "CRL download from {} failed (attempt {} of {}): {} — retrying",
+                    url, attempt, total, e.cause?.message ?: e.message,
+                )
+                if (!pauseBeforeRetry(attempt)) return
+            }
+        }
+    }
+
+    /** Пауза перед повтором. `false` — нас остановили, повторять не нужно. */
+    private fun pauseBeforeRetry(attempt: Int): Boolean = try {
+        Thread.sleep(RETRY_BACKOFF_MS * attempt)
+        true
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        false
+    }
+
+    internal open fun downloadCrlOrThrow(cacheDirName: String, url: URL) {
+        val crlUrl = url.toString()
+        val crlFileName = sha1(crlUrl) + CRL_FILE_EXTENSION
+
+        log.info("Downloading CRL file from: {}", crlUrl)
+        val downloadedFile = download(crlUrl, getCrlCacheFilePathFor(cacheDirName, crlFileName).toPath())
+        log.info(
+            "CRL file \"{}\" successfully downloaded. Size: {} bytes",
+            crlFileName, downloadedFile.length(),
+        )
     }
 
     /**
@@ -802,6 +1053,9 @@ open class CrlService(
     }
 
     companion object {
+        /** База паузы между попытками: 1-я — 1 с, 2-я — 2 с. */
+        private const val RETRY_BACKOFF_MS = 1000L
+
         private val log = LoggerFactory.getLogger(CrlService::class.java)
         const val CRL_DEFAULT = "default"
         const val CRL_CA = "ca-crl"

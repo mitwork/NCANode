@@ -26,6 +26,11 @@ kotlin {
     jvmToolchain(25)
     compilerOptions {
         freeCompilerArgs.add("-Xjsr305=strict")
+        // Без этого Kotlin не пишет в байткод аннотации на аргументах типа, и
+        // `List<@Valid Signer>` молча перестаёт каскадировать валидацию.
+        // Форма с аннотацией на самом списке объявлена устаревшей в Hibernate
+        // Validator (HV000271), так что нужна именно эта.
+        freeCompilerArgs.add("-Xemit-jvm-type-annotations")
     }
 }
 
@@ -53,7 +58,7 @@ dependencies {
     // tomcat теперь приходит транзитивно через starter-web; war/providedRuntime убрали.
 
     // KalkanCrypt из flatDir lib/
-    implementation(":knca_provider_jce_kalkan-0.7.5")
+    implementation(":knca_provider_jce_kalkan-0.7.8")
     implementation(":kalkancrypt-xmldsig-0.5")
     implementation("org.apache.santuario:xmlsec:4.0.4")
 
@@ -96,6 +101,10 @@ dependencies {
 tasks.test {
     useJUnitPlatform()
     finalizedBy(tasks.jacocoTestReport)
+    // Spring-контексты (их несколько: разные профили и property-переопределения)
+    // живут в кэше до конца прогона, и вместе с разобранными CRL дефолтной кучи
+    // тестовой JVM перестало хватать — прогон падал с OutOfMemoryError.
+    maxHeapSize = "2g"
 }
 
 tasks.jacocoTestReport {

@@ -34,6 +34,12 @@ open class CrlBaseConfiguration : CrlConfiguration {
     override var isStrict: Boolean = false
 
     /**
+     * Число попыток скачать CRL по расписанию (см. [CrlConfiguration.retries]).
+     * Оба конфига мапятся на один env `NCANODE_CRL_RETRIES`.
+     */
+    override var retries: Int = 3
+
+    /**
      * Потолок размера скачиваемого CRL (см. [CrlConfiguration.maxSizeMb]).
      * 64 МБ — примерно трёхкратный запас к боевому `nca_gost_2022.crl`
      * (~20 МБ). Оба конфига мапятся на один env `NCANODE_CRL_MAX_SIZE_MB`.

@@ -22,12 +22,14 @@
 - Подпись XML данных с помощью xmldsig
 - Подпись WSSE для [SmartBridge](https://sb.egov.kz/)
 - Подпись и верификация PDF (CAdES-T)
+- Форматы AdES — CAdES, XAdES и PAdES уровней B, T, LT и LTA (совместимо с NCALayer)
 - Кодирование и верификация JWT (алгоритм GG2015)
 - Поддержка OCSP и CRL (при сетевой недоступности OCSP — автоматический fallback на свежий CRL)
 - Проверка валидности сертификатов (включая цепочку доверия)
 - Поддержка [CMS](https://en.wikipedia.org/wiki/Cryptographic_Message_Syntax)
 - TSP-метки и CAdES-T для CMS / PDF
 - Множественные подписи для xmldsig и CMS
+- Массовые (batch) операции для всех сервисов
 - Добавление подписей в уже существующие файлы CMS и XML
 - ГОСТ 34.10-2015 (актуальный стандарт НУЦ РК) и новые CRL
 - Тестовое покрытие на ключевые кейсы
@@ -40,7 +42,7 @@
 - **Kotlin** 2.3.x, **Java 25** (toolchain через foojay-resolver)
 - **Spring Boot** 4.0.x, **Gradle** 9.5.x
 - Jakarta EE (без `javax.*` кроме JDK-native)
-- KalkanCrypt 0.7.5, BouncyCastle 1.84, Apache Santuario 4.0.x, Apache PDFBox 3.0.x
+- KalkanCrypt 0.7.8, BouncyCastle 1.84, Apache Santuario 4.0.x, Apache PDFBox 3.0.x
 - Тесты: Kotest 5.9 + MockK + Spring Boot Test
 
 ## Официальная группа в Telegram

@@ -82,8 +82,16 @@ class CaService(
                     )
                     val stale = caFile.exists() && (now - caFile.lastModified()) > ttlMillis
 
-                    val cert: CertificateWrapper? = if (force || !caFile.exists() || !caFile.canRead() || stale) {
-                        downloadCert(url, caFile)
+                    val cached = caFile.exists() && caFile.canRead()
+                    val cert: CertificateWrapper? = if (force || !cached || stale) {
+                        // Не скачался или не разобрался — остаётся прежняя копия,
+                        // если она есть: устаревший корень лучше отсутствующего.
+                        downloadCert(url, caFile) ?: if (cached) {
+                            log.warn("Using the previously cached copy of the CA certificate from {}", url)
+                            CertificateWrapper.fromFile(caFile)
+                        } else {
+                            null
+                        }
                     } else {
                         CertificateWrapper.fromFile(caFile)
                     }
@@ -99,6 +107,13 @@ class CaService(
                 // rootCertificates видят актуальную цепочку целиком. Не
                 // clear()+addAll() — это давало окно перестройки для lock-free
                 // читателей.
+                if (loaded.isEmpty()) {
+                    log.error(
+                        "CA bundle is empty after the update: none of {} configured certificates could be " +
+                            "loaded. Signature verification will not find issuers until this is fixed.",
+                        urls.size,
+                    )
+                }
                 certificates = loaded.toList()
 
                 // Pass 2 может заменить отдельные записи (отозван/протух →
@@ -223,13 +238,22 @@ class CaService(
         System.exit(EXIT_CODE)
     }
 
+    /**
+     * Сертификат, если он получен; иначе `null` и запись в лог.
+     *
+     * Раньше здесь вызывался `shutdown()` — то есть недоступность одного адреса
+     * НУЦ гасила весь сервис (а при рестарте всё повторялось). Адреса же
+     * отвечают не всегда: измеренная тишина у `pki.gov.kz` длится дольше
+     * таймаута. Бандл собираем из того, что доступно, а пустой бандл заметен по
+     * ошибке ниже и по тому, что проверки подписей начнут возвращать
+     * «издатель не найден».
+     */
     private fun checkCertForNull(url: URL, cert: CertificateWrapper?, caFile: File): CertificateWrapper? {
         if (cert == null) {
             log.error(
-                "Cannot open CA certificate from: '{}'. File name: {}",
+                "Cannot open CA certificate from: '{}' (file {}) — skipping it in this update",
                 url, caFile.absolutePath,
             )
-            shutdown()
             return null
         }
         return cert

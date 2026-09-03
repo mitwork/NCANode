@@ -10,8 +10,7 @@ import jakarta.validation.constraints.NotEmpty
  */
 class JwtEncodeBatchRequest {
     @NotEmpty
-    @Valid
-    var jwts: List<JwtEncodeRequest.JwtRequest> = emptyList()
+    var jwts: List<@Valid JwtEncodeRequest.JwtRequest> = emptyList()
 
     @NotEmpty
     var key: String = ""

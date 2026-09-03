@@ -14,6 +14,7 @@ ncanode:
     cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
     warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:true}
     strict: ${NCANODE_CRL_STRICT:false}
+    retries: ${NCANODE_CRL_RETRIES:3}
     maxSizeMb: ${NCANODE_CRL_MAX_SIZE_MB:64}
     onDemandMaxEntries: ${NCANODE_CRL_ONDEMAND_MAX:64}
     ttl: ${NCANODE_CRL_TTL:1440}
@@ -42,6 +43,7 @@ ncanode:
       cacheEnabled: ${NCANODE_CRL_CACHE_ENABLED:true}
       warmupEnabled: ${NCANODE_CRL_WARMUP_ENABLED:false}
       strict: ${NCANODE_CRL_STRICT:false}
+      retries: ${NCANODE_CRL_RETRIES:3}
       maxSizeMb: ${NCANODE_CRL_MAX_SIZE_MB:64}
       onDemandMaxEntries: ${NCANODE_CRL_ONDEMAND_MAX:64}
       ttl: ${NCANODE_CA_CRL_TTL:1440}
@@ -50,6 +52,12 @@ ncanode:
         enabled: false
         url:
         ttl:
+  xades:
+    # Экспериментально: ссылка на документ исключает ВСЕ подписи, а не только
+    # свою. Делает документ с несколькими подписями проверяемым для тех, кто
+    # не снимает более поздние подписи. Меняет формат выпускаемых подписей,
+    # поэтому по умолчанию выключено.
+    excludeSignatures: ${NCANODE_XADES_EXCLUDE_SIGNATURES:false}
   tsp:
     url: ${NCANODE_TSP_URL:http://tsp.pki.gov.kz/}
     retries: ${NCANODE_TSP_RETRIES:3}

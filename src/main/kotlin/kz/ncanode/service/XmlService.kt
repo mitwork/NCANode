@@ -14,6 +14,7 @@ import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.DocumentWrapper
 import kz.ncanode.wrapper.KalkanWrapper
 import kz.ncanode.wrapper.XMLSignatureWrapper
+import org.apache.xml.security.utils.Constants
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.w3c.dom.Document
@@ -122,11 +123,34 @@ class XmlService(
     /**
      * Проверяет XML-подписи.
      */
-    fun verify(xml: String, checkOcsp: Boolean, checkCrl: Boolean): VerificationResponse {
+    fun verify(
+        xml: String,
+        checkOcsp: Boolean,
+        checkCrl: Boolean,
+        /**
+         * Вызывается для каждой подписи до её проверки: получает сертификат и
+         * сам элемент `ds:Signature`. Позволяет заранее прикрепить вердикты по
+         * вшитому материалу (уровень LT) — тогда `attachValidationData` за ними
+         * в сеть не пойдёт. По умолчанию ничего не делает, поведение прежних
+         * вызовов не меняется.
+         */
+        prepare: (CertificateWrapper, Element) -> Unit = { _, _ -> },
+        /**
+         * Вызывается после проверки каждой подписи: элемент и её собственный
+         * вердикт. Общий флаг по документу не даёт понять, какая из подписей
+         * не прошла, а AdES-слой сообщает это по каждой отдельно.
+         */
+        onSignature: (Element, Boolean) -> Unit = { _, _ -> },
+    ): VerificationResponse {
         warnIfRevocationDisabled(checkOcsp, checkCrl)
         val document = read(xml, false)
         val root = document.documentElement
-        val initial = root.getElementsByTagName("ds:Signature").length
+
+        // Подпись может быть и самим корнем — тогда документ лежит внутри неё
+        // (ENVELOPING). `getElementsByTagName` ищет только потомков, поэтому
+        // такой документ выглядел как «подписей нет» и отвергался.
+        val rootIsSignature = root.namespaceURI == Constants.SignatureSpecNS && root.localName == "Signature"
+        val initial = if (rootIsSignature) 1 else root.getElementsByTagName("ds:Signature").length
 
         var valid = initial > 0
         val certs = mutableListOf<CertificateWrapper?>()
@@ -134,21 +158,27 @@ class XmlService(
 
         // NodeList "живой": removeChild уменьшает длину, поэтому всегда берём
         // последний элемент. Так каждый ds:Signature обрабатывается ровно раз.
-        while (root.getElementsByTagName("ds:Signature").length > 0) {
-            val live = root.getElementsByTagName("ds:Signature")
-            val signature = live.item(live.length - 1) as? Element
-                ?: throw ClientException("Bad signature: Element 'ds:Reference' is not found in XML document")
+        while (if (rootIsSignature) certs.isEmpty() else root.getElementsByTagName("ds:Signature").length > 0) {
+            val signature = if (rootIsSignature) {
+                root
+            } else {
+                val live = root.getElementsByTagName("ds:Signature")
+                live.item(live.length - 1) as? Element
+                    ?: throw ClientException("Bad signature: Element 'ds:Reference' is not found in XML document")
+            }
 
             val xmlSignature = XMLSignatureWrapper(signature)
             val cert = xmlSignature.certificate
 
             if (cert == null) {
                 valid = false
+                onSignature(signature, false)
                 certs.add(null)
                 signature.parentNode?.removeChild(signature)
                 continue
             }
 
+            prepare(cert, signature)
             certificateService.attachValidationData(cert, checkOcsp, checkCrl)
 
             // check() подтверждает только целостность дайджестов Reference'ов.
@@ -159,9 +189,13 @@ class XmlService(
             if (!coversWhole) {
                 log.warn("XML signature does not cover the whole document — rejecting (possible XML Signature Wrapping)")
             }
-            if (!xmlSignature.check() || !coversWhole || !cert.isValid(currentDate, checkOcsp, checkCrl)) {
+            val signatureValid = xmlSignature.check() &&
+                coversWhole &&
+                cert.isValid(currentDate, checkOcsp, checkCrl)
+            if (!signatureValid) {
                 valid = false
             }
+            onSignature(signature, signatureValid)
             // Удаляем через parentNode: подпись может быть вложена не в корень
             // (enveloped внутри контейнера) — root.removeChild тогда бросал
             // DOMException → 500 вместо честного valid=false.

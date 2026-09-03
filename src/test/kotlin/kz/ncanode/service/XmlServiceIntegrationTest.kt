@@ -242,4 +242,22 @@ class XmlServiceIntegrationTest(
         response.results[2].status shouldBe 200
         response.results[2].xml.shouldNotBeNull()
     }
+
+    test("a signature without KeyInfo is an honest verdict, not a 500") {
+        // ds:KeyInfo в подписи необязателен: проверяющий может знать ключ
+        // иначе. Santuario в этом случае возвращает null, и раньше это давало
+        // NPE — то есть ответ «у нас сломалось» вместо «проверить нечем».
+        val signed = xmlService.sign(
+            XmlSignRequest().apply {
+                xml = """<?xml version="1.0"?><doc><data>payload</data></doc>"""
+                signers = listOf(signerOf("individual_valid.p12"))
+            },
+        ).xml.shouldNotBeNull()
+
+        val withoutKeyInfo = signed.replace(Regex("<ds:KeyInfo>.*?</ds:KeyInfo>", RegexOption.DOT_MATCHES_ALL), "")
+
+        val result = xmlService.verify(withoutKeyInfo, checkOcsp = false, checkCrl = false)
+        result.valid shouldBe false
+        result.signers.single() shouldBe null
+    }
 })

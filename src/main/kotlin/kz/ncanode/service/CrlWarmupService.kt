@@ -56,6 +56,17 @@ class CrlWarmupService(
         }
     }
 
+    /** Прерывание потока — своё или в причине исключения. */
+    private fun interrupted(e: Throwable): Boolean {
+        if (Thread.currentThread().isInterrupted) return true
+        var cause: Throwable? = e
+        while (cause != null) {
+            if (cause is InterruptedException) return true
+            cause = cause.cause
+        }
+        return false
+    }
+
     private fun doWarmup() {
         log.info("CRL cache warmup starting...")
         val start = System.currentTimeMillis()
@@ -70,7 +81,13 @@ class CrlWarmupService(
             crlService.warmCache(cas)
             caCrlService.warmCache(cas)
         } catch (e: Exception) {
-            log.error("CRL warmup failed", e)
+            // Остановка приложения прерывает загрузку — это не сбой, и
+            // стек-трейс тут только пугает.
+            if (interrupted(e)) {
+                log.info("CRL cache warmup interrupted by shutdown")
+            } else {
+                log.error("CRL warmup failed", e)
+            }
         } finally {
             log.info("CRL cache warmup completed in {}ms", System.currentTimeMillis() - start)
             warmupComplete.set(true)

@@ -1,0 +1,30 @@
+package kz.ncanode.dto.request
+
+import jakarta.validation.Valid
+import jakarta.validation.constraints.NotEmpty
+import kz.ncanode.dto.ades.AdesLevel
+import kz.ncanode.dto.ades.SignaturePackaging
+import kz.ncanode.dto.tsp.TsaPolicy
+
+/**
+ * Запрос на подпись XAdES (ETSI EN 319 132-1).
+ */
+class XadesSignRequest {
+    @NotEmpty
+    var xml: String = ""
+
+    @NotEmpty
+    var signers: List<@Valid SignerRequest> = emptyList()
+
+    /** Требуемый уровень подписи. По умолчанию базовый. */
+    var level: AdesLevel = AdesLevel.B
+
+    /**
+     * Размещение подписи: `ENVELOPED` — подпись внутри документа,
+     * `ENVELOPING` — документ внутри подписи (один подписант).
+     */
+    var packaging: SignaturePackaging = SignaturePackaging.ENVELOPED
+
+    /** Политика TSA; применяется начиная с уровня T. */
+    var tsaPolicy: TsaPolicy? = null
+}
