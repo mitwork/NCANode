@@ -90,9 +90,17 @@ class XMLSignatureWrapper {
         }
     }
 
+    /**
+     * Сертификат подписанта из `ds:KeyInfo`, если он там есть.
+     *
+     * `KeyInfo` в подписи необязателен — проверяющий может знать ключ иначе, —
+     * и тогда Santuario возвращает `null` вместо исключения. Без явной
+     * проверки это давало NPE и ответ 500 там, где честный вердикт — «нет
+     * сертификата, проверить нечем».
+     */
     val certificate: CertificateWrapper?
         get() = try {
-            CertificateWrapper(xmlSignature.keyInfo.x509Certificate)
+            xmlSignature.keyInfo?.x509Certificate?.let { CertificateWrapper(it) }
         } catch (e: KeyResolverException) {
             null
         }
