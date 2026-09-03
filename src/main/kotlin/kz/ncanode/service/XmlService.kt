@@ -135,6 +135,12 @@ class XmlService(
          * вызовов не меняется.
          */
         prepare: (CertificateWrapper, Element) -> Unit = { _, _ -> },
+        /**
+         * Вызывается после проверки каждой подписи: элемент и её собственный
+         * вердикт. Общий флаг по документу не даёт понять, какая из подписей
+         * не прошла, а AdES-слой сообщает это по каждой отдельно.
+         */
+        onSignature: (Element, Boolean) -> Unit = { _, _ -> },
     ): VerificationResponse {
         warnIfRevocationDisabled(checkOcsp, checkCrl)
         val document = read(xml, false)
@@ -166,6 +172,7 @@ class XmlService(
 
             if (cert == null) {
                 valid = false
+                onSignature(signature, false)
                 certs.add(null)
                 signature.parentNode?.removeChild(signature)
                 continue
@@ -182,9 +189,13 @@ class XmlService(
             if (!coversWhole) {
                 log.warn("XML signature does not cover the whole document — rejecting (possible XML Signature Wrapping)")
             }
-            if (!xmlSignature.check() || !coversWhole || !cert.isValid(currentDate, checkOcsp, checkCrl)) {
+            val signatureValid = xmlSignature.check() &&
+                coversWhole &&
+                cert.isValid(currentDate, checkOcsp, checkCrl)
+            if (!signatureValid) {
                 valid = false
             }
+            onSignature(signature, signatureValid)
             // Удаляем через parentNode: подпись может быть вложена не в корень
             // (enveloped внутри контейнера) — root.removeChild тогда бросал
             // DOMException → 500 вместо честного valid=false.

@@ -1307,6 +1307,23 @@ components:
           - T
           - LT
           - LTA
+        validationStatus:
+          type: string
+          enum:
+          - VALID
+          - INVALID
+          - INDETERMINATE
+        subIndication:
+          type: string
+          enum:
+          - NO_SIGNING_CERTIFICATE_FOUND
+          - SIG_CRYPTO_FAILURE
+          - CERT_HASH_MISMATCH
+          - TIMESTAMP_INVALID
+          - OUT_OF_BOUNDS_NO_POE
+          - CERT_REVOKED
+          - REVOKED_NO_POE
+          - REVOCATION_DATA_MISSING
         certificate:
           $ref: "#/components/schemas/CertificateInfo"
         tsp:
@@ -1335,6 +1352,23 @@ components:
           - T
           - LT
           - LTA
+        validationStatus:
+          type: string
+          enum:
+          - VALID
+          - INVALID
+          - INDETERMINATE
+        subIndication:
+          type: string
+          enum:
+          - NO_SIGNING_CERTIFICATE_FOUND
+          - SIG_CRYPTO_FAILURE
+          - CERT_HASH_MISMATCH
+          - TIMESTAMP_INVALID
+          - OUT_OF_BOUNDS_NO_POE
+          - CERT_REVOKED
+          - REVOKED_NO_POE
+          - REVOCATION_DATA_MISSING
         signatures:
           type: array
           items:
@@ -1966,6 +2000,23 @@ components:
           - T
           - LT
           - LTA
+        validationStatus:
+          type: string
+          enum:
+          - VALID
+          - INVALID
+          - INDETERMINATE
+        subIndication:
+          type: string
+          enum:
+          - NO_SIGNING_CERTIFICATE_FOUND
+          - SIG_CRYPTO_FAILURE
+          - CERT_HASH_MISMATCH
+          - TIMESTAMP_INVALID
+          - OUT_OF_BOUNDS_NO_POE
+          - CERT_REVOKED
+          - REVOKED_NO_POE
+          - REVOCATION_DATA_MISSING
         signer:
           $ref: "#/components/schemas/PdfSignerInfo"
     PadesVerificationResponse:
@@ -1992,6 +2043,23 @@ components:
           - T
           - LT
           - LTA
+        validationStatus:
+          type: string
+          enum:
+          - VALID
+          - INVALID
+          - INDETERMINATE
+        subIndication:
+          type: string
+          enum:
+          - NO_SIGNING_CERTIFICATE_FOUND
+          - SIG_CRYPTO_FAILURE
+          - CERT_HASH_MISMATCH
+          - TIMESTAMP_INVALID
+          - OUT_OF_BOUNDS_NO_POE
+          - CERT_REVOKED
+          - REVOKED_NO_POE
+          - REVOCATION_DATA_MISSING
         signatures:
           type: array
           items:
@@ -2331,6 +2399,8 @@ components:
     CmsSignerInfo:
       type: object
       properties:
+        valid:
+          type: boolean
         certificates:
           type: array
           items:
@@ -2520,6 +2590,23 @@ components:
           - T
           - LT
           - LTA
+        validationStatus:
+          type: string
+          enum:
+          - VALID
+          - INVALID
+          - INDETERMINATE
+        subIndication:
+          type: string
+          enum:
+          - NO_SIGNING_CERTIFICATE_FOUND
+          - SIG_CRYPTO_FAILURE
+          - CERT_HASH_MISMATCH
+          - TIMESTAMP_INVALID
+          - OUT_OF_BOUNDS_NO_POE
+          - CERT_REVOKED
+          - REVOKED_NO_POE
+          - REVOCATION_DATA_MISSING
         certificates:
           type: array
           items:
@@ -2550,6 +2637,23 @@ components:
           - T
           - LT
           - LTA
+        validationStatus:
+          type: string
+          enum:
+          - VALID
+          - INVALID
+          - INDETERMINATE
+        subIndication:
+          type: string
+          enum:
+          - NO_SIGNING_CERTIFICATE_FOUND
+          - SIG_CRYPTO_FAILURE
+          - CERT_HASH_MISMATCH
+          - TIMESTAMP_INVALID
+          - OUT_OF_BOUNDS_NO_POE
+          - CERT_REVOKED
+          - REVOKED_NO_POE
+          - REVOCATION_DATA_MISSING
         signers:
           type: array
           items:

@@ -4,6 +4,7 @@ import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedData
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.util.encoders.Hex
+import kz.ncanode.ades.AdesVerdict
 import kz.ncanode.ades.XadesInspector
 import kz.ncanode.ades.XadesQualifyingProperties
 import kz.ncanode.dto.ades.AdesLevel
@@ -426,23 +427,37 @@ class XadesService(
         // Что подтвердилось по каждой подписи — заполняется на ходу, пока
         // XmlService идёт по подписям.
         val embeddedUsed = mutableMapOf<Element, Boolean>()
+        // Вердикт по каждой подписи: XmlService разбирает свою копию документа,
+        // поэтому сопоставляем по серийнику сертификата, как и вшитый материал.
+        val signatureValidBySerial = mutableMapOf<String, Boolean>()
 
-        val base = xmlService.verify(request.xml, request.checkOcsp, request.checkCrl) { certificate, element ->
-            if (!revocationRequested) return@verify
-            val material = try {
-                XadesInspector.embeddedMaterial(element)
-            } catch (e: Exception) {
-                log.warn("Cannot read the embedded validation data: {}", e.message)
-                return@verify
-            }
-            if (material.crls.isEmpty() && material.ocspResponses.isEmpty()) return@verify
-
-            // Момент проверки — доказанное время существования подписи.
-            val at = proofOfExistence(element) ?: Date()
-            embeddedUsed[element] = validationDataService.attachEmbedded(
-                certificate, material.crls, material.ocspResponses, at,
-            )
-        }
+        val base = xmlService.verify(
+            request.xml,
+            request.checkOcsp,
+            request.checkCrl,
+            prepare = { certificate, element ->
+                if (revocationRequested) {
+                    val material = try {
+                        XadesInspector.embeddedMaterial(element)
+                    } catch (e: Exception) {
+                        log.warn("Cannot read the embedded validation data: {}", e.message)
+                        null
+                    }
+                    if (material != null && (material.crls.isNotEmpty() || material.ocspResponses.isNotEmpty())) {
+                        // Момент проверки — доказанное время существования подписи.
+                        val at = proofOfExistence(element) ?: Date()
+                        embeddedUsed[element] = validationDataService.attachEmbedded(
+                            certificate, material.crls, material.ocspResponses, at,
+                        )
+                    }
+                }
+            },
+            onSignature = { element, signatureValid ->
+                XMLSignatureWrapper(element).certificate?.x509Certificate?.let {
+                    signatureValidBySerial[it.serialNumber.toString(16)] = signatureValid
+                }
+            },
+        )
 
         // Сопоставляем по серийнику: XmlService перебирает подписи с конца.
         val certificateInfo = base.signers.filterNotNull().associateBy { it.serialNumber }
@@ -481,6 +496,20 @@ class XadesService(
             // (XmlService парсит свою копию), поэтому сверяем по серийнику.
             val used = embeddedUsed.values.any { it }
 
+            val archiveValid = archiveTimestampsValid(element, request.checkOcsp, request.checkCrl)
+            val info = certificate?.let { certificateInfo[it.serialNumber.toString(16)] }
+            val verdict = AdesVerdict.of(
+                signatureValid = signatureValidBySerial[certificate?.serialNumber?.toString(16)] ?: false,
+                certificates = listOfNotNull(info),
+                bindingMatches = facts.signingCertificateMatches,
+                claimedLevel = facts.level,
+                at = proofOfExistence(element),
+                revocationRequested = revocationRequested,
+                timestampVerified = timestampValid,
+                embeddedUsed = used,
+                archiveVerified = archiveValid,
+            )
+
             signatures.add(
                 XadesSignatureInfo(
                     level = facts.level,
@@ -488,18 +517,28 @@ class XadesService(
                         claimed = facts.level,
                         timestamped = timestampValid,
                         embeddedUsed = used,
-                        archiveValid = archiveTimestampsValid(element, request.checkOcsp, request.checkCrl),
+                        archiveValid = archiveValid,
                     ),
-                    certificate = certificate?.let { certificateInfo[it.serialNumber.toString(16)] },
+                    validationStatus = verdict.status,
+                    subIndication = verdict.subIndication,
+                    certificate = info,
                     tsp = tspInfo,
                 ),
             )
         }
 
+        val documentVerdict = AdesVerdict.worst(
+            signatures.mapNotNull { signature ->
+                signature.validationStatus?.let { AdesVerdict.Verdict(it, signature.subIndication) }
+            },
+        )
+
         return XadesVerificationResponse(
             valid = valid,
             level = signatures.mapNotNull { it.level }.minByOrNull { it.ordinal },
             verifiedLevel = signatures.mapNotNull { it.verifiedLevel }.minByOrNull { it.ordinal },
+            validationStatus = documentVerdict?.status,
+            subIndication = documentVerdict?.subIndication,
             signatures = signatures,
         )
     }

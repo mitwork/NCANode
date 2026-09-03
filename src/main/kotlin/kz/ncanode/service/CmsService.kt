@@ -374,7 +374,10 @@ class CmsService(
             certificateInfos.add(cert.toCertificateInfo(validationDate, checkOcsp, checkCrl))
         }
 
-        return SignerVerification(valid, CmsSignerInfo(certificates = certificateInfos, tsp = tspInfo))
+        return SignerVerification(
+            valid,
+            CmsSignerInfo(valid = valid, certificates = certificateInfos, tsp = tspInfo),
+        )
     }
 
     /**

@@ -16,6 +16,8 @@ import kz.ncanode.dto.tsp.TspInfo
 data class CadesSignerInfo(
     val level: AdesLevel? = null,
     val verifiedLevel: AdesLevel? = null,
+    val validationStatus: AdesValidationStatus? = null,
+    val subIndication: AdesSubIndication? = null,
     val certificates: List<CertificateInfo> = emptyList(),
     val tsp: TspInfo? = null,
 )

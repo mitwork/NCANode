@@ -35,6 +35,8 @@ import kz.ncanode.ades.CmsValidationData
 import kz.ncanode.ades.CadesAttributes
 import kz.ncanode.ades.CadesInspector
 import kz.ncanode.ades.CmsArchiveTimestamp
+import kz.ncanode.dto.ades.AdesSubIndication
+import kz.ncanode.dto.ades.AdesValidationStatus
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CadesSignBatchRequest
@@ -739,5 +741,39 @@ class CadesServiceIntegrationTest(
                 }
             }
         }
+    }
+
+    test("verify reports the ETSI status alongside the flag") {
+        // Флаг valid говорит «принята или нет», а статус — почему. На здоровой
+        // подписи причины нет вовсе: пустое поле честнее, чем формальная
+        // отписка.
+        val signed = cadesService.sign(request(level = AdesLevel.T)).cms.shouldNotBeNull()
+        val result = cadesService.verify(
+            CadesVerifyRequest().apply {
+                cms = signed
+                revocationCheck = setOf(CertificateRevocation.OCSP, CertificateRevocation.CRL)
+            },
+        )
+
+        result.valid shouldBe true
+        result.validationStatus shouldBe AdesValidationStatus.VALID
+        result.subIndication.shouldBeNull()
+        result.signers.single().validationStatus shouldBe AdesValidationStatus.VALID
+    }
+
+    test("a tampered signature is reported as a crypto failure, not just false") {
+        val signed = cadesService.sign(request()).cms.shouldNotBeNull()
+        val bytes = Base64.getDecoder().decode(signed)
+        // Портим значение подписи: сертификат при этом остаётся здоровым, и
+        // причина должна указывать именно на криптографию.
+        bytes[bytes.size - 5] = (bytes[bytes.size - 5].toInt() xor 0xFF).toByte()
+
+        val result = cadesService.verify(
+            CadesVerifyRequest().apply { cms = Base64.getEncoder().encodeToString(bytes) },
+        )
+
+        result.valid shouldBe false
+        result.validationStatus shouldBe AdesValidationStatus.INVALID
+        result.subIndication shouldBe AdesSubIndication.SIG_CRYPTO_FAILURE
     }
 })

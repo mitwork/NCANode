@@ -12,5 +12,7 @@ import kz.ncanode.dto.pdf.PdfSignerInfo
 data class PadesSignatureInfo(
     val level: AdesLevel? = null,
     val verifiedLevel: AdesLevel? = null,
+    val validationStatus: AdesValidationStatus? = null,
+    val subIndication: AdesSubIndication? = null,
     val signer: PdfSignerInfo? = null,
 )

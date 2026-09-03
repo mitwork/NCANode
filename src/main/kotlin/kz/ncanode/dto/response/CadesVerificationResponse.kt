@@ -1,5 +1,7 @@
 package kz.ncanode.dto.response
 
+import kz.ncanode.dto.ades.AdesSubIndication
+import kz.ncanode.dto.ades.AdesValidationStatus
 import kz.ncanode.dto.ades.AdesLevel
 import kz.ncanode.dto.ades.CadesSignerInfo
 import org.springframework.http.HttpStatus
@@ -15,6 +17,8 @@ class CadesVerificationResponse(
     var valid: Boolean = false,
     var level: AdesLevel? = null,
     var verifiedLevel: AdesLevel? = null,
+    var validationStatus: AdesValidationStatus? = null,
+    var subIndication: AdesSubIndication? = null,
     var signers: List<CadesSignerInfo> = emptyList(),
     status: Int = HttpStatus.OK.value(),
     message: String? = "OK",

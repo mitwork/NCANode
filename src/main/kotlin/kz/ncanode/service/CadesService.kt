@@ -7,6 +7,7 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.ncanode.ades.CadesAttributes
+import kz.ncanode.ades.AdesVerdict
 import kz.ncanode.ades.CadesInspector
 import kz.ncanode.ades.CmsArchiveTimestamp
 import kz.ncanode.ades.CmsValidationData
@@ -357,28 +358,51 @@ class CadesService(
 
         val verified = base.signers.mapIndexed { index, info ->
             val signerFacts = facts.getOrNull(index)
-            val serial = info.certificates.firstOrNull()?.serialNumber
+            val timestamped = info.tsp != null
+            val embeddedUsed = verifiedBySerial.values.any { it }
+            val archiveValid = archiveVerified[index] == true
+            val verdict = AdesVerdict.of(
+                signatureValid = info.valid,
+                certificates = info.certificates,
+                bindingMatches = signerFacts?.signingCertificateMatches ?: true,
+                claimedLevel = signerFacts?.level,
+                at = proofTimes[signers.getOrNull(index)?.sid],
+                revocationRequested = revocationRequested,
+                timestampVerified = timestamped,
+                embeddedUsed = embeddedUsed,
+                archiveVerified = archiveValid,
+            )
+
             CadesSignerInfo(
                 level = signerFacts?.level,
                 verifiedLevel = signerFacts?.level?.let { claimed ->
                     verifiedLevel(
                         claimed = claimed,
-                        timestamped = info.tsp != null,
-                        embeddedUsed = verifiedBySerial.values.any { it },
-                        archiveValid = archiveVerified[index] == true,
+                        timestamped = timestamped,
+                        embeddedUsed = embeddedUsed,
+                        archiveValid = archiveValid,
                     )
                 },
+                validationStatus = verdict.status,
+                subIndication = verdict.subIndication,
                 certificates = info.certificates,
                 tsp = info.tsp,
             )
         }
 
         val bindingsValid = facts.all { it.signingCertificateMatches }
+        val documentVerdict = AdesVerdict.worst(
+            verified.mapNotNull { info ->
+                info.validationStatus?.let { AdesVerdict.Verdict(it, info.subIndication) }
+            },
+        )
 
         return CadesVerificationResponse(
             valid = base.valid && bindingsValid,
             level = verified.mapNotNull { it.level }.minByOrNull { it.ordinal },
             verifiedLevel = verified.mapNotNull { it.verifiedLevel }.minByOrNull { it.ordinal },
+            validationStatus = documentVerdict?.status,
+            subIndication = documentVerdict?.subIndication,
             signers = verified,
         )
     }

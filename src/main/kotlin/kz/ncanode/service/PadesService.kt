@@ -7,6 +7,7 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedData
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
+import kz.ncanode.ades.AdesVerdict
 import kz.ncanode.ades.CadesAttributes
 import kz.ncanode.ades.PadesInspector
 import kz.ncanode.ades.PdfDocumentSecurityStore
@@ -192,7 +193,8 @@ class PadesService(
 
         // Материал из `/DSS` достаём заранее: он нужен прямо внутри проверки,
         // до того как та пойдёт в сеть.
-        val embedded = if ((request.checkOcsp || request.checkCrl) &&
+        val revocationRequested = request.checkOcsp || request.checkCrl
+        val embedded = if (revocationRequested &&
             facts.any { it.level.isAtLeast(AdesLevel.LT) }
         ) {
             try {
@@ -240,17 +242,32 @@ class PadesService(
             if (signatureFacts != null && !signatureFacts.signingCertificateMatches) {
                 bindingsValid = false
             }
+            val timestamped = signatureFacts?.level?.isAtLeast(AdesLevel.T) == true && signer.isValid
+            val verdict = AdesVerdict.of(
+                signatureValid = signer.isValid,
+                certificates = listOfNotNull(signer.certificate),
+                bindingMatches = signatureFacts?.signingCertificateMatches ?: true,
+                claimedLevel = signatureFacts?.level,
+                at = signer.signDate,
+                revocationRequested = revocationRequested,
+                timestampVerified = signatureFacts?.level?.isAtLeast(AdesLevel.T) != true || timestamped,
+                embeddedUsed = embeddedUsed,
+                archiveVerified = documentTimestampsValid,
+            )
+
             signatures.add(
                 PadesSignatureInfo(
                     level = signatureFacts?.level,
                     verifiedLevel = signatureFacts?.level?.let { claimed ->
                         verifiedLevel(
                             claimed = claimed,
-                            timestamped = signatureFacts.level.isAtLeast(AdesLevel.T) && signer.isValid,
+                            timestamped = timestamped,
                             embeddedUsed = embeddedUsed,
                             archiveValid = documentTimestampsValid,
                         )
                     },
+                    validationStatus = verdict.status,
+                    subIndication = verdict.subIndication,
                     signer = signer,
                 ),
             )
@@ -267,8 +284,16 @@ class PadesService(
                 bindingsValid
         }
 
+        val documentVerdict = AdesVerdict.worst(
+            signatures.mapNotNull { signature ->
+                signature.validationStatus?.let { AdesVerdict.Verdict(it, signature.subIndication) }
+            },
+        )
+
         return PadesVerificationResponse(
             valid = valid,
+            validationStatus = documentVerdict?.status,
+            subIndication = documentVerdict?.subIndication,
             level = signatures.mapNotNull { it.level }.minByOrNull { it.ordinal },
             verifiedLevel = signatures.mapNotNull { it.verifiedLevel }.minByOrNull { it.ordinal },
             signatures = signatures,
