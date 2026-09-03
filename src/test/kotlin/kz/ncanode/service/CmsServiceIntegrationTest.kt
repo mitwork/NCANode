@@ -10,6 +10,7 @@ import io.kotest.matchers.string.shouldContain
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.gov.pki.kalkan.jce.provider.cms.CMSProcessableByteArray
 import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
+import io.kotest.assertions.throwables.shouldThrow
 import kz.ncanode.TestResources
 import kz.ncanode.dto.certificate.CertificateRevocation
 import kz.ncanode.dto.request.CmsCreateBatchRequest
@@ -503,5 +504,72 @@ class CmsServiceIntegrationTest(
         // Подписант присутствует в отчёте, но без сертификатов.
         result.signers shouldHaveSize 1
         result.signers.first().certificates.shouldBeEmpty()
+    }
+
+    test("creating a CMS without data is a client error") {
+        shouldThrow<ClientException> {
+            cmsService.create(
+                CmsCreateRequest().apply { signers = listOf(signerOf("individual_valid.p12")) },
+            )
+        }
+    }
+
+    test("extracting from a detached CMS says what is missing") {
+        // В отсоединённой подписи содержимого нет — доставать нечего, и это
+        // ошибка запроса, а не сбой.
+        val detached = cmsService.create(
+            CmsCreateRequest().apply {
+                data = java.util.Base64.getEncoder().encodeToString("payload".toByteArray())
+                signers = listOf(signerOf("individual_valid.p12"))
+                isDetached = true
+            },
+        ).cms.shouldNotBeNull()
+
+        shouldThrow<ClientException> { cmsService.extract(detached) }
+    }
+
+    test("adding a signer to something that is not a CMS is a client error") {
+        shouldThrow<ClientException> {
+            cmsService.addSigners(
+                CmsCreateRequest().apply {
+                    cms = java.util.Base64.getEncoder().encodeToString("не CMS".toByteArray())
+                    signers = listOf(signerOf("individual_valid.p12"))
+                },
+            )
+        }
+    }
+
+    test("adding a signer to a detached CMS needs the original data") {
+        // В отсоединённой подписи содержимого нет, а подписать второй раз
+        // нужно ровно его — иначе подписи разойдутся по данным.
+        val payload = b64("detached co-signing")
+        val detached = cmsService.create(
+            CmsCreateRequest().apply {
+                data = payload
+                signers = listOf(signerOf("individual_valid.p12"))
+                isDetached = true
+            },
+        ).cms.shouldNotBeNull()
+
+        shouldThrow<ClientException> {
+            cmsService.addSigners(
+                CmsCreateRequest().apply {
+                    cms = detached
+                    signers = listOf(signerOf("legal_ceo_valid.p12"))
+                },
+            )
+        }
+
+        val cosigned = cmsService.addSigners(
+            CmsCreateRequest().apply {
+                cms = detached
+                data = payload
+                signers = listOf(signerOf("legal_ceo_valid.p12"))
+            },
+        ).cms.shouldNotBeNull()
+
+        val verification = cmsService.verify(cosigned, payload, checkOcsp = false, checkCrl = false)
+        verification.valid shouldBe true
+        verification.signers shouldHaveSize 2
     }
 })

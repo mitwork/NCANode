@@ -4,6 +4,7 @@ import com.auth0.jwt.JWT
 import com.auth0.jwt.JWTCreator
 import com.auth0.jwt.algorithms.Algorithm
 import com.auth0.jwt.exceptions.JWTDecodeException
+import com.auth0.jwt.exceptions.SignatureGenerationException
 import com.auth0.jwt.exceptions.JWTVerificationException
 import kz.ncanode.dto.request.JwtDecodeBatchRequest
 import kz.ncanode.dto.request.JwtDecodeRequest
@@ -68,6 +69,12 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
             // ключа) — 400, а не 500.
             throw e
         } catch (e: KeyException) {
+            throw ClientException(e.message, e)
+        } catch (e: SignatureGenerationException) {
+            // Ключ и запрошенный alg не сошлись. Проверкой типа это не
+            // ловится: ГОСТовый ключ НУЦ формально реализует ECPublicKey, и
+            // ES256 отсеивается только на самой подписи. Спросил клиент —
+            // ошибка клиента, 400.
             throw ClientException(e.message, e)
         } catch (e: Exception) {
             throw ServerException(e.message, e)

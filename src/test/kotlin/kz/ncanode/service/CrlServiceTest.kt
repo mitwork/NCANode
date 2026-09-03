@@ -1,6 +1,8 @@
 package kz.ncanode.service
 
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.shouldNotBe
+import kz.ncanode.exception.ServerException
 import io.kotest.matchers.shouldBe
 import io.mockk.Runs
 import io.mockk.every
@@ -87,10 +89,10 @@ class CrlServiceTest : FunSpec({
         every { canRead() } returns true
     }
 
-    fun buildService(crlEnabled: Boolean = true): CrlService {
+    fun buildService(crlEnabled: Boolean = true, cacheEnabled: Boolean = false): CrlService {
         val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
             every { isEnabled } returns crlEnabled
-            every { isCacheEnabled } returns false  // обходит in-memory кэш — loadIndex вызывается напрямую
+            every { isCacheEnabled } returns cacheEnabled  // false обходит in-memory кэш — loadIndex вызывается напрямую
             every { ttl } returns null              // обходит fetchOnDemandCrls и initialize-scheduler
             every { urlList } returns emptyMap()
             every { delta } returns null
@@ -596,5 +598,88 @@ class CrlServiceTest : FunSpec({
         service.downloadCrl("default", java.net.URI("http://crl.example/test.crl").toURL())
 
         attempts shouldBe 1
+    }
+
+    // ---- прогрев кэша ----
+
+    test("warmup parses cached CRLs and verifies the ones whose issuer is known") {
+        // Прогрев нужен, чтобы первый запрос не платил за разбор крупного CRL.
+        // Здесь проверяется, что он доходит до конца и молча переживает файлы,
+        // которые не разбираются: один битый список не должен лишать кэш
+        // остальных.
+        val service = buildService(cacheEnabled = true)
+
+        service.warmCache(listOf(issuerWrapper()))
+
+        // Прогрев ничего не возвращает — его результат виден по тому, что
+        // последующая проверка уже не идёт в сеть и отвечает по кэшу.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate.apply { issuerCertificate = issuerWrapper() }
+        service.verify(cert).result shouldNotBe null
+    }
+
+    test("warmup survives an unreadable CRL in the cache") {
+        val service = buildService(cacheEnabled = true)
+        every { service.loadIndex(any()) } throws ServerException("cannot parse")
+
+        // Не бросает: прогрев — оптимизация, а не условие работоспособности.
+        service.warmCache(listOf(issuerWrapper()))
+    }
+
+    test("warmup does nothing when the cache is disabled") {
+        val service = buildService(cacheEnabled = false)
+
+        service.warmCache(listOf(issuerWrapper()))
+
+        verify(exactly = 0) { service.loadIndex(any()) }
+    }
+
+    test("a scheduled CRL download is retried when the host goes silent, and gives up after the last attempt") {
+        // Хост НУЦ уходит в тишину через раз: соединение обрывается по
+        // таймауту, а следующая попытка проходит за миллисекунды. Без повтора
+        // список отзывов остался бы прежним до конца TTL — у CA-CRL это сутки.
+        val service = buildService()
+        val url = java.net.URI("http://crl.pki.gov.kz/nca_gost_2022.crl").toURL()
+
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            if (attempts < 2) throw CrlException("connect timed out", java.io.IOException("connect timed out"))
+        }
+        service.downloadCrlWithRetries("full", url, 3)
+        attempts shouldBe 2
+
+        attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            throw CrlException("connect timed out", java.io.IOException("connect timed out"))
+        }
+        // Исчерпав попытки, метод не бросает: расписание должно продолжить
+        // работу с прежним кэшем, а не остановиться.
+        service.downloadCrlWithRetries("full", url, 2)
+        attempts shouldBe 2
+    }
+
+    test("retrying stops when the application is being shut down") {
+        val service = buildService()
+        val url = java.net.URI("http://crl.pki.gov.kz/nca_gost_2022.crl").toURL()
+
+        var attempts = 0
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            attempts++
+            throw CrlException("connect timed out", java.io.IOException("connect timed out"))
+        }
+
+        try {
+            Thread.currentThread().interrupt()
+            service.downloadCrlWithRetries("full", url, 5)
+
+            attempts shouldBe 1
+            Thread.currentThread().isInterrupted shouldBe true
+        } finally {
+            Thread.interrupted()
+        }
     }
 })

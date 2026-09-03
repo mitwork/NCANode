@@ -117,8 +117,19 @@ class CmsService(
                 throw ClientException("CMS argument not specified")
             }
 
-            val decodedCms = Base64.getDecoder().decode(cmsBase64)
-            var cms = CMSSignedData(decodedCms)
+            val decodedCms = try {
+                Base64.getDecoder().decode(cmsBase64)
+            } catch (e: IllegalArgumentException) {
+                throw ClientException("CMS is not valid base64", e)
+            }
+            // Контейнер приходит от клиента: не разобрался — это его ошибка,
+            // 400. Та же таксономия, что и в verify: там она уже так и есть,
+            // и addSigners выбивался из неё пятисоткой.
+            var cms = try {
+                CMSSignedData(decodedCms)
+            } catch (e: CMSException) {
+                throw ClientException("Cannot parse CMS", e)
+            }
             val decodedData: ByteArray
 
             if (cms.signedContent == null) {
