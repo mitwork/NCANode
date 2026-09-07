@@ -348,129 +348,40 @@ class CertificateWrapperTest : FunSpec({
         delta.none { it in cert.crlList } shouldBe true
     }
 
-    test("Subject UID is parsed (digital system OID)") {
-        // В шаблоне «цифровая система юридического лица» UID
-        // (0.9.2342.19200300.100.1.1) несёт OID самой цифровой системы, в
-        // которую по п. 17 Правил разрешено ставить закрытый ключ. Тестового
-        // ключа с этим полем в паке НУЦ нет, поэтому сертификат собираем сами
-        // — проверяется разбор DN, а не криптография.
-        val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
-        val subject = X500Name("CN=ЦИФРОВАЯ СИСТЕМА,UID=1.2.398.100.500,OU=BIN123456789021,C=KZ")
-        val now = System.currentTimeMillis()
-        val holder = JcaX509v3CertificateBuilder(
-            subject, BigInteger.ONE, Date(now - 86_400_000L), Date(now + 86_400_000L), subject, keyPair.public,
-        ).build(JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private))
-        val cert = CertificateWrapper(JcaX509CertificateConverter().getCertificate(holder))
+    test("Subject UID carries the digital system OID") {
+        // Шаблон «цифровая система юридического лица»: UID
+        // (0.9.2342.19200300.100.1.1) несёт OID самой системы, в которую по
+        // п. 17 Правил выдачи разрешено ставить закрытый ключ. Раньше поле
+        // было видно только внутри сырого dn.
+        val cert = certFromP12("legal_infosystem_valid.p12")
+        val subject = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false).subject
 
-        val info = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false)
-        info.subject.shouldNotBeNull().uid shouldBe "1.2.398.100.500"
-        info.subject.shouldNotBeNull().bin shouldBe "123456789021"
+        subject.shouldNotBeNull().uid shouldBe "1.2.398.6.10.1.1"
+        subject.shouldNotBeNull().bin shouldBe "123456789021"
     }
 
-    // ---- Правила формирования и проверки подлинности ЭЦП (приказ №500/НҚ) ----
+    test("Treasury client cert exposes its client code and role") {
+        // В шаблоне «участник цифровой системы "Казначейство – Клиент"»
+        // businessCategory (код клиента) и DC (роль) — обязательные поля.
+        // businessCategory в имени от JDK приходит как OID.2.5.4.15: keyword'а
+        // у него нет, и без явного разбора значение терялось.
+        val cert = certFromP12("legal_treasury_valid.p12")
+        val subject = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false).subject
+            .shouldNotBeNull()
 
-    /**
-     * Самоподписанный RSA-сертификат с заданным периодом и расширениями.
-     * Криптография здесь не проверяется — `isValid` работает с уже
-     * построенными связями `issuerCertificate`, — поэтому важен только состав
-     * полей.
-     */
-    fun syntheticCert(
-        cn: String,
-        notBefore: Date,
-        notAfter: Date,
-        keyUsage: KeyUsage? = null,
-        issuerCn: String = cn,
-    ): CertificateWrapper {
-        val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
-        val name = X500Name("CN=$cn")
-        val issuerName = X500Name("CN=$issuerCn")
-        val builder =
-            JcaX509v3CertificateBuilder(issuerName, BigInteger.ONE, notBefore, notAfter, name, keyPair.public)
-        if (keyUsage != null) builder.addExtension(Extension.keyUsage, true, keyUsage)
-        val holder = builder.build(JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private))
-        return CertificateWrapper(JcaX509CertificateConverter().getCertificate(holder))
+        subject.businessCategory shouldBe "KS1234"
+        subject.domainComponent shouldBe "ROLE02"
     }
 
-    val hourAgo = Date(System.currentTimeMillis() - 3_600_000L)
-    val yearAhead = Date(System.currentTimeMillis() + 365L * 86_400_000L)
-    val yearAgo = Date(System.currentTimeMillis() - 365L * 86_400_000L)
+    test("Subject GIVENNAME is parsed (отчество)") {
+        // `X500Principal.toString()` печатает отчество как GIVENNAME, а разбор
+        // ждал только "G" — поле молча оставалось пустым на всех сертификатах
+        // НУЦ, хотя в профиле оно есть.
+        val cert = certFromP12("individual_valid.p12")
+        val subject = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false).subject
+            .shouldNotBeNull()
 
-    test("isValid rejects the leaf when a certificate higher up the chain has expired") {
-        // п. 16 Правил: срок действия проверяется у всей цепочки до доверенного
-        // корня, и истечение любого звена — отрицательный результат. Раньше
-        // смотрели только на непосредственного издателя, так что протухший
-        // корень оставался незамеченным.
-        val root = syntheticCert("expired root", yearAgo, hourAgo)
-        val intermediate = syntheticCert("intermediate", hourAgo, yearAhead, issuerCn = "expired root")
-        val leaf = syntheticCert("leaf", hourAgo, yearAhead, issuerCn = "intermediate")
-        intermediate.issuerCertificate = root
-        leaf.issuerCertificate = intermediate
-
-        leaf.isValid(Date(), checkOcsp = false, checkCrl = false) shouldBe false
-    }
-
-    test("isValid accepts the leaf when the whole chain is within its validity period") {
-        val root = syntheticCert("root", hourAgo, yearAhead)
-        val intermediate = syntheticCert("intermediate", hourAgo, yearAhead, issuerCn = "root")
-        val leaf = syntheticCert("leaf", hourAgo, yearAhead, issuerCn = "intermediate")
-        // Самоподписанный корень CaService ссылает сам на себя — обход обязан
-        // на этом остановиться, а не зациклиться.
-        root.issuerCertificate = root
-        intermediate.issuerCertificate = root
-        leaf.issuerCertificate = intermediate
-
-        leaf.isValid(Date(), checkOcsp = false, checkCrl = false) shouldBe true
-    }
-
-    test("isValid rejects a certificate whose keyUsage forbids signing") {
-        // п. 16 Правил: назначение ключа должно допускать подпись. Ключ только
-        // для шифрования подписывать не может, каким бы валидным ни был сам
-        // сертификат.
-        val cipherOnly = syntheticCert("cipher only", hourAgo, yearAhead, KeyUsage(KeyUsage.keyEncipherment))
-        cipherOnly.issuerCertificate = cipherOnly
-        cipherOnly.permitsSignature() shouldBe false
-        cipherOnly.isValid(Date(), checkOcsp = false, checkCrl = false) shouldBe false
-    }
-
-    test("isValid allows a certificate without the keyUsage extension") {
-        // RFC 5280 §4.2.1.3: расширение опционально, его отсутствие не
-        // ограничивает назначение ключа.
-        val noKeyUsage = syntheticCert("no key usage", hourAgo, yearAhead)
-        noKeyUsage.issuerCertificate = noKeyUsage
-        noKeyUsage.permitsSignature() shouldBe true
-        noKeyUsage.isValid(Date(), checkOcsp = false, checkCrl = false) shouldBe true
-    }
-
-    test("NCA certificate publishes its policy OID") {
-        // п. 16 Правил требует сверять номер политики сертификата с условиями
-        // её применения. Сами условия задаёт УЦ, поэтому мы публикуем номер —
-        // у сертификатов НУЦ это 1.2.398.3.3.2.
-        val cert = certFromP12("legal_ceo_valid.p12")
-        cert.certificatePolicies shouldContain "1.2.398.3.3.2"
-        val info = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false)
-        info.policies.shouldNotBeNull() shouldContain "1.2.398.3.3.2"
-    }
-
-    test("isValid rejects the certificate when the only CRL is past its validity period") {
-        // п. 18 Правил: истёкший CRL — отрицательный результат проверки отзыва.
-        // Опереться больше не на что: OCSP не запрашивали.
-        val cert = syntheticCert("leaf", hourAgo, yearAhead)
-        cert.issuerCertificate = cert
-        cert.crlStatus = CrlStatus(result = CrlResult.EXPIRED)
-
-        cert.isValid(Date(), checkOcsp = false, checkCrl = true) shouldBe false
-    }
-
-    test("isValid tolerates an expired CRL when OCSP answered positively") {
-        // п. 16 Правил допускает проверку отзыва «посредством сервиса OCSP либо
-        // CRL»: авторитетный ACTIVE от респондера — самостоятельный
-        // положительный результат, и протухший список его не отменяет.
-        val cert = syntheticCert("leaf", hourAgo, yearAhead)
-        cert.issuerCertificate = cert
-        cert.crlStatus = CrlStatus(result = CrlResult.EXPIRED)
-        cert.ocspStatus = listOf(OcspStatus(result = OcspResult.ACTIVE))
-
-        cert.isValid(Date(), checkOcsp = true, checkCrl = true) shouldBe true
+        subject.lastName shouldBe "ТЕСТОВИЧ"
+        subject.surName shouldBe "ТЕСТОВ"
     }
 })

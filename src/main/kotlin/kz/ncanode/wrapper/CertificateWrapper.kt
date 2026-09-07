@@ -444,6 +444,8 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             var locality: String? = null
             var state: String? = null
             var uid: String? = null
+            var businessCategory: String? = null
+            var domainComponent: String? = null
 
             for (rdn in ldapName.rdns) {
                 val type = rdn.type
@@ -463,7 +465,20 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
                     }
                     type.equals("O", ignoreCase = true) -> organization = value
                     type.equals("OU", ignoreCase = true) -> bin = value.removePrefix("BIN")
-                    type.equals("G", ignoreCase = true) -> lastName = value
+                    // `X500Principal.toString()` печатает отчество как GIVENNAME —
+                    // одного "G" не хватало, и поле молча оставалось пустым на
+                    // всех сертификатах НУЦ.
+                    type.equals("G", ignoreCase = true)
+                        || type.equals("GN", ignoreCase = true)
+                        || type.equals("GIVENNAME", ignoreCase = true) -> lastName = value
+                    // Оба поля обязательны в шаблоне «Казначейство – Клиент»
+                    // (приказ №522/НҚ): код клиента и роль участника.
+                    // businessCategory в RFC2253-имени от JDK выглядит как
+                    // `OID.2.5.4.15`, keyword'а у него нет.
+                    type.equals("businessCategory", ignoreCase = true)
+                        || type.equals("OID.2.5.4.15", ignoreCase = true)
+                        || type == "2.5.4.15" -> businessCategory = value
+                    type.equals("DC", ignoreCase = true) -> domainComponent = value
                     // UID (0.9.2342.19200300.100.1.1) — в шаблоне «цифровая
                     // система юридического лица» (приказ №522/НҚ, приложение 3,
                     // структура 10) здесь лежит OID самой цифровой системы,
@@ -490,6 +505,8 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
                 locality = locality,
                 state = state,
                 uid = uid,
+                businessCategory = businessCategory,
+                domainComponent = domainComponent,
                 dn = dn,
             )
         } catch (e: InvalidNameException) {

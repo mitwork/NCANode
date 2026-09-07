@@ -18,7 +18,8 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 499 тестов / **90% coverage**.
+- **Состояние v4:** functional + 493 теста (+15 эталонов NCALayer, когда
+  боевая PKI отвечает) / **90% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -205,7 +206,8 @@ JWT/PDF/X509/PKCS12) начнёт возвращать `valid=false` из-за `
 NCA SDK 2.0 test pack, заменить p12 в `p12/`, сверить новый период валидности,
 обновить эту дату.
 
-499 тестов / **90% line coverage**.
+493 теста (+15 эталонов NCALayer, когда боевая PKI отвечает) /
+**90% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -232,7 +234,7 @@ REVOKED-ветка покрывается через mock'нутый `CrlIndex`,
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 499 тестов + JaCoCo report
+./gradlew test                   # 493 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -1163,9 +1165,16 @@ DER-ридер CRL на обрезанных и не-DER входах; повт�
   на одном полном списке.
 - **Шаблоны «цифровая система»** (`1.2.398.3.3.4.1.1.1`,
   `1.2.398.3.3.4.1.2.6`) и «Казначейство — Клиент» (`1.2.398.5.19.1.2.2.1`)
-  добавлены в `CertificateKeyUser`; `UID` (OID цифровой системы) — в
-  `CertificateSubject`. Оба OID есть на наших же тестовых ключах, то есть
-  занижали вывод `/x509/info` уже сегодня.
+  добавлены в `CertificateKeyUser`; `UID` (OID цифровой системы),
+  `businessCategory` (код клиента Казначейства) и `DC` (роль) — в
+  `CertificateSubject`. Все они есть на наших же тестовых ключах
+  (`legal_infosystem_valid.p12`, `legal_treasury_valid.p12`), то есть занижали
+  вывод `/x509/info` уже сегодня. Попутно чинилось отчество: `X500Principal
+  .toString()` печатает его как `GIVENNAME`, а разбор ждал только `G`, поэтому
+  `subject.lastName` был пуст на ВСЕХ сертификатах НУЦ. `businessCategory`
+  приходит там же как `OID.2.5.4.15` — keyword'а у него нет.
+  ⚠️ Фикстуры на «цифровую систему физического лица» (`1.2.398.3.3.4.1.1.1`)
+  в тест-паке нет — `INDIVIDUAL_DIGITAL_SYSTEM` не покрыт.
 - **Дефолты**: `ncanode.ocsp.url` — оба адреса НУЦ; `NCANODE_CA_CRL_TTL`
   1440 → 720 (КУЦ обновляет свой СОС не реже раза в 24 ч).
 - ⏰ **Операционное**: сертификат на файловом носителе теперь действует

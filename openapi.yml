@@ -1235,6 +1235,16 @@ components:
           description: >-
             UID (0.9.2342.19200300.100.1.1). У сертификатов шаблона «цифровая
             система юридического лица» здесь OID самой цифровой системы.
+        businessCategory:
+          type: string
+          description: >-
+            businessCategory (2.5.4.15). Обязательное поле шаблона «участник
+            цифровой системы "Казначейство – Клиент"» — код клиента вида KS01234.
+        domainComponent:
+          type: string
+          description: >-
+            domainComponent (0.9.2342.19200300.100.1.25). Обязательное поле того
+            же шаблона — роль участника вида ROLE01.
         dn:
           type: string
     VerificationResponse:
