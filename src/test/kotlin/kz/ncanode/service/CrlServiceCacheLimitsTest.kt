@@ -211,8 +211,11 @@ class CrlServiceCacheLimitsTest : FunSpec({
         ).certificate
 
         // Сертификат выпущен тем же CA, что и used.crl — CRL пригождается,
-        // мусорные файлы отбрасываются как нечитаемые.
-        crlService.verify(certificate).result shouldBe CrlResult.ACTIVE
+        // мусорные файлы отбрасываются как нечитаемые. Вердикт EXPIRED, а не
+        // ACTIVE: fixture давно вне своего периода действия (п. 18 приказа
+        // №500/НҚ). Для этого теста важно другое — что список пригодился и
+        // потому отмечен как использованный.
+        crlService.verify(certificate).result shouldBe CrlResult.EXPIRED
 
         crlService.enforceOnDemandLimit()
 

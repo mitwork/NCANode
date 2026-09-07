@@ -1,6 +1,8 @@
 package kz.ncanode.wrapper
 
+import kz.gov.pki.kalkan.asn1.ASN1Sequence
 import kz.gov.pki.kalkan.asn1.DERIA5String
+import kz.gov.pki.kalkan.asn1.DERObjectIdentifier
 import kz.gov.pki.kalkan.asn1.x509.AccessDescription
 import kz.gov.pki.kalkan.asn1.x509.AuthorityInformationAccess
 import kz.gov.pki.kalkan.asn1.x509.CRLDistPoint
@@ -78,12 +80,39 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             serialNumber = cert.serialNumber.toString(16),
             signAlg = cert.sigAlgName,
             keyUser = keyUser,
+            policies = certificatePolicies.ifEmpty { null },
             publicKey = String(Base64.getEncoder().encode(cert.publicKey.encoded)),
             signature = String(Base64.getEncoder().encode(cert.signature)),
             subject = createCertificateSubjectFromDn(cert.subjectX500Principal.toString(), extractSanEmail(cert)),
             issuer = createCertificateSubjectFromDn(cert.issuerX500Principal.toString(), null),
         )
     }
+
+    /**
+     * OID'ы политик применения сертификата (`certificatePolicies`, 2.5.29.32).
+     *
+     * Пустой список, если расширения нет или оно не разбирается. Условия
+     * применения политики задаёт УЦ, поэтому сверять номер с ними — дело
+     * проверяющей стороны (п. 16 приказа №500/НҚ); наше дело — показать его.
+     */
+    val certificatePolicies: List<String>
+        get() {
+            val encoded = x509Certificate.getExtensionValue(Extension.certificatePolicies.id) ?: return emptyList()
+            return try {
+                // Разбираем структуру напрямую: PolicyInformation ::= SEQUENCE {
+                // policyIdentifier OID, policyQualifiers OPTIONAL }. Хелперы
+                // Kalkan для этого расширения — из старой ветки BC, их API
+                // между версиями разъезжается сильнее, чем сама ASN.1-структура.
+                val policies = ASN1Sequence.getInstance(X509ExtensionUtil.fromExtensionValue(encoded))
+                (0 until policies.size()).mapNotNull { i ->
+                    val info = policies.getObjectAt(i) as? ASN1Sequence ?: return@mapNotNull null
+                    (info.getObjectAt(0) as? DERObjectIdentifier)?.id
+                }
+            } catch (e: Exception) {
+                log.warn("Failed to parse certificatePolicies extension: {}", e.message)
+                emptyList()
+            }
+        }
 
     /**
      * CRL DistributionPoint'ы сертификата, сгруппированные по точкам
@@ -210,8 +239,24 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             log.warn("Certificate has unhandled critical extension(s) {} — rejecting (RFC 5280 §4.2)", unsupportedCritical)
             return false
         }
+        // п. 16 Правил формирования и проверки подлинности ЭЦП (приказ МИИ РК
+        // №500/НҚ): назначение ключа должно допускать подпись. `isValid`
+        // вызывается только на пути проверки подписи (подписант, TSA,
+        // responder), поэтому проверка уместна здесь. Отсутствие keyUsage —
+        // не ограничение (RFC 5280 §4.2.1.3, расширение опционально).
+        if (!permitsSignature()) {
+            log.warn(
+                "Certificate {} keyUsage permits neither digitalSignature nor nonRepudiation",
+                subjectX500Principal,
+            )
+            return false
+        }
         val issuer = issuerCertificate ?: return false
-        if (!issuer.isDateValid(date)) return false
+        // п. 16 тех же Правил: срок действия проверяется у ВСЕЙ цепочки до
+        // доверенного корня — истечение любого сертификата в ней даёт
+        // отрицательный результат. Раньше проверялся только непосредственный
+        // издатель, и протухший промежуточный или корневой оставался незамеченным.
+        if (!isChainDateValid(issuer, date)) return false
         if (checkOcsp) {
             val statuses = ocspStatus ?: return false
             // Авторитетный плохой ответ хотя бы от одного responder'а —
@@ -240,6 +285,23 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
         }
         if (checkCrl) {
             val status = crlStatus ?: return false
+            // п. 18 Правил: истёкший CRL — отрицательный результат проверки
+            // отзыва. Не фатален он только тогда, когда отзыв уже проверен по
+            // второму каналу: п. 16 требует проверки «посредством сервиса OCSP
+            // либо CRL», и авторитетный ACTIVE от респондера — самостоятельный
+            // положительный результат. Иначе протухший список молча выдавал бы
+            // за «не отозван» всё, что издатель опубликовал после nextUpdate.
+            if (status.result == CrlResult.EXPIRED) {
+                val ocspAnswered = checkOcsp && ocspStatus?.any { it.result == OcspResult.ACTIVE } == true
+                if (!ocspAnswered) {
+                    log.warn(
+                        "CRL for {} is past its validity period and there is no OCSP verdict to rely on",
+                        subjectX500Principal,
+                    )
+                    return false
+                }
+                log.warn("CRL for {} is past its validity period; relying on the OCSP verdict", subjectX500Principal)
+            } else
             // UNAVAILABLE (нет CRL издателя в кэше / CRL выключен) нефатален:
             // CA без опубликованного CRL — легитимный случай (легаси-CA), это
             // сохраняет историческое поведение, когда такой случай молча
@@ -247,6 +309,52 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             // OCSP он быть не может (см. выше — там требуется настоящий
             // fresh ACTIVE).
             if (status.result != CrlResult.UNAVAILABLE && !status.isValidAt(date)) return false
+        }
+        return true
+    }
+
+    /**
+     * Допускает ли назначение ключа формирование подписи: `digitalSignature`
+     * либо `nonRepudiation` (RFC 5280 §4.2.1.3, биты 0 и 1). Расширения нет —
+     * ограничений нет.
+     *
+     * Номер политики сертификата (`certificatePolicies`) здесь НЕ проверяется:
+     * условия его применения задаёт политика конкретного УЦ, и они не выводимы
+     * из самого сертификата. Значения политик публикуются в
+     * [kz.ncanode.dto.certificate.CertificateInfo.policies], чтобы проверяющая
+     * сторона могла применить свои условия (п. 16 приказа №500/НҚ).
+     */
+    fun permitsSignature(): Boolean {
+        val keyUsage = x509Certificate.keyUsage ?: return true
+        if (keyUsage.size < 2) return true
+        return keyUsage[0] || keyUsage[1]
+    }
+
+    /**
+     * Срок действия каждого сертификата в цепочке, начиная с [start], на
+     * момент [date].
+     *
+     * Обход идёт по уже проставленным ссылкам `issuerCertificate` (их
+     * выставляет `CaService` для всего бандла), поэтому дополнительных поисков
+     * не делает. Останавливается на самоподписанном сертификате либо там, где
+     * издателя в бандле нет: всё, что попало в `NCANODE_CA_URL`, — это
+     * настроенный оператором якорь доверия. Защита от петли на
+     * кросс-подписанных сертификатах — по паре (subject, серийник).
+     */
+    private fun isChainDateValid(start: CertificateWrapper, date: Date): Boolean {
+        val seen = mutableSetOf<Pair<X500Principal, java.math.BigInteger>>()
+        var current: CertificateWrapper? = start
+        while (current != null) {
+            if (!seen.add(current.subjectX500Principal to current.x509Certificate.serialNumber)) return true
+            if (!current.isDateValid(date)) {
+                log.warn(
+                    "Certificate {} in the certification chain is not valid at {}",
+                    current.subjectX500Principal, date,
+                )
+                return false
+            }
+            if (current.subjectX500Principal == current.issuerX500Principal) return true
+            current = current.issuerCertificate
         }
         return true
     }

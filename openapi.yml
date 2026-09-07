@@ -1167,6 +1167,15 @@ components:
             - IDENTIFICATION_REMOTE
             - IDENTIFICATION_REMOTE_DIGITAL_ID
           uniqueItems: true
+        policies:
+          type: array
+          items:
+            type: string
+          description: >-
+            OID'ы политик применения сертификата (расширение certificatePolicies).
+            Публикуются, чтобы проверяющая сторона могла сверить номер политики с
+            условиями её применения (п. 16 Правил формирования и проверки
+            подлинности ЭЦП).
         publicKey:
           type: string
         signature:
@@ -1197,6 +1206,7 @@ components:
           - REVOKED
           - UNKNOWN
           - UNAVAILABLE
+          - EXPIRED
     CertificateSubject:
       type: object
       properties:

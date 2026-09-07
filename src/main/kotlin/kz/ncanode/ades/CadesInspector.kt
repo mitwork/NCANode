@@ -105,8 +105,13 @@ object CadesInspector {
      * её к конкретному сертификату. Не проверять его — значит принимать
      * заявленный уровень B, не подтверждая единственное, что этот уровень
      * добавляет.
+     *
+     * Публичный: тем же атрибутом обязан быть снабжён любой CAdES (п. 8
+     * приказа МИИ РК №500/НҚ), поэтому привязку сверяет и обычный
+     * `/cms/verify` — CMS с атрибутом, указывающим на другой сертификат,
+     * внутренне противоречив, каким бы путём он ни пришёл.
      */
-    private fun signingCertificateMatches(
+    fun signingCertificateMatches(
         signer: SignerInformation,
         certificate: X509Certificate?,
         provider: Provider,

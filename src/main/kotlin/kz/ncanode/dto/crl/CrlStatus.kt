@@ -25,9 +25,10 @@ data class CrlStatus(
      * по данным этого CRL (CAdES-T).
      *
      * `ACTIVE` — да. `REVOKED` — да только если отзыв произошёл строго после
-     * [signingTime] и по benign-причине (см. [RevocationPolicy]); `UNAVAILABLE`
-     * и отсутствие даты/причины отзыва — консервативно нет (нефатальность
-     * UNAVAILABLE в AND-режиме решается в `CertificateWrapper.isValid`).
+     * [signingTime] и по benign-причине (см. [RevocationPolicy]); `UNAVAILABLE`,
+     * `EXPIRED` и отсутствие даты/причины отзыва — консервативно нет
+     * (нефатальность UNAVAILABLE и условия для EXPIRED разбираются в
+     * `CertificateWrapper.isValid`).
      */
     fun isValidAt(signingTime: Date): Boolean = when (result) {
         CrlResult.ACTIVE -> true
@@ -48,6 +49,7 @@ data class CrlStatus(
             CrlResult.ACTIVE -> RevocationResult.ACTIVE
             CrlResult.REVOKED -> RevocationResult.REVOKED
             CrlResult.UNAVAILABLE -> RevocationResult.UNAVAILABLE
+            CrlResult.EXPIRED -> RevocationResult.EXPIRED
             else -> RevocationResult.UNKNOWN
         },
     )

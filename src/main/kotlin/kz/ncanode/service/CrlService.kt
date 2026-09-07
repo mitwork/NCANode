@@ -332,7 +332,22 @@ open class CrlService(
             )
         }
 
-        return verdict(base, delta, cert)
+        val status = verdict(base, delta, cert)
+        // п. 18 Правил (приказ №500/НҚ): истёкший период действия CRL —
+        // отрицательный результат его проверки. Отсутствие серийника в
+        // протухшем списке не свидетельствует о том, что отзыва не было:
+        // всё, что издатель опубликовал после `nextUpdate`, в нём отсутствует
+        // по определению. Отзыв, наоборот, остаётся в силе (REVOKED не
+        // трогаем — отзывы не отменяются).
+        return if (status.result == CrlResult.ACTIVE && !status.fresh) {
+            CrlStatus(
+                result = CrlResult.EXPIRED,
+                file = status.file,
+                reason = "CRL validity period has ended (nextUpdate is in the past or absent)",
+            )
+        } else {
+            status
+        }
     }
 
     /**

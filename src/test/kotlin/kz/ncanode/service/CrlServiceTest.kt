@@ -182,7 +182,12 @@ class CrlServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         val status = buildService().verify(ks.certificate)
-        status.result shouldBe CrlResult.ACTIVE
+        // Fixture'ы в репозитории давно вышли из своего периода действия
+        // (nextUpdate — октябрь 2025), поэтому положительным вердикт быть не
+        // может: серийника в списке нет, но и свидетельствовать о «сейчас» он
+        // не вправе. ACTIVE на живых списках проверяется интеграционными
+        // тестами, а на mock'ах — кейсами delta ниже.
+        status.result shouldBe CrlResult.EXPIRED
     }
 
     test("verify() ignores CRL issued by a different CA") {
@@ -296,28 +301,31 @@ class CrlServiceTest : FunSpec({
         status.fresh shouldBe true
     }
 
-    test("verify() marks ACTIVE as stale when CRL nextUpdate has passed") {
-        // Протухший CRL остаётся детектором отзыва в AND-режиме, но его
-        // ACTIVE не может единолично реабилитировать cert при упавшем OCSP.
+    test("verify() reports EXPIRED when CRL nextUpdate has passed") {
+        // п. 18 приказа №500/НҚ: истёкший период действия CRL — отрицательный
+        // результат его проверки. Протухший список остаётся детектором отзыва,
+        // но отсутствие серийника в нём ничего не доказывает: всё, что издатель
+        // опубликовал после nextUpdate, туда физически не попало.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
         val status = serviceWithSingleCrl(ks.certificate, Date(System.currentTimeMillis() - 86_400_000L))
             .verify(ks.certificate)
-        status.result shouldBe CrlResult.ACTIVE
+        status.result shouldBe CrlResult.EXPIRED
         status.fresh shouldBe false
     }
 
-    test("verify() marks ACTIVE as stale when CRL has no nextUpdate (nonconforming)") {
+    test("verify() reports EXPIRED when CRL has no nextUpdate (nonconforming)") {
         // RFC 5280 §5.1.2.5 требует nextUpdate; его отсутствие трактуем
-        // консервативно — CRL непригоден как fallback-основание.
+        // консервативно — период действия не подтверждён, значит по п. 18
+        // приказа №500/НҚ результат проверки такого списка отрицательный.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
         val status = serviceWithSingleCrl(ks.certificate, null).verify(ks.certificate)
-        status.result shouldBe CrlResult.ACTIVE
+        status.result shouldBe CrlResult.EXPIRED
         status.fresh shouldBe false
     }
 
@@ -563,7 +571,9 @@ class CrlServiceTest : FunSpec({
             TestResources.loadAsBase64("p12/legal_ceo_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
-        buildService().verify(ks.certificate).result shouldBe CrlResult.ACTIVE
+        // Тот же fixture, тот же истёкший период — вердикт EXPIRED, а не
+        // падение: важно, что чужой CRL просто не участвует.
+        buildService().verify(ks.certificate).result shouldBe CrlResult.EXPIRED
     }
 
     // ---- повторы при плановой загрузке ----

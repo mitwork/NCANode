@@ -8,6 +8,7 @@ import kz.gov.pki.kalkan.jce.provider.cms.CMSSignedDataGenerator
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformation
 import kz.gov.pki.kalkan.jce.provider.cms.SignerInformationStore
 import kz.gov.pki.kalkan.util.encoders.Hex
+import kz.ncanode.ades.CadesInspector
 import kz.ncanode.dto.certificate.CertificateInfo
 import kz.ncanode.dto.cms.CmsSignerInfo
 import kz.ncanode.dto.request.CmsCreateBatchRequest
@@ -377,7 +378,16 @@ class CmsService(
             // attachValidationData идемпотентен: prefetch уже сделал тяжёлую часть
             // (OCSP параллельно, CRL с кэшем), здесь только issuer если он null.
             certificateService.attachValidationData(cert, checkOcsp, checkCrl)
+            // signingCertificateV2 лежит под подписью и привязывает её к
+            // конкретному сертификату (RFC 5035). Атрибут обязателен для CAdES
+            // (п. 8 приказа МИИ РК №500/НҚ), и раз он есть — расхождение с
+            // сертификатом означает внутренне противоречивый контейнер,
+            // независимо от того, каким эндпойнтом его проверяют.
+            val bindingMatches = CadesInspector.signingCertificateMatches(
+                signer, cert.x509Certificate, kalkanWrapper.kalkanProvider,
+            )
             if (!signer.verify(cert.publicKey, KalkanProvider.PROVIDER_NAME)
+                || !bindingMatches
                 || !cert.isValid(validationDate, checkOcsp, checkCrl)
             ) {
                 valid = false
