@@ -1149,12 +1149,15 @@ components:
             type: string
             enum:
             - INDIVIDUAL
+            - INDIVIDUAL_DIGITAL_SYSTEM
             - ORGANIZATION
             - CEO
             - CAN_SIGN
             - CAN_SIGN_FINANCIAL
             - HR
             - EMPLOYEE
+            - ORGANIZATION_DIGITAL_SYSTEM
+            - TREASURY_CLIENT
             - NCA_PRIVILEGES
             - NCA_ADMIN
             - NCA_MANAGER
@@ -1217,6 +1220,11 @@ components:
           type: string
         state:
           type: string
+        uid:
+          type: string
+          description: >-
+            UID (0.9.2342.19200300.100.1.1). У сертификатов шаблона «цифровая
+            система юридического лица» здесь OID самой цифровой системы.
         dn:
           type: string
     VerificationResponse:

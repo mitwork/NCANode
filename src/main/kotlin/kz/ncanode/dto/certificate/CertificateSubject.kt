@@ -14,5 +14,11 @@ data class CertificateSubject(
     val country: String? = null,
     val locality: String? = null,
     val state: String? = null,
+    /**
+     * UID (0.9.2342.19200300.100.1.1). У сертификатов шаблона «цифровая
+     * система юридического лица» (приказ МИИ РК №522/НҚ) здесь OID самой
+     * цифровой системы, в которую разрешено ставить закрытый ключ.
+     */
+    val uid: String? = null,
     val dn: String? = null,
 )

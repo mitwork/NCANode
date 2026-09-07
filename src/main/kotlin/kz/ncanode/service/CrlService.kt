@@ -264,6 +264,13 @@ open class CrlService(
         val fresh: Boolean,
         /** Список свидетельствует о состоянии на момент проверки — см. [authoritativeAt]. */
         val authoritative: Boolean = fresh,
+        /**
+         * Файл скачан с delta-эндпоинта (`crl.delta.url`). Провенанс, а не
+         * содержимое: он говорит, чем список задумывался, даже если разбор не
+         * нашёл в нём `deltaCRLIndicator`. Такой список нельзя брать как base
+         * (см. [selectCrls]).
+         */
+        val fromDeltaEndpoint: Boolean = false,
     ) {
         val isDelta: Boolean get() = baseCrlNumber != null
     }
@@ -371,7 +378,8 @@ open class CrlService(
     ): Pair<UsableCrl?, UsableCrl?> {
         val usable = ArrayList<UsableCrl>()
         val onDemandDir = cacheOnDemandDir()
-        for (cacheDirectory in listOf(cacheFullDir(), cacheDeltaDir(), onDemandDir)) {
+        val deltaDir = cacheDeltaDir()
+        for (cacheDirectory in listOf(cacheFullDir(), deltaDir, onDemandDir)) {
             for (crlFile in getCrlFiles(cacheDirectory)) {
                 loadUsableCrl(crlFile, certIssuer, issuerKey, now)?.let {
                     // Отмечаем именно пригодившийся CRL: тот, что не подошёл ни
@@ -379,12 +387,27 @@ open class CrlService(
                     if (cacheDirectory == onDemandDir) {
                         onDemandLastUse[crlFile.absolutePath] = System.currentTimeMillis()
                     }
-                    usable.add(it)
+                    usable.add(it.copy(fromDeltaEndpoint = cacheDirectory == deltaDir))
                 }
             }
         }
 
-        val base = usable.filter { !it.isDelta }.maxWithOrNull(compareBy { it.crlNumber })
+        // Base ищем только среди списков, которые не пришли с delta-эндпоинта.
+        // Иначе delta без `deltaCRLIndicator` (профиль разностного СОС в
+        // приказе №522/НҚ маркирует её `freshestCRL`, а не индикатором) попала
+        // бы в пул base и выиграла бы отбор: её CRLNumber на порядки больше
+        // (на бою 57 725 против 1 346 у полного). Вердикт считался бы по
+        // одной delta, и всё, что отозвано только в полном списке, вернулось
+        // бы как ACTIVE.
+        val baseCandidates = usable.filter { !it.isDelta && !it.fromDeltaEndpoint }
+        usable.filter { !it.isDelta && it.fromDeltaEndpoint }.forEach {
+            log.warn(
+                "CRL {} came from the delta endpoint but carries no deltaCRLIndicator — "
+                    + "not usable as a base list, and not orderable as a delta",
+                it.fileName,
+            )
+        }
+        val base = baseCandidates.maxWithOrNull(compareBy { it.crlNumber })
             ?: return null to null
         val delta = usable
             .filter { it.isDelta && isDeltaApplicable(base, it) }
@@ -739,10 +762,21 @@ open class CrlService(
     }
 
     /**
-     * Скачивает CRL'и, указанные в `cRLDistributionPoints` cert'а, если они
-     * ещё не лежат в кэше или протухли по TTL. Тихий метод — упавший
-     * download не пробрасывает наружу (есть логирование внутри downloadCrl),
-     * verify() в любом случае попробует использовать имеющийся кэш.
+     * Скачивает CRL'и, на которые ссылается сам сертификат, если они ещё не
+     * лежат в кэше или протухли по TTL. Тихий метод — упавший download не
+     * пробрасывает наружу (есть логирование внутри downloadCrl), verify() в
+     * любом случае попробует использовать имеющийся кэш.
+     *
+     * Берутся оба расширения: `cRLDistributionPoints` (полный список) и
+     * `freshestCRL` (разностный). Второе до сих пор не читалось, а НУЦ
+     * публикует адрес delta именно там — без него для издателя вне конфига мы
+     * работали на одном полном списке и не видели досрочных отзывов.
+     *
+     * Внутри одной точки распространения адреса — зеркала одного и того же
+     * списка (RFC 5280 §4.2.1.13), поэтому качаем по первому сработавшему.
+     * Профили из приказа №522/НҚ объявляют пару `crl.pki.gov.kz` +
+     * `crl1.pki.gov.kz`: без этого мы держали бы в кэше два экземпляра одного
+     * 20-МБ списка и оба индексировали.
      *
      * URL фильтруются по схеме (только http/https) — defense-in-depth против
      * SSRF через подконтрольный атакующему cert.
@@ -753,8 +787,8 @@ open class CrlService(
         // скачать CRL с произвольного (внутреннего) URL.
         if (crlConfiguration.isStrict) return
 
-        val crlUrls = cert.crlList
-        if (crlUrls.isEmpty()) return
+        val distributionPoints = cert.crlDistributionPoints + cert.freshestCrlDistributionPoints
+        if (distributionPoints.isEmpty()) return
 
         val ttl = crlConfiguration.ttl ?: return
         val ttlMillis = ttl.toLong() * 60_000L
@@ -763,32 +797,38 @@ open class CrlService(
         val cacheDir = directoryService.getCachePathFor(dirName) ?: return
         var fetched = false
 
-        for (url in crlUrls) {
-            // Минимальный SSRF-барьер: URL из серта не должен указывать на
-            // loopback/link-local (cloud-metadata) — см. isInternalHost.
-            if (!isAllowedCrlScheme(url) || isInternalHost(url)) continue
-            val fileName = sha1(url.toString()) + CRL_FILE_EXTENSION
+        for (mirrors in distributionPoints) {
+            for (url in mirrors) {
+                // Минимальный SSRF-барьер: URL из серта не должен указывать на
+                // loopback/link-local (cloud-metadata) — см. isInternalHost.
+                if (!isAllowedCrlScheme(url) || isInternalHost(url)) continue
+                val fileName = sha1(url.toString()) + CRL_FILE_EXTENSION
 
-            // Дедуп: если URL уже покрывается scheduled-flow'ом (т.е. файл
-            // уже есть в config-кэше full или delta), не качаем дубликат
-            // в ondemand. Reuse того же файла, что обновляет scheduled-job
-            // — экономит диск и убирает удвоенную работу при verify.
-            if (isAlreadyInConfigCache(fileName)) {
-                log.debug("CRL URL already covered by config cache, skipping on-demand: {}", url)
-                continue
+                // Дедуп: если URL уже покрывается scheduled-flow'ом (т.е. файл
+                // уже есть в config-кэше full или delta), не качаем дубликат
+                // в ondemand. Reuse того же файла, что обновляет scheduled-job
+                // — экономит диск и убирает удвоенную работу при verify.
+                if (isAlreadyInConfigCache(fileName)) {
+                    log.debug("CRL URL already covered by config cache, skipping on-demand: {}", url)
+                    break
+                }
+
+                val crlFile = File(cacheDir, fileName)
+                val stale = !crlFile.exists()
+                    || !crlFile.isFile
+                    || !crlFile.canRead()
+                    || (now - crlFile.lastModified()) > ttlMillis
+
+                // Свежая копия этой точки распространения уже есть — зеркала
+                // не трогаем.
+                if (!stale) break
+
+                log.debug("On-demand fetching CRL from cert CRL-DP: {}", url)
+                if (tryDownloadCrl(dirName, url)) {
+                    fetched = true
+                    break
+                }
             }
-
-            val crlFile = File(cacheDir, fileName)
-            val stale = !crlFile.exists()
-                || !crlFile.isFile
-                || !crlFile.canRead()
-                || (now - crlFile.lastModified()) > ttlMillis
-
-            if (!stale) continue
-
-            log.debug("On-demand fetching CRL from cert CRL-DP: {}", url)
-            downloadCrl(dirName, url)
-            fetched = true
         }
 
         // Кэш пополняется URL'ами из присланных сертификатов, то есть растёт
@@ -891,11 +931,20 @@ open class CrlService(
      * из сертификата, которая идёт внутри проверки подписи.
      */
     fun downloadCrl(cacheDirName: String, url: URL) {
-        try {
-            downloadCrlOrThrow(cacheDirName, url)
-        } catch (e: CrlException) {
-            log.error("CRL File download failure", e.cause)
-        }
+        tryDownloadCrl(cacheDirName, url)
+    }
+
+    /**
+     * То же, но с ответом «получилось ли». Нужно тем, кто перебирает зеркала
+     * одной точки распространения: следующий адрес имеет смысл пробовать
+     * только после неудачи предыдущего.
+     */
+    private fun tryDownloadCrl(cacheDirName: String, url: URL): Boolean = try {
+        downloadCrlOrThrow(cacheDirName, url)
+        true
+    } catch (e: CrlException) {
+        log.error("CRL File download failure", e.cause)
+        false
     }
 
     /**
@@ -1067,10 +1116,22 @@ open class CrlService(
         private const val MEM_CACHE_MAX_ENTRIES = 256
 
         /**
-         * Единственное critical CRL-расширение, которое мы обрабатываем:
-         * deltaCRLIndicator (2.5.29.27) — маркер delta-CRL. Любое другое
-         * critical-расширение дисквалифицирует CRL (RFC 5280 §5.2).
+         * Critical CRL-расширения, с которыми список остаётся пригодным.
+         * Любое другое critical-расширение дисквалифицирует CRL (RFC 5280 §5.2).
+         *
+         *  - `deltaCRLIndicator` (2.5.29.27) — маркер delta-CRL, мы его
+         *    обрабатываем (наложение поверх base, см. [verify]);
+         *  - `freshestCRL` (2.5.29.46) — указатель на адрес delta-списка.
+         *    RFC 5280 §5.2.6 требует его НЕкритичным, но профили разностных
+         *    СОС в приказе МИИ РК №522/НҚ (приложение 3, структуры 13 и 14)
+         *    объявляют его critical. Игнорировать указатель безопасно: он не
+         *    сужает охват списка, а лишь говорит, где искать более свежий.
+         *    Дисквалифицировать из-за него CRL — значит остаться вообще без
+         *    delta, то есть без досрочных отзывов.
          */
-        private val SUPPORTED_CRITICAL_CRL_EXTENSIONS = setOf(Extension.deltaCRLIndicator.id)
+        private val SUPPORTED_CRITICAL_CRL_EXTENSIONS = setOf(
+            Extension.deltaCRLIndicator.id,
+            Extension.freshestCRL.id,
+        )
     }
 }

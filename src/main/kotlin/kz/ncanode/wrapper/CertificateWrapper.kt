@@ -86,36 +86,66 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
     }
 
     /**
-     * Получает список CRL DistributionPoint URL'ов сертификата.
+     * CRL DistributionPoint'ы сертификата, сгруппированные по точкам
+     * распространения: одна вложенная группа — один DistributionPoint.
+     *
+     * Группировка не косметическая. По RFC 5280 §4.2.1.13 несколько имён
+     * внутри одной точки — это адреса ОДНОГО И ТОГО ЖЕ списка, то есть
+     * зеркала: достаточно скачать по любому из них. Профили сертификатов из
+     * приказа МИИ РК №522/НҚ (в силе с 11.09.2026) как раз объявляют пару
+     * `crl.pki.gov.kz` + `crl1.pki.gov.kz`, и без группировки мы качали бы
+     * два экземпляра одного и того же 20-МБ списка.
+     */
+    val crlDistributionPoints: List<List<URL>>
+        get() = distributionPointUrls(Extension.cRLDistributionPoints.id, "cRLDistributionPoints")
+
+    /**
+     * Получает список CRL DistributionPoint URL'ов сертификата (плоский).
      */
     val crlList: List<URL>
-        get() {
-            val crlDistributionPoint = x509Certificate.getExtensionValue(Extension.cRLDistributionPoints.id)
-                ?: return emptyList()
+        get() = crlDistributionPoints.flatten()
 
-            return try {
-                val distPoint = CRLDistPoint.getInstance(X509ExtensionUtil.fromExtensionValue(crlDistributionPoint))
-                val urls = mutableListOf<String>()
-                for (dp in distPoint.distributionPoints) {
-                    val dpn = dp.distributionPoint ?: continue
-                    if (dpn.type != DistributionPointName.FULL_NAME) continue
-                    val genNames = GeneralNames.getInstance(dpn.name).names
-                    for (gn in genNames) {
-                        if (gn.tagNo == GeneralName.uniformResourceIdentifier) {
-                            urls.add(DERIA5String.getInstance(gn.name).string)
-                        }
-                    }
-                }
-                urls.mapNotNull { createNewUrl(it, log) }
-            } catch (e: Exception) {
-                // Битое/нестандартное cRLDistributionPoints не должно ронять
-                // verify в 500. Напр. URI-тег с не-IA5String → DERIA5String.getInstance
-                // кидает IllegalArgumentException (раньше был вне try → уходил в 500
-                // на крафт-серте). Любой сбой парсинга → просто нет CRL-URL.
-                log.warn("Failed to parse cRLDistributionPoints extension: {}", e.message)
-                emptyList()
+    /**
+     * Точки распространения разностного (delta) CRL — расширение `freshestCRL`
+     * (2.5.29.46, RFC 5280 §4.2.1.15). Синтаксис тот же, что у
+     * `cRLDistributionPoints`, а смысл другой: адрес delta-списка, покрывающего
+     * изменения после текущего полного CRL.
+     *
+     * Отдельное свойство, потому что до сих пор мы это расширение не читали,
+     * и delta прилетала только из конфигурации. Для издателя, которого нет в
+     * конфиге, мы работали на одном полном списке — то есть не видели
+     * досрочных отзывов, ради которых delta и публикуется. Сертификаты НУЦ
+     * (в том числе тестовые) кладут адрес delta именно сюда.
+     */
+    val freshestCrlDistributionPoints: List<List<URL>>
+        get() = distributionPointUrls(Extension.freshestCRL.id, "freshestCRL")
+
+    /**
+     * Разбирает расширение с синтаксисом `CRLDistributionPoints` в группы
+     * URL'ов — по группе на точку распространения.
+     */
+    private fun distributionPointUrls(extensionOid: String, extensionName: String): List<List<URL>> {
+        val encoded = x509Certificate.getExtensionValue(extensionOid) ?: return emptyList()
+
+        return try {
+            val distPoint = CRLDistPoint.getInstance(X509ExtensionUtil.fromExtensionValue(encoded))
+            distPoint.distributionPoints.mapNotNull { dp ->
+                val dpn = dp.distributionPoint ?: return@mapNotNull null
+                if (dpn.type != DistributionPointName.FULL_NAME) return@mapNotNull null
+                GeneralNames.getInstance(dpn.name).names
+                    .filter { it.tagNo == GeneralName.uniformResourceIdentifier }
+                    .mapNotNull { createNewUrl(DERIA5String.getInstance(it.name).string, log) }
+                    .ifEmpty { null }
             }
+        } catch (e: Exception) {
+            // Битое/нестандартное расширение не должно ронять verify в 500.
+            // Напр. URI-тег с не-IA5String → DERIA5String.getInstance кидает
+            // IllegalArgumentException (раньше был вне try → уходил в 500
+            // на крафт-серте). Любой сбой парсинга → просто нет CRL-URL.
+            log.warn("Failed to parse {} extension: {}", extensionName, e.message)
+            emptyList()
         }
+    }
 
     /**
      * Возвращает список OCSP-URL'ов, объявленных самим сертификатом в его
@@ -305,6 +335,7 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             var country: String? = null
             var locality: String? = null
             var state: String? = null
+            var uid: String? = null
 
             for (rdn in ldapName.rdns) {
                 val type = rdn.type
@@ -325,6 +356,14 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
                     type.equals("O", ignoreCase = true) -> organization = value
                     type.equals("OU", ignoreCase = true) -> bin = value.removePrefix("BIN")
                     type.equals("G", ignoreCase = true) -> lastName = value
+                    // UID (0.9.2342.19200300.100.1.1) — в шаблоне «цифровая
+                    // система юридического лица» (приказ №522/НҚ, приложение 3,
+                    // структура 10) здесь лежит OID самой цифровой системы,
+                    // выданный уполномоченным органом. По п. 17 тех же Правил
+                    // ключ ставится именно в систему с этим OID, так что для
+                    // серверного подписанта это опорное поле — раньше оно было
+                    // видно только внутри сырого dn.
+                    type.equals("UID", ignoreCase = true) -> uid = value
                 }
             }
 
@@ -342,6 +381,7 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
                 country = country,
                 locality = locality,
                 state = state,
+                uid = uid,
                 dn = dn,
             )
         } catch (e: InvalidNameException) {

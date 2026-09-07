@@ -14,7 +14,13 @@ import kz.ncanode.dto.crl.CrlResult
 import kz.ncanode.dto.crl.CrlStatus
 import kz.ncanode.dto.ocsp.OcspResult
 import kz.ncanode.dto.ocsp.OcspStatus
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.io.File
+import java.math.BigInteger
+import java.security.KeyPairGenerator
 import java.util.Date
 
 class CertificateWrapperTest : FunSpec({
@@ -302,5 +308,60 @@ class CertificateWrapperTest : FunSpec({
         cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe true
         cert.crlStatus = CrlStatus(result = CrlResult.UNAVAILABLE)
         cert.isValid(date, checkOcsp = true, checkCrl = true) shouldBe false
+    }
+
+    // ---- шаблоны и расширения приказа МИИ РК №522/НҚ ----
+
+    test("keyUser EKU includes ORGANIZATION_DIGITAL_SYSTEM for цифровая-система cert") {
+        // Шаблон «цифровая система юридического лица» (1.2.398.3.3.4.1.2.6).
+        // OID появился в приказе №522/НҚ, но НУЦ выдаёт такие сертификаты уже
+        // сейчас — он есть на нашем же тестовом ключе. Нераспознанный OID
+        // молча выпадал из keyUser (mapNotNull), и /x509/info занижал шаблон.
+        val cert = certFromP12("legal_infosystem_valid.p12")
+        val info = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false)
+        info.keyUser.shouldNotBeNull() shouldContain CertificateKeyUser.ORGANIZATION_DIGITAL_SYSTEM
+    }
+
+    test("keyUser EKU includes TREASURY_CLIENT for Казначейство-Клиент cert") {
+        val cert = certFromP12("legal_treasury_valid.p12")
+        val info = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false)
+        info.keyUser.shouldNotBeNull() shouldContain CertificateKeyUser.TREASURY_CLIENT
+    }
+
+    test("crlDistributionPoints groups mirrors of one distribution point together") {
+        // Внутри одной точки распространения адреса — зеркала одного списка
+        // (RFC 5280 §4.2.1.13). Профили НУЦ объявляют пару crl + crl1, и
+        // группировка — то, что удерживает нас от загрузки двух копий.
+        val cert = certFromP12("individual_valid.p12")
+        cert.crlDistributionPoints shouldHaveAtLeastSize 1
+        cert.crlDistributionPoints.flatten() shouldBe cert.crlList
+    }
+
+    test("freshestCrlDistributionPoints extracts the delta CRL address") {
+        // Адрес разностного СОС лежит в freshestCRL (2.5.29.46), а не в
+        // cRLDistributionPoints — так и на боевых, и на тестовых сертификатах НУЦ.
+        val cert = certFromP12("individual_valid.p12")
+        val delta = cert.freshestCrlDistributionPoints.flatten()
+        delta shouldHaveAtLeastSize 1
+        delta.none { it in cert.crlList } shouldBe true
+    }
+
+    test("Subject UID is parsed (digital system OID)") {
+        // В шаблоне «цифровая система юридического лица» UID
+        // (0.9.2342.19200300.100.1.1) несёт OID самой цифровой системы, в
+        // которую по п. 17 Правил разрешено ставить закрытый ключ. Тестового
+        // ключа с этим полем в паке НУЦ нет, поэтому сертификат собираем сами
+        // — проверяется разбор DN, а не криптография.
+        val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val subject = X500Name("CN=ЦИФРОВАЯ СИСТЕМА,UID=1.2.398.100.500,OU=BIN123456789021,C=KZ")
+        val now = System.currentTimeMillis()
+        val holder = JcaX509v3CertificateBuilder(
+            subject, BigInteger.ONE, Date(now - 86_400_000L), Date(now + 86_400_000L), subject, keyPair.public,
+        ).build(JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private))
+        val cert = CertificateWrapper(JcaX509CertificateConverter().getCertificate(holder))
+
+        val info = cert.toCertificateInfo(Date(), checkOcsp = false, checkCrl = false)
+        info.subject.shouldNotBeNull().uid shouldBe "1.2.398.100.500"
+        info.subject.shouldNotBeNull().bin shouldBe "123456789021"
     }
 })

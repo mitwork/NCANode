@@ -99,33 +99,43 @@ class OcspService(
     private fun exchanges(cert: CertificateWrapper, issuer: CertificateWrapper): List<OcspExchange> {
         val exchanges = mutableListOf<OcspExchange>()
         for (ocspUrl in resolveOcspUrls(cert)) {
-            val url = ocspUrl.toString()
-            try {
-                val nonce = generateOcspNonce()
-                val request = buildOcspRequest(cert.x509Certificate.serialNumber, issuer.x509Certificate, nonce)
-
-                val response = makeRequest(url, request.encoded)
-                val status = processOcspResponse(response, nonce, issuer, cert.x509Certificate.serialNumber)
-                exchanges.add(OcspExchange(status.copy(url = url), response))
-            } catch (e: IOException) {
-                // Транспортный сбой (сеть/DNS/таймаут) или unparseable body
-                // (OCSPResp тоже кидает IOException на мусоре) — OCSP-ответа
-                // НЕТ ВОВСЕ. Это UNAVAILABLE, а не UNKNOWN: при наличии свежего
-                // CRL верификация может деградировать на него (isValid).
-                exchanges.add(OcspExchange(unavailableStatus(url, e.message), null))
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                exchanges.add(OcspExchange(unavailableStatus(url, e.message), null))
-            } catch (e: OCSPException) {
-                // Ответ был, но обработка/крипто не сошлись — fail-closed,
-                // деградация на CRL не допускается.
-                exchanges.add(OcspExchange(unknownStatus(url, e.message), null))
-            } catch (e: GeneralSecurityException) {
-                exchanges.add(OcspExchange(unknownStatus(url, e.message), null))
-            }
+            val exchange = exchange(ocspUrl.toString(), cert, issuer)
+            exchanges.add(exchange)
+            // Авторитетный ответ получен — остальные адреса не опрашиваем.
+            // Профили приказа МИИ РК №522/НҚ объявляют по два респондера
+            // (`ocsp` + `ocsp1.pki.gov.kz`), и это зеркала одного сервиса:
+            // второй запрос лишь удваивает нагрузку на НУЦ и время ответа.
+            // UNAVAILABLE авторитетным не считается — на нём как раз и
+            // переходим к следующему зеркалу.
+            if (exchange.status.result != OcspResult.UNAVAILABLE) break
         }
 
         return exchanges
+    }
+
+    /** Один обмен с одним респондером. Исключений наружу не выпускает. */
+    private fun exchange(url: String, cert: CertificateWrapper, issuer: CertificateWrapper): OcspExchange = try {
+        val nonce = generateOcspNonce()
+        val request = buildOcspRequest(cert.x509Certificate.serialNumber, issuer.x509Certificate, nonce)
+
+        val response = makeRequest(url, request.encoded)
+        val status = processOcspResponse(response, nonce, issuer, cert.x509Certificate.serialNumber)
+        OcspExchange(status.copy(url = url), response)
+    } catch (e: IOException) {
+        // Транспортный сбой (сеть/DNS/таймаут) или unparseable body
+        // (OCSPResp тоже кидает IOException на мусоре) — OCSP-ответа
+        // НЕТ ВОВСЕ. Это UNAVAILABLE, а не UNKNOWN: при наличии свежего
+        // CRL верификация может деградировать на него (isValid).
+        OcspExchange(unavailableStatus(url, e.message), null)
+    } catch (e: InterruptedException) {
+        Thread.currentThread().interrupt()
+        OcspExchange(unavailableStatus(url, e.message), null)
+    } catch (e: OCSPException) {
+        // Ответ был, но обработка/крипто не сошлись — fail-closed,
+        // деградация на CRL не допускается.
+        OcspExchange(unknownStatus(url, e.message), null)
+    } catch (e: GeneralSecurityException) {
+        OcspExchange(unknownStatus(url, e.message), null)
     }
 
     /**
@@ -196,10 +206,18 @@ class OcspService(
         issuer: CertificateWrapper,
         expectedSerial: BigInteger,
     ): OcspStatus {
+        // Пустое тело при HTTP 200 (перенаправление в никуда, оборванный
+        // ответ, прокси-заглушка) до разбора не доходит: `OCSPResp(ByteArray(0))`
+        // падает NPE — а он не ловится ни одной из наших веток и уходил бы
+        // наружу как 500 на всём verify.
+        if (response.isEmpty()) {
+            return unavailableStatus(url = null, message = "OCSP responder returned an empty body")
+        }
+
         val resp = OCSPResp(response)
 
-        if (resp.status != 0) {
-            return unknownStatus(message = "OCSP response status: ${resp.status}")
+        if (resp.status != OCSP_RESPONSE_SUCCESSFUL) {
+            return unavailableStatus(url = null, message = ocspErrorMessage(resp.status))
         }
 
         val brep = resp.responseObject as BasicOCSPResp
@@ -322,7 +340,11 @@ class OcspService(
         certNotAfter: Date,
     ): OcspStatus? {
         val resp = OCSPResp(response)
-        if (resp.status != 0) return unknownStatus(message = "OCSP response status: ${'$'}{resp.status}")
+        // Ответ-ошибка не подписан и ничего не утверждает о сертификате —
+        // вшитый в подпись, он тем более не доказательство (см. processOcspResponse).
+        if (resp.status != OCSP_RESPONSE_SUCCESSFUL) {
+            return unavailableStatus(null, ocspErrorMessage(resp.status))
+        }
 
         val brep = resp.responseObject as BasicOCSPResp
         findVerifiedResponderCertificate(brep, issuer)
@@ -480,6 +502,24 @@ class OcspService(
     private fun unknownStatus(url: String? = null, message: String?): OcspStatus =
         OcspStatus(result = OcspResult.UNKNOWN, url = url, message = message)
 
+    /**
+     * Человекочитаемая расшифровка `OCSPResponseStatus` (RFC 6960 §4.2.1).
+     * В лог и в `revocations[].message` уходит имя, а не голое число: по
+     * `tryLater` сразу видно, что респондер жив и просит повторить, а по
+     * `unauthorized` — что запрос отвергнут.
+     */
+    private fun ocspErrorMessage(status: Int): String {
+        val name = when (status) {
+            1 -> "malformedRequest"
+            2 -> "internalError"
+            3 -> "tryLater"
+            5 -> "sigRequired"
+            6 -> "unauthorized"
+            else -> "unknown"
+        }
+        return "OCSP responder returned no answer: $name ($status)"
+    }
+
     private fun unavailableStatus(url: String?, message: String?): OcspStatus =
         OcspStatus(result = OcspResult.UNAVAILABLE, url = url, message = message)
 
@@ -488,6 +528,19 @@ class OcspService(
 
         /** RFC 8954 рекомендует nonce длиной не менее 16 байт. */
         private const val NONCE_LENGTH = 16
+
+        /**
+         * `OCSPResponseStatus.successful` (RFC 6960 §4.2.1). Всё остальное —
+         * ответ-ошибка: он НЕ подписан и не содержит статуса сертификата,
+         * то есть авторитетного ответа мы не получили. Поэтому такой исход —
+         * [OcspResult.UNAVAILABLE] (можно деградировать на свежий CRL), а не
+         * UNKNOWN (фатально). Разница практическая: приказ №522/НҚ обязывает
+         * НУЦ держать два респондера, и `tryLater` от перегруженного зеркала
+         * не должен объявлять валидную подпись недействительной. Плюс
+         * ответ-ошибку, раз она не подписана, может подделать кто угодно на
+         * пути — фатальной её делать нельзя.
+         */
+        private const val OCSP_RESPONSE_SUCCESSFUL = 0
 
         /**
          * RFC 6960 §4.2.2.2: для делегированного OCSP-responder'а EKU должен
