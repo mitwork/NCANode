@@ -61,6 +61,8 @@ class WsseService(
                 wsseSignRequest.password,
             )
             val cert = keystore.certificate
+            // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+            certificateService.ensureSignerCertificateUsable(cert)
 
             // sign a soap request according to a reference implementation from smartbridge
             val xmlBytes = xmlService.prepare(wsseSignRequest.xml, wsseSignRequest.isTrimXml)

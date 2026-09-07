@@ -61,6 +61,7 @@ class CadesService(
     private val tspService: TspService,
     private val cmsService: CmsService,
     private val validationDataService: ValidationDataService,
+    private val certificateService: CertificateService,
 ) {
 
     fun sign(request: CadesSignRequest): CadesResponse {
@@ -75,6 +76,8 @@ class CadesService(
 
             for (keyStore in kalkanWrapper.read(request.signers)) {
                 val certificate = keyStore.certificate.x509Certificate
+                // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+                certificateService.ensureSignerCertificateUsable(keyStore.certificate)
                 addSigner(generator, keyStore.privateKey, certificate)
                 certificates.add(certificate)
             }
@@ -151,6 +154,8 @@ class CadesService(
             val existingSignerCertificates = signerCertificates(existing)
             for (keyStore in kalkanWrapper.read(request.signers)) {
                 val certificate = keyStore.certificate.x509Certificate
+                // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+                certificateService.ensureSignerCertificateUsable(keyStore.certificate)
                 warnIfSignsAgain(existingSignerCertificates, certificate, request.level)
                 addSigner(generator, keyStore.privateKey, certificate)
                 certificates.add(certificate)

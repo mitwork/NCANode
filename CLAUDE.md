@@ -18,7 +18,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 495 тестов / **90% coverage**.
+- **Состояние v4:** functional + 499 тестов / **90% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
 
@@ -205,7 +205,7 @@ JWT/PDF/X509/PKCS12) начнёт возвращать `valid=false` из-за `
 NCA SDK 2.0 test pack, заменить p12 в `p12/`, сверить новый период валидности,
 обновить эту дату.
 
-495 тестов / **90% line coverage**.
+499 тестов / **90% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
 
@@ -232,7 +232,7 @@ REVOKED-ветка покрывается через mock'нутый `CrlIndex`,
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 495 тестов + JaCoCo report
+./gradlew test                   # 499 тестов + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -1208,9 +1208,13 @@ RSA-метки НУЦ на GOST-подписях, quirk #25); не требуе�
 ключом, так НУЦ и делает); п. 19.6 читаем как «квитанция должна свидетельствовать
 о моменте проверки» (`authoritativeAt`), буквально он невыполним.
 
-**Не сделано:** проверки сертификата ПЕРЕД подписанием (п. 4) — сейчас подписываем
-чем дали. Затрагивает все sign-эндпойнты и добавляет OCSP-запрос на каждое
-подписание, поэтому нужен выключенный по умолчанию режим и решение по дефолту.
+- **Проверка сертификата ПЕРЕД подписанием** (п. 4) —
+  `CertificateService.ensureSignerCertificateUsable` во всех sign-путях (10 мест),
+  отказ 400 на непригодном ключе. **Выключена по умолчанию**
+  (`NCANODE_SIGN_CERT_CHECK`): включение меняет поведение всех sign-эндпойнтов и
+  добавляет OCSP-запрос на каждое подписание. Вердикт тот же, что у верификации,
+  поэтому «подписали — проверили» не расходится. Криптопроверку сертификата
+  ключом УЦ даёт сам поиск издателя (`getRootCertificateFor` сверяет подпись).
 
 Ещё наблюдение: `AdesReferenceCompatibilityTest` проверяет доступность
 `pki.gov.kz` один раз на старте спеки. Если боевая PKI замолкает **в середине**

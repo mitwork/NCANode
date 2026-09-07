@@ -2,6 +2,7 @@ package kz.ncanode.service
 
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.configuration.OcspConfiguration
+import kz.ncanode.configuration.SignConfiguration
 import kz.ncanode.constants.MessageConstants
 import kz.ncanode.dto.certificate.CertificateInfo
 import kz.ncanode.dto.request.Pkcs12AliasesBatchRequest
@@ -49,6 +50,7 @@ class CertificateService(
     private val caService: CaService,
     private val kalkanWrapper: KalkanWrapper,
     private val ocspConfiguration: OcspConfiguration,
+    private val signConfiguration: SignConfiguration,
 ) {
 
     /**
@@ -67,6 +69,42 @@ class CertificateService(
         if (checkCrl && cert.crlStatus == null) {
             cert.crlStatus = crlService.verify(cert)
         }
+    }
+
+    /**
+     * Проверка сертификата подписанта ПЕРЕД формированием подписи — п. 4
+     * Правил формирования и проверки подлинности ЭЦП (приказ МИИ РК №500/НҚ):
+     * подпись удостоверяющего центра, срок действия, отсутствие отзыва (OCSP,
+     * при его недоступности — CRL) и допустимость назначения ключа.
+     *
+     * Выключена по умолчанию (`NCANODE_SIGN_CERT_CHECK`), потому что меняет
+     * поведение всех sign-эндпойнтов и добавляет обращение к OCSP на каждое
+     * подписание. Когда включена — отказ клиенту (400): подписывать
+     * просроченным или отозванным ключом бессмысленно, такая подпись всё равно
+     * не пройдёт проверку.
+     *
+     * Вердикт выносится теми же средствами, что и при верификации
+     * ([attachValidationData] + [CertificateWrapper.isValid]), поэтому
+     * совпадает с тем, что потом скажет `/{cms,xml,pdf}/verify` о готовой
+     * подписи. Криптопроверку сертификата ключом УЦ (п. 4, подпункт 1) делает
+     * поиск издателя в CA-бандле: `CaService.getRootCertificateFor` принимает
+     * издателя, только если подпись сертификата сходится с его ключом.
+     */
+    fun ensureSignerCertificateUsable(certificate: CertificateWrapper) {
+        if (!signConfiguration.isCertificateCheck) return
+
+        val now = Date()
+        attachValidationData(certificate, checkOcsp = true, checkCrl = true)
+        if (certificate.isValid(now, checkOcsp = true, checkCrl = true)) return
+
+        val revocations = certificate.toCertificateInfo(now, checkOcsp = true, checkCrl = true)
+            .revocations.orEmpty()
+            .joinToString(", ") { "${it.by}=${it.result}" }
+        throw ClientException(
+            "Signer certificate ${certificate.subjectX500Principal} cannot be used for signing"
+                + (if (revocations.isEmpty()) "" else " (revocation status: $revocations)")
+                + ". See the log for the exact reason; the check itself is enabled by NCANODE_SIGN_CERT_CHECK.",
+        )
     }
 
     /**
@@ -335,6 +373,7 @@ class CertificateService(
     fun sign(request: SbaSignRequest): SbaSignResponse {
         val signer = request.signer ?: throw ClientException("signer must be specified")
         val keyStore = kalkanWrapper.read(listOf(signer))[0]
+        ensureSignerCertificateUsable(keyStore.certificate)
 
         return SbaSignResponse(
             certificate = Base64.getEncoder().encodeToString(keyStore.certificate.x509Certificate.encoded),
@@ -349,6 +388,7 @@ class CertificateService(
     fun signBatch(request: SbaSignBatchRequest): SbaSignBatchResponse {
         val signer = request.signer ?: throw ClientException("signer must be specified")
         val keyStore = kalkanWrapper.read(listOf(signer))[0]
+        ensureSignerCertificateUsable(keyStore.certificate)
 
         val items = request.data.mapPartial({ status, message ->
             SbaSignBatchResponse.Item(status = status, message = message)

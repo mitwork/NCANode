@@ -474,6 +474,8 @@ class CmsService(
         try {
             for (ks in kalkanWrapper.read(signers)) {
                 val cert = ks.certificate
+                // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+                certificateService.ensureSignerCertificateUsable(cert)
                 val privateKey = ks.privateKey
                 val x509 = cert.x509Certificate
 

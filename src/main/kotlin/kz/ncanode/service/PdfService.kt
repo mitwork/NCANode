@@ -64,6 +64,8 @@ class PdfService(
                 val signerRequest = pdfSigner.signer
                     ?: throw ClientException("signer must be specified")
                 val keyStoreWrapper = kalkanWrapper.read(listOf(signerRequest))[0]
+                // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+                certificateService.ensureSignerCertificateUsable(keyStoreWrapper.certificate)
 
                 val signature = PDSignature().apply {
                     setFilter(PDSignature.FILTER_ADOBE_PPKLITE)
