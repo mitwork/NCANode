@@ -124,8 +124,8 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             val arg = firstArg<String>()
             when {
-                arg.contains("delta") -> listOf(deltaFile)
-                arg.contains("full") -> listOf(fullFile)
+                arg.endsWith("/delta") -> listOf(deltaFile)
+                arg.endsWith("/full") -> listOf(fullFile)
                 else -> emptyList()
             }
         }
@@ -389,8 +389,8 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             val arg = firstArg<String>()
             when {
-                arg.contains("delta") -> if (deltaCrl != null) listOf(deltaFile) else emptyList()
-                arg.contains("full") -> if (baseCrl != null) listOf(baseFile) else emptyList()
+                arg.endsWith("/delta") -> if (deltaCrl != null) listOf(deltaFile) else emptyList()
+                arg.endsWith("/full") -> if (baseCrl != null) listOf(baseFile) else emptyList()
                 else -> emptyList()
             }
         }
@@ -831,7 +831,9 @@ class CrlServiceTest : FunSpec({
             )
         )
         every { service.getCrlFiles(any()) } returns emptyList()
-        every { service.downloadCrlOrThrow(any(), any()) } answers { downloaded.add(secondArg<java.net.URL>().toString()) }
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            downloaded.add(firstArg<String>() + " <- " + secondArg<java.net.URL>().toString())
+        }
         return service
     }
 
@@ -848,7 +850,7 @@ class CrlServiceTest : FunSpec({
         )
         serviceRecordingDownloads(downloaded).verify(cert)
 
-        downloaded shouldBe listOf("http://192.0.2.1/full.crl")
+        downloaded shouldBe listOf("crl/test/ondemand <- http://192.0.2.1/full.crl")
     }
 
     test("on-demand fetch follows the freshestCRL extension for the delta list") {
@@ -864,6 +866,63 @@ class CrlServiceTest : FunSpec({
         )
         serviceRecordingDownloads(downloaded).verify(cert)
 
-        downloaded shouldBe listOf("http://192.0.2.1/full.crl", "http://192.0.2.3/delta.crl")
+        // Разностный список уходит в СВОЙ каталог: каталог — единственный
+        // носитель провенанса, на котором держится защита отбора base.
+        downloaded shouldBe listOf(
+            "crl/test/ondemand <- http://192.0.2.1/full.crl",
+            "crl/test/ondemand-delta <- http://192.0.2.3/delta.crl",
+        )
+    }
+
+    test("verify() never promotes an on-demand freshestCRL list without deltaCRLIndicator to base") {
+        // Тот же риск, что и для конфигурационного delta-каталога, но через
+        // freshestCRL: список, скачанный по адресу из сертификата, приходит в
+        // ondemand-delta. Без провенанса он попал бы в кандидаты на base и
+        // выиграл бы по CRLNumber — всё, отозванное только в полном списке,
+        // вернулось бы как ACTIVE.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(
+            issuer, crlNum = 1346, nextUpd = future, revoked = crlEntry(CRLReason.KEY_COMPROMISE),
+        )
+        val unmarkedDelta = mockCrlIndex(issuer).apply {
+            every { criticalExtensionOids } returns setOf("2.5.29.46")
+            every { nextUpdate } returns future
+            every { crlNumber } returns BigInteger.valueOf(57725)
+            every { find(any()) } returns null
+        }
+
+        val baseFile = mockCrlFile("base")
+        val onDemandDeltaFile = mockCrlFile("ondemand_delta")
+        val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
+            every { isEnabled } returns true
+            every { isCacheEnabled } returns false
+            every { ttl } returns null
+            every { urlList } returns emptyMap()
+            every { delta } returns null
+        }
+        val service = spyk(
+            CrlService(
+                mockk(relaxed = true), crlConfig, mockk(relaxed = true),
+                HttpClientConfiguration(), mockk(relaxed = true), "test",
+            )
+        )
+        every { service.getCrlFiles(any()) } answers {
+            val arg = firstArg<String>()
+            when {
+                arg.endsWith("/ondemand-delta") -> listOf(onDemandDeltaFile)
+                arg.endsWith("/full") -> listOf(baseFile)
+                else -> emptyList()
+            }
+        }
+        every { service.loadIndex(baseFile) } returns base
+        every { service.loadIndex(onDemandDeltaFile) } returns unmarkedDelta
+
+        val status = service.verify(cert)
+        status.result shouldBe CrlResult.REVOKED
+        status.file shouldBe "base.crl"
     }
 })

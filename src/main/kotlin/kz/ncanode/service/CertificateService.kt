@@ -95,7 +95,7 @@ class CertificateService(
 
         val now = Date()
         attachValidationData(certificate, checkOcsp = true, checkCrl = true)
-        if (certificate.isValid(now, checkOcsp = true, checkCrl = true)) return
+        if (certificate.isValid(now, checkOcsp = true, checkCrl = true, requireSigningKeyUsage = true)) return
 
         val revocations = certificate.toCertificateInfo(now, checkOcsp = true, checkCrl = true)
             .revocations.orEmpty()
@@ -344,7 +344,10 @@ class CertificateService(
 
             attachValidationData(cert, checkOcsp, checkCrl)
 
-            if (!cert.isValid(currentDate, checkOcsp, checkCrl)) {
+            // Здесь проверяется подпись, значит назначение ключа обязано её
+            // допускать (п. 16 Правил №500/НҚ) — в отличие от `verifyCerts`
+            // и `info` выше, которые лишь описывают сертификат.
+            if (!cert.isValid(currentDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)) {
                 valid = false
             }
 

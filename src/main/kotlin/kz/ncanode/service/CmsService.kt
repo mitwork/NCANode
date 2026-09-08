@@ -388,7 +388,7 @@ class CmsService(
             )
             if (!signer.verify(cert.publicKey, KalkanProvider.PROVIDER_NAME)
                 || !bindingMatches
-                || !cert.isValid(validationDate, checkOcsp, checkCrl)
+                || !cert.isValid(validationDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)
             ) {
                 valid = false
             }

@@ -185,7 +185,7 @@ class JwsService(
         val currentDate = certificateService.getCurrentDate()
 
         val signatureValid = signatureVerifies(alg, certificate, headerEncoded, payloadEncoded, entry) &&
-            wrapper.isValid(currentDate, checkOcsp, checkCrl)
+            wrapper.isValid(currentDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)
 
         return JwsSignerInfo(
             valid = signatureValid,

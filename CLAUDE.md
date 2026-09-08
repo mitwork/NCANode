@@ -18,7 +18,7 @@
   improvements'ами (CRL cache, OCSP parallel, CAdES-T fixes, request log,
   health indicator). Сохранена для возможности PR'а в upstream
   malikzh/NCANode. v4 в upstream не пойдёт (другой язык).
-- **Состояние v4:** functional + 493 теста (+15 эталонов NCALayer, когда
+- **Состояние v4:** functional + 504 теста (+15 эталонов NCALayer, когда
   боевая PKI отвечает) / **90% coverage**.
   CI/CD обновлён под Java 25 + actions из demo-pki-center.
   Batch endpoints (issue #212) реализованы для всех сервисов.
@@ -206,7 +206,7 @@ JWT/PDF/X509/PKCS12) начнёт возвращать `valid=false` из-за `
 NCA SDK 2.0 test pack, заменить p12 в `p12/`, сверить новый период валидности,
 обновить эту дату.
 
-493 теста (+15 эталонов NCALayer, когда боевая PKI отвечает) /
+504 теста (+15 эталонов NCALayer, когда боевая PKI отвечает) /
 **90% line coverage**.
 
 ## test.pki.gov.kz — официальная тестовая PKI
@@ -234,7 +234,7 @@ REVOKED-ветка покрывается через mock'нутый `CrlIndex`,
 
 ```bash
 ./gradlew bootJar                # сборка
-./gradlew test                   # 493 теста + JaCoCo report
+./gradlew test                   # 504 теста + JaCoCo report
 ./gradlew test jacocoTestReport  # явно
 
 java -jar build/libs/NCANode-4.0.0-SNAPSHOT.jar  # запуск приложения
@@ -1162,7 +1162,11 @@ DER-ридер CRL на обрезанных и не-DER входах; повт�
   оказывались две копии 20-МБ СОС.
 - **`freshestCRL` теперь читается** (`freshestCrlDistributionPoints`): адрес
   delta НУЦ публикует именно там, и для издателя вне конфигурации мы работали
-  на одном полном списке.
+  на одном полном списке. Скачанное по нему кладётся в ОТДЕЛЬНЫЙ каталог
+  `crl/<type>/ondemand-delta`: каталог — единственный носитель провенанса, и
+  без разделения delta без индикатора выиграла бы отбор base уже через
+  on-demand путь (та же дыра, что закрыта для конфигурационного). Потолок
+  `NCANODE_CRL_ONDEMAND_MAX` общий на оба on-demand каталога.
 - **Шаблоны «цифровая система»** (`1.2.398.3.3.4.1.1.1`,
   `1.2.398.3.3.4.1.2.6`) и «Казначейство — Клиент» (`1.2.398.5.19.1.2.2.1`)
   добавлены в `CertificateKeyUser`; `UID` (OID цифровой системы),
@@ -1204,9 +1208,14 @@ DER-ридер CRL на обрезанных и не-DER входах; повт�
   протухли (nextUpdate — октябрь 2025), поэтому юнит-тесты на них ждут EXPIRED,
   а ACTIVE проверяется на mock'ах и живых списках.
 - **`permitsSignature`** (п. 16.4): `keyUsage` должен разрешать digitalSignature
-  либо nonRepudiation; отсутствие расширения — не ограничение. Номер политики
-  НЕ enforce'им (условия задаёт УЦ, из сертификата не выводимы) — вместо этого
-  публикуем `certificates[].policies`.
+  либо nonRepudiation; отсутствие расширения — не ограничение. ⚠️ Требование
+  относится к сертификату ПОДПИСАНТА, поэтому включается флагом
+  `isValid(..., requireSigningKeyUsage = true)` — его передают Cms/Xml/Pdf/Wsse/
+  Jws/Tsp, SBA-verify и pre-sign gate. Без флага (`/x509/info`, `/pkcs12/info`,
+  `verifyCerts`) проверки нет: у CA-сертификатов НУЦ `keyUsage` = keyCertSign +
+  cRLSign, и глобальная проверка делала их `valid:false` на info-эндпойнтах.
+  Номер политики НЕ enforce'им (условия задаёт УЦ, из сертификата не выводимы)
+  — вместо этого публикуем `certificates[].policies`.
 - **`signingCertificateV2` сверяется и в `/cms/verify`** (п. 8), не только на
   AdES-пути: `CadesInspector.signingCertificateMatches` стал публичным.
 

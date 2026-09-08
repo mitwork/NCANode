@@ -225,6 +225,29 @@ class CrlServiceCacheLimitsTest : FunSpec({
         idleTwo.isFile shouldBe true
     }
 
+    test("counts both on-demand caches against a single limit") {
+        // Списки, скачанные по freshestCRL, лежат в отдельном каталоге — иначе
+        // delta без deltaCRLIndicator выглядела бы обычным списком при отборе
+        // base. Но кэш это один, и потолок у него общий: иначе разностные
+        // копились бы мимо ограничения.
+        val cacheDir = tempCacheDir("two-dirs")
+        val now = System.currentTimeMillis()
+        val oldestFull = putOnDemand(cacheDir, "full-old.crl", "filler".toByteArray(), now - 3 * 60_000)
+        val newerFull = putOnDemand(cacheDir, "full-new.crl", "filler".toByteArray(), now - 60_000)
+        val deltaDirFile = File(cacheDir, "crl/$serviceType/ondemand-delta").apply { mkdirs() }
+        val delta = File(deltaDirFile, "delta.crl").apply {
+            writeBytes("filler".toByteArray())
+            setLastModified(now)
+        }
+
+        service(cacheDir, onDemandLimit = 2).enforceOnDemandLimit()
+
+        // Три файла на два места: уходит самый давний, независимо от каталога.
+        oldestFull.exists() shouldBe false
+        newerFull.isFile shouldBe true
+        delta.isFile shouldBe true
+    }
+
     test("leaves the on-demand cache alone when the limit is not positive") {
         val cacheDir = tempCacheDir("unlimited")
         val now = System.currentTimeMillis()

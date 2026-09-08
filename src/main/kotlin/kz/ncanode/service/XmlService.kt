@@ -193,7 +193,7 @@ class XmlService(
             }
             val signatureValid = xmlSignature.check() &&
                 coversWhole &&
-                cert.isValid(currentDate, checkOcsp, checkCrl)
+                cert.isValid(currentDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)
             if (!signatureValid) {
                 valid = false
             }

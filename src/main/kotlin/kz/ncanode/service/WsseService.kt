@@ -211,7 +211,7 @@ class WsseService(
                             i,
                         )
                     }
-                    cryptoOk && coversBody && cert.isValid(currentDate, checkOcsp, checkCrl)
+                    cryptoOk && coversBody && cert.isValid(currentDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)
                 } catch (e: XMLSecurityException) {
                     log.warn("WSSE signature #{} verification failed: {}", i, e.message)
                     false

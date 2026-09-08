@@ -377,7 +377,7 @@ class PdfService(
         // сертификатом: слою AdES не нужно выводить POE во второй раз.
         prepare(certificateWrapper, validationDate)
         certificateService.attachValidationData(certificateWrapper, withOcsp, withCrl)
-        if (!certificateWrapper.isValid(validationDate, withOcsp, withCrl)) {
+        if (!certificateWrapper.isValid(validationDate, withOcsp, withCrl, requireSigningKeyUsage = true)) {
             return PdfSignerAttempt(false, certificateWrapper, validationDate, digest = null)
         }
 

@@ -225,7 +225,12 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
      * OCSP, которому нельзя верить ([OcspResult.UNKNOWN]), остаётся фатальным.
      * Деградация видна клиенту через `revocations[].result = UNAVAILABLE`.
      */
-    fun isValid(date: Date, checkOcsp: Boolean, checkCrl: Boolean): Boolean {
+    fun isValid(
+        date: Date,
+        checkOcsp: Boolean,
+        checkCrl: Boolean,
+        requireSigningKeyUsage: Boolean = false,
+    ): Boolean {
         if (!isDateValid(date)) return false
         // RFC 5280 §4.2: сертификат с critical-расширением, которое мы не
         // обрабатываем, обязан отвергаться — иначе игнорировали бы ограничение,
@@ -240,11 +245,13 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             return false
         }
         // п. 16 Правил формирования и проверки подлинности ЭЦП (приказ МИИ РК
-        // №500/НҚ): назначение ключа должно допускать подпись. `isValid`
-        // вызывается только на пути проверки подписи (подписант, TSA,
-        // responder), поэтому проверка уместна здесь. Отсутствие keyUsage —
+        // №500/НҚ): назначение ключа должно допускать подпись. Требование
+        // относится к сертификату ПОДПИСЫВАЮЩЕГО ЛИЦА, поэтому включается
+        // флагом: `/x509/info` и `/pkcs12/info` отвечают на другой вопрос —
+        // «что это за сертификат», и сертификат УЦ (keyUsage = keyCertSign,
+        // cRLSign) там не «недействителен». Отсутствие keyUsage —
         // не ограничение (RFC 5280 §4.2.1.3, расширение опционально).
-        if (!permitsSignature()) {
+        if (requireSigningKeyUsage && !permitsSignature()) {
             log.warn(
                 "Certificate {} keyUsage permits neither digitalSignature nor nonRepudiation",
                 subjectX500Principal,

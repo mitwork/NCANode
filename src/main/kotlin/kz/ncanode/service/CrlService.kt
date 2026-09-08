@@ -72,6 +72,15 @@ open class CrlService(
     private fun cacheOnDemandDir() = "crl/$crlServiceType/ondemand"
 
     /**
+     * Кэш для разностных (delta) CRL, скачанных по `freshestCRL` из самого
+     * сертификата. Отдельный каталог, а не общий с [cacheOnDemandDir], потому
+     * что провенанс списка — единственное, что защищает отбор base от delta,
+     * в которой нет `deltaCRLIndicator` (см. [selectCrls]). Оба on-demand
+     * каталога живут под одним потолком [enforceOnDemandLimit].
+     */
+    private fun cacheOnDemandDeltaDir() = "crl/$crlServiceType/ondemand-delta"
+
+    /**
      * Кэш открытых CRL-индексов.
      *
      * Сам индекс лежит на диске рядом с CRL и работает через `mmap`, поэтому
@@ -152,7 +161,7 @@ open class CrlService(
         var sigVerified = 0
         var errors = 0
 
-        for (dir in listOf(cacheFullDir(), cacheDeltaDir(), cacheOnDemandDir())) {
+        for (dir in listOf(cacheFullDir(), cacheDeltaDir(), cacheOnDemandDir(), cacheOnDemandDeltaDir())) {
             for (crlFile in getCrlFiles(dir)) {
                 try {
                     val index = loadCachedIndex(crlFile)
@@ -393,16 +402,19 @@ open class CrlService(
     ): Pair<UsableCrl?, UsableCrl?> {
         val usable = ArrayList<UsableCrl>()
         val onDemandDir = cacheOnDemandDir()
+        val onDemandDeltaDir = cacheOnDemandDeltaDir()
         val deltaDir = cacheDeltaDir()
-        for (cacheDirectory in listOf(cacheFullDir(), deltaDir, onDemandDir)) {
+        val deltaEndpointDirs = setOf(deltaDir, onDemandDeltaDir)
+        val onDemandDirs = setOf(onDemandDir, onDemandDeltaDir)
+        for (cacheDirectory in listOf(cacheFullDir(), deltaDir, onDemandDir, onDemandDeltaDir)) {
             for (crlFile in getCrlFiles(cacheDirectory)) {
                 loadUsableCrl(crlFile, certIssuer, issuerKey, now)?.let {
                     // Отмечаем именно пригодившийся CRL: тот, что не подошёл ни
                     // одному издателю, так и остаётся кандидатом на вытеснение.
-                    if (cacheDirectory == onDemandDir) {
+                    if (cacheDirectory in onDemandDirs) {
                         onDemandLastUse[crlFile.absolutePath] = System.currentTimeMillis()
                     }
-                    usable.add(it.copy(fromDeltaEndpoint = cacheDirectory == deltaDir))
+                    usable.add(it.copy(fromDeltaEndpoint = cacheDirectory in deltaEndpointDirs))
                 }
             }
         }
@@ -802,17 +814,22 @@ open class CrlService(
         // скачать CRL с произвольного (внутреннего) URL.
         if (crlConfiguration.isStrict) return
 
-        val distributionPoints = cert.crlDistributionPoints + cert.freshestCrlDistributionPoints
+        // Полные списки и разностные складываем в РАЗНЫЕ каталоги: каталог —
+        // единственный носитель провенанса, а на нём держится защита отбора
+        // base (см. selectCrls). Delta, попавшая в общий on-demand каталог,
+        // выглядела бы обычным списком и, не имея deltaCRLIndicator, выиграла
+        // бы отбор по CRLNumber.
+        val distributionPoints = cert.crlDistributionPoints.map { it to cacheOnDemandDir() } +
+            cert.freshestCrlDistributionPoints.map { it to cacheOnDemandDeltaDir() }
         if (distributionPoints.isEmpty()) return
 
         val ttl = crlConfiguration.ttl ?: return
         val ttlMillis = ttl.toLong() * 60_000L
         val now = System.currentTimeMillis()
-        val dirName = cacheOnDemandDir()
-        val cacheDir = directoryService.getCachePathFor(dirName) ?: return
         var fetched = false
 
-        for (mirrors in distributionPoints) {
+        for ((mirrors, dirName) in distributionPoints) {
+            val cacheDir = directoryService.getCachePathFor(dirName) ?: continue
             for (url in mirrors) {
                 // Минимальный SSRF-барьер: URL из серта не должен указывать на
                 // loopback/link-local (cloud-metadata) — см. isInternalHost.
@@ -870,7 +887,9 @@ open class CrlService(
         val limit = crlConfiguration.onDemandMaxEntries
         if (limit <= 0) return
 
-        val files = getCrlFiles(cacheOnDemandDir())
+        // Потолок общий на оба on-demand каталога: это один кэш, просто
+        // разложенный по провенансу.
+        val files = getCrlFiles(cacheOnDemandDir()) + getCrlFiles(cacheOnDemandDeltaDir())
 
         // Подчищаем хвосты учёта от файлов, которых уже нет на диске.
         val present = files.mapTo(HashSet()) { it.absolutePath }
