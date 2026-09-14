@@ -61,6 +61,8 @@ class WsseService(
                 wsseSignRequest.password,
             )
             val cert = keystore.certificate
+            // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+            certificateService.ensureSignerCertificateUsable(cert)
 
             // sign a soap request according to a reference implementation from smartbridge
             val xmlBytes = xmlService.prepare(wsseSignRequest.xml, wsseSignRequest.isTrimXml)
@@ -209,7 +211,7 @@ class WsseService(
                             i,
                         )
                     }
-                    cryptoOk && coversBody && cert.isValid(currentDate, checkOcsp, checkCrl)
+                    cryptoOk && coversBody && cert.isValid(currentDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)
                 } catch (e: XMLSecurityException) {
                     log.warn("WSSE signature #{} verification failed: {}", i, e.message)
                     false

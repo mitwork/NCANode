@@ -132,6 +132,8 @@ class JwsService(
                 },
             ),
         )[0]
+        // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+        certificateService.ensureSignerCertificateUsable(keyStore.certificate)
         val certificate = keyStore.certificate.x509Certificate
 
         val header = mapper.createObjectNode().apply {
@@ -183,7 +185,7 @@ class JwsService(
         val currentDate = certificateService.getCurrentDate()
 
         val signatureValid = signatureVerifies(alg, certificate, headerEncoded, payloadEncoded, entry) &&
-            wrapper.isValid(currentDate, checkOcsp, checkCrl)
+            wrapper.isValid(currentDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)
 
         return JwsSignerInfo(
             valid = signatureValid,

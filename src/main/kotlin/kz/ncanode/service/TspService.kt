@@ -240,7 +240,7 @@ class TspService(
             }
 
             certificateService.attachValidationData(tsaCert, checkOcsp, checkCrl)
-            if (!tsaCert.isValid(genTime, checkOcsp, checkCrl)) {
+            if (!tsaCert.isValid(genTime, checkOcsp, checkCrl, requireSigningKeyUsage = true)) {
                 log.warn("TSA certificate is not valid at TSP genTime {}", genTime)
                 return null
             }

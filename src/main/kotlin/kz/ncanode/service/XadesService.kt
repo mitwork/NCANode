@@ -60,6 +60,7 @@ class XadesService(
     private val tspService: TspService,
     private val xmlService: XmlService,
     private val validationDataService: ValidationDataService,
+    private val certificateService: CertificateService,
 ) {
 
     /**
@@ -86,6 +87,8 @@ class XadesService(
             val document = DocumentWrapper(request.xml)
 
             val keyStores = kalkanWrapper.read(request.signers)
+            // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+            keyStores.forEach { certificateService.ensureSignerCertificateUsable(it.certificate) }
             if (request.packaging == SignaturePackaging.ENVELOPING) {
                 // Корень документа один, и им становится подпись — второй
                 // подписи там просто негде разместиться.

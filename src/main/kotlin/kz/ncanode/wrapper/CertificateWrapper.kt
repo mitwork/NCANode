@@ -1,6 +1,8 @@
 package kz.ncanode.wrapper
 
+import kz.gov.pki.kalkan.asn1.ASN1Sequence
 import kz.gov.pki.kalkan.asn1.DERIA5String
+import kz.gov.pki.kalkan.asn1.DERObjectIdentifier
 import kz.gov.pki.kalkan.asn1.x509.AccessDescription
 import kz.gov.pki.kalkan.asn1.x509.AuthorityInformationAccess
 import kz.gov.pki.kalkan.asn1.x509.CRLDistPoint
@@ -78,6 +80,7 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             serialNumber = cert.serialNumber.toString(16),
             signAlg = cert.sigAlgName,
             keyUser = keyUser,
+            policies = certificatePolicies.ifEmpty { null },
             publicKey = String(Base64.getEncoder().encode(cert.publicKey.encoded)),
             signature = String(Base64.getEncoder().encode(cert.signature)),
             subject = createCertificateSubjectFromDn(cert.subjectX500Principal.toString(), extractSanEmail(cert)),
@@ -86,36 +89,92 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
     }
 
     /**
-     * Получает список CRL DistributionPoint URL'ов сертификата.
+     * OID'ы политик применения сертификата (`certificatePolicies`, 2.5.29.32).
+     *
+     * Пустой список, если расширения нет или оно не разбирается. Условия
+     * применения политики задаёт УЦ, поэтому сверять номер с ними — дело
+     * проверяющей стороны (п. 16 приказа №500/НҚ); наше дело — показать его.
      */
-    val crlList: List<URL>
+    val certificatePolicies: List<String>
         get() {
-            val crlDistributionPoint = x509Certificate.getExtensionValue(Extension.cRLDistributionPoints.id)
-                ?: return emptyList()
-
+            val encoded = x509Certificate.getExtensionValue(Extension.certificatePolicies.id) ?: return emptyList()
             return try {
-                val distPoint = CRLDistPoint.getInstance(X509ExtensionUtil.fromExtensionValue(crlDistributionPoint))
-                val urls = mutableListOf<String>()
-                for (dp in distPoint.distributionPoints) {
-                    val dpn = dp.distributionPoint ?: continue
-                    if (dpn.type != DistributionPointName.FULL_NAME) continue
-                    val genNames = GeneralNames.getInstance(dpn.name).names
-                    for (gn in genNames) {
-                        if (gn.tagNo == GeneralName.uniformResourceIdentifier) {
-                            urls.add(DERIA5String.getInstance(gn.name).string)
-                        }
-                    }
+                // Разбираем структуру напрямую: PolicyInformation ::= SEQUENCE {
+                // policyIdentifier OID, policyQualifiers OPTIONAL }. Хелперы
+                // Kalkan для этого расширения — из старой ветки BC, их API
+                // между версиями разъезжается сильнее, чем сама ASN.1-структура.
+                val policies = ASN1Sequence.getInstance(X509ExtensionUtil.fromExtensionValue(encoded))
+                (0 until policies.size()).mapNotNull { i ->
+                    val info = policies.getObjectAt(i) as? ASN1Sequence ?: return@mapNotNull null
+                    (info.getObjectAt(0) as? DERObjectIdentifier)?.id
                 }
-                urls.mapNotNull { createNewUrl(it, log) }
             } catch (e: Exception) {
-                // Битое/нестандартное cRLDistributionPoints не должно ронять
-                // verify в 500. Напр. URI-тег с не-IA5String → DERIA5String.getInstance
-                // кидает IllegalArgumentException (раньше был вне try → уходил в 500
-                // на крафт-серте). Любой сбой парсинга → просто нет CRL-URL.
-                log.warn("Failed to parse cRLDistributionPoints extension: {}", e.message)
+                log.warn("Failed to parse certificatePolicies extension: {}", e.message)
                 emptyList()
             }
         }
+
+    /**
+     * CRL DistributionPoint'ы сертификата, сгруппированные по точкам
+     * распространения: одна вложенная группа — один DistributionPoint.
+     *
+     * Группировка не косметическая. По RFC 5280 §4.2.1.13 несколько имён
+     * внутри одной точки — это адреса ОДНОГО И ТОГО ЖЕ списка, то есть
+     * зеркала: достаточно скачать по любому из них. Профили сертификатов из
+     * приказа МИИ РК №522/НҚ (в силе с 11.09.2026) как раз объявляют пару
+     * `crl.pki.gov.kz` + `crl1.pki.gov.kz`, и без группировки мы качали бы
+     * два экземпляра одного и того же 20-МБ списка.
+     */
+    val crlDistributionPoints: List<List<URL>>
+        get() = distributionPointUrls(Extension.cRLDistributionPoints.id, "cRLDistributionPoints")
+
+    /**
+     * Получает список CRL DistributionPoint URL'ов сертификата (плоский).
+     */
+    val crlList: List<URL>
+        get() = crlDistributionPoints.flatten()
+
+    /**
+     * Точки распространения разностного (delta) CRL — расширение `freshestCRL`
+     * (2.5.29.46, RFC 5280 §4.2.1.15). Синтаксис тот же, что у
+     * `cRLDistributionPoints`, а смысл другой: адрес delta-списка, покрывающего
+     * изменения после текущего полного CRL.
+     *
+     * Отдельное свойство, потому что до сих пор мы это расширение не читали,
+     * и delta прилетала только из конфигурации. Для издателя, которого нет в
+     * конфиге, мы работали на одном полном списке — то есть не видели
+     * досрочных отзывов, ради которых delta и публикуется. Сертификаты НУЦ
+     * (в том числе тестовые) кладут адрес delta именно сюда.
+     */
+    val freshestCrlDistributionPoints: List<List<URL>>
+        get() = distributionPointUrls(Extension.freshestCRL.id, "freshestCRL")
+
+    /**
+     * Разбирает расширение с синтаксисом `CRLDistributionPoints` в группы
+     * URL'ов — по группе на точку распространения.
+     */
+    private fun distributionPointUrls(extensionOid: String, extensionName: String): List<List<URL>> {
+        val encoded = x509Certificate.getExtensionValue(extensionOid) ?: return emptyList()
+
+        return try {
+            val distPoint = CRLDistPoint.getInstance(X509ExtensionUtil.fromExtensionValue(encoded))
+            distPoint.distributionPoints.mapNotNull { dp ->
+                val dpn = dp.distributionPoint ?: return@mapNotNull null
+                if (dpn.type != DistributionPointName.FULL_NAME) return@mapNotNull null
+                GeneralNames.getInstance(dpn.name).names
+                    .filter { it.tagNo == GeneralName.uniformResourceIdentifier }
+                    .mapNotNull { createNewUrl(DERIA5String.getInstance(it.name).string, log) }
+                    .ifEmpty { null }
+            }
+        } catch (e: Exception) {
+            // Битое/нестандартное расширение не должно ронять verify в 500.
+            // Напр. URI-тег с не-IA5String → DERIA5String.getInstance кидает
+            // IllegalArgumentException (раньше был вне try → уходил в 500
+            // на крафт-серте). Любой сбой парсинга → просто нет CRL-URL.
+            log.warn("Failed to parse {} extension: {}", extensionName, e.message)
+            emptyList()
+        }
+    }
 
     /**
      * Возвращает список OCSP-URL'ов, объявленных самим сертификатом в его
@@ -166,7 +225,12 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
      * OCSP, которому нельзя верить ([OcspResult.UNKNOWN]), остаётся фатальным.
      * Деградация видна клиенту через `revocations[].result = UNAVAILABLE`.
      */
-    fun isValid(date: Date, checkOcsp: Boolean, checkCrl: Boolean): Boolean {
+    fun isValid(
+        date: Date,
+        checkOcsp: Boolean,
+        checkCrl: Boolean,
+        requireSigningKeyUsage: Boolean = false,
+    ): Boolean {
         if (!isDateValid(date)) return false
         // RFC 5280 §4.2: сертификат с critical-расширением, которое мы не
         // обрабатываем, обязан отвергаться — иначе игнорировали бы ограничение,
@@ -180,8 +244,26 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             log.warn("Certificate has unhandled critical extension(s) {} — rejecting (RFC 5280 §4.2)", unsupportedCritical)
             return false
         }
+        // п. 16 Правил формирования и проверки подлинности ЭЦП (приказ МИИ РК
+        // №500/НҚ): назначение ключа должно допускать подпись. Требование
+        // относится к сертификату ПОДПИСЫВАЮЩЕГО ЛИЦА, поэтому включается
+        // флагом: `/x509/info` и `/pkcs12/info` отвечают на другой вопрос —
+        // «что это за сертификат», и сертификат УЦ (keyUsage = keyCertSign,
+        // cRLSign) там не «недействителен». Отсутствие keyUsage —
+        // не ограничение (RFC 5280 §4.2.1.3, расширение опционально).
+        if (requireSigningKeyUsage && !permitsSignature()) {
+            log.warn(
+                "Certificate {} keyUsage permits neither digitalSignature nor nonRepudiation",
+                subjectX500Principal,
+            )
+            return false
+        }
         val issuer = issuerCertificate ?: return false
-        if (!issuer.isDateValid(date)) return false
+        // п. 16 тех же Правил: срок действия проверяется у ВСЕЙ цепочки до
+        // доверенного корня — истечение любого сертификата в ней даёт
+        // отрицательный результат. Раньше проверялся только непосредственный
+        // издатель, и протухший промежуточный или корневой оставался незамеченным.
+        if (!isChainDateValid(issuer, date)) return false
         if (checkOcsp) {
             val statuses = ocspStatus ?: return false
             // Авторитетный плохой ответ хотя бы от одного responder'а —
@@ -210,6 +292,23 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
         }
         if (checkCrl) {
             val status = crlStatus ?: return false
+            // п. 18 Правил: истёкший CRL — отрицательный результат проверки
+            // отзыва. Не фатален он только тогда, когда отзыв уже проверен по
+            // второму каналу: п. 16 требует проверки «посредством сервиса OCSP
+            // либо CRL», и авторитетный ACTIVE от респондера — самостоятельный
+            // положительный результат. Иначе протухший список молча выдавал бы
+            // за «не отозван» всё, что издатель опубликовал после nextUpdate.
+            if (status.result == CrlResult.EXPIRED) {
+                val ocspAnswered = checkOcsp && ocspStatus?.any { it.result == OcspResult.ACTIVE } == true
+                if (!ocspAnswered) {
+                    log.warn(
+                        "CRL for {} is past its validity period and there is no OCSP verdict to rely on",
+                        subjectX500Principal,
+                    )
+                    return false
+                }
+                log.warn("CRL for {} is past its validity period; relying on the OCSP verdict", subjectX500Principal)
+            } else
             // UNAVAILABLE (нет CRL издателя в кэше / CRL выключен) нефатален:
             // CA без опубликованного CRL — легитимный случай (легаси-CA), это
             // сохраняет историческое поведение, когда такой случай молча
@@ -217,6 +316,52 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             // OCSP он быть не может (см. выше — там требуется настоящий
             // fresh ACTIVE).
             if (status.result != CrlResult.UNAVAILABLE && !status.isValidAt(date)) return false
+        }
+        return true
+    }
+
+    /**
+     * Допускает ли назначение ключа формирование подписи: `digitalSignature`
+     * либо `nonRepudiation` (RFC 5280 §4.2.1.3, биты 0 и 1). Расширения нет —
+     * ограничений нет.
+     *
+     * Номер политики сертификата (`certificatePolicies`) здесь НЕ проверяется:
+     * условия его применения задаёт политика конкретного УЦ, и они не выводимы
+     * из самого сертификата. Значения политик публикуются в
+     * [kz.ncanode.dto.certificate.CertificateInfo.policies], чтобы проверяющая
+     * сторона могла применить свои условия (п. 16 приказа №500/НҚ).
+     */
+    fun permitsSignature(): Boolean {
+        val keyUsage = x509Certificate.keyUsage ?: return true
+        if (keyUsage.size < 2) return true
+        return keyUsage[0] || keyUsage[1]
+    }
+
+    /**
+     * Срок действия каждого сертификата в цепочке, начиная с [start], на
+     * момент [date].
+     *
+     * Обход идёт по уже проставленным ссылкам `issuerCertificate` (их
+     * выставляет `CaService` для всего бандла), поэтому дополнительных поисков
+     * не делает. Останавливается на самоподписанном сертификате либо там, где
+     * издателя в бандле нет: всё, что попало в `NCANODE_CA_URL`, — это
+     * настроенный оператором якорь доверия. Защита от петли на
+     * кросс-подписанных сертификатах — по паре (subject, серийник).
+     */
+    private fun isChainDateValid(start: CertificateWrapper, date: Date): Boolean {
+        val seen = mutableSetOf<Pair<X500Principal, java.math.BigInteger>>()
+        var current: CertificateWrapper? = start
+        while (current != null) {
+            if (!seen.add(current.subjectX500Principal to current.x509Certificate.serialNumber)) return true
+            if (!current.isDateValid(date)) {
+                log.warn(
+                    "Certificate {} in the certification chain is not valid at {}",
+                    current.subjectX500Principal, date,
+                )
+                return false
+            }
+            if (current.subjectX500Principal == current.issuerX500Principal) return true
+            current = current.issuerCertificate
         }
         return true
     }
@@ -305,6 +450,9 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
             var country: String? = null
             var locality: String? = null
             var state: String? = null
+            var uid: String? = null
+            var businessCategory: String? = null
+            var domainComponent: String? = null
 
             for (rdn in ldapName.rdns) {
                 val type = rdn.type
@@ -324,7 +472,28 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
                     }
                     type.equals("O", ignoreCase = true) -> organization = value
                     type.equals("OU", ignoreCase = true) -> bin = value.removePrefix("BIN")
-                    type.equals("G", ignoreCase = true) -> lastName = value
+                    // `X500Principal.toString()` печатает отчество как GIVENNAME —
+                    // одного "G" не хватало, и поле молча оставалось пустым на
+                    // всех сертификатах НУЦ.
+                    type.equals("G", ignoreCase = true)
+                        || type.equals("GN", ignoreCase = true)
+                        || type.equals("GIVENNAME", ignoreCase = true) -> lastName = value
+                    // Оба поля обязательны в шаблоне «Казначейство – Клиент»
+                    // (приказ №522/НҚ): код клиента и роль участника.
+                    // businessCategory в RFC2253-имени от JDK выглядит как
+                    // `OID.2.5.4.15`, keyword'а у него нет.
+                    type.equals("businessCategory", ignoreCase = true)
+                        || type.equals("OID.2.5.4.15", ignoreCase = true)
+                        || type == "2.5.4.15" -> businessCategory = value
+                    type.equals("DC", ignoreCase = true) -> domainComponent = value
+                    // UID (0.9.2342.19200300.100.1.1) — в шаблоне «цифровая
+                    // система юридического лица» (приказ №522/НҚ, приложение 3,
+                    // структура 10) здесь лежит OID самой цифровой системы,
+                    // выданный уполномоченным органом. По п. 17 тех же Правил
+                    // ключ ставится именно в систему с этим OID, так что для
+                    // серверного подписанта это опорное поле — раньше оно было
+                    // видно только внутри сырого dn.
+                    type.equals("UID", ignoreCase = true) -> uid = value
                 }
             }
 
@@ -342,6 +511,9 @@ class CertificateWrapper(val x509Certificate: X509Certificate) {
                 country = country,
                 locality = locality,
                 state = state,
+                uid = uid,
+                businessCategory = businessCategory,
+                domainComponent = domainComponent,
                 dn = dn,
             )
         } catch (e: InvalidNameException) {

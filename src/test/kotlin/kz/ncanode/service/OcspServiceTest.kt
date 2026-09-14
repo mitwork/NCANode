@@ -6,12 +6,18 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kz.gov.pki.kalkan.jce.provider.KalkanProvider
 import kz.ncanode.TestResources
 import kz.ncanode.configuration.HttpClientConfiguration
 import kz.ncanode.configuration.OcspConfiguration
 import kz.ncanode.dto.ocsp.OcspResult
 import kz.ncanode.wrapper.KalkanWrapper
+import org.bouncycastle.asn1.ASN1Enumerated
+import org.bouncycastle.asn1.ASN1ObjectIdentifier
+import org.bouncycastle.asn1.DEROctetString
+import org.bouncycastle.asn1.DERSequence
+import org.bouncycastle.asn1.DERTaggedObject
 import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.InputStream
@@ -158,5 +164,135 @@ class OcspServiceTest : FunSpec({
         statuses shouldHaveSize 1
         statuses[0].result shouldBe OcspResult.UNAVAILABLE
         statuses[0].message!! shouldContain "limit"
+    }
+
+    /**
+     * Ответ-ошибка OCSP (RFC 6960 §4.2.1): `OCSPResponse ::= SEQUENCE {
+     * responseStatus ENUMERATED, responseBytes [0] OPTIONAL }`. У ошибок
+     * responseBytes отсутствует, поэтому DER — пять байт, и подписи там нет
+     * по определению.
+     */
+    fun ocspErrorResponse(status: Int): ByteArray =
+        byteArrayOf(0x30, 0x03, 0x0A, 0x01, status.toByte())
+
+    /**
+     * Формально успешный ответ, внутри которого не BasicOCSPResponse, а мусор.
+     * Разбор упадёт с OCSPException — это авторитетно плохой ответ (UNKNOWN),
+     * в отличие от ответа-ошибки.
+     */
+    fun ocspSuccessfulWithGarbage(): ByteArray = DERSequence(
+        arrayOf(
+            ASN1Enumerated(0),
+            DERTaggedObject(
+                true, 0,
+                DERSequence(
+                    arrayOf(
+                        ASN1ObjectIdentifier("1.3.6.1.5.5.7.48.1.1"),
+                        DEROctetString(byteArrayOf(1, 2, 3)),
+                    )
+                ),
+            ),
+        )
+    ).encoded
+
+    test("verify() treats an OCSP error response (tryLater) as UNAVAILABLE, not UNKNOWN") {
+        // Приказ МИИ РК №522/НҚ обязывает НУЦ держать два респондера. Ответ
+        // "tryLater" от перегруженного зеркала — это "ответа сейчас нет", а не
+        // приговор сертификату: он не подписан и о сертификате ничего не
+        // сообщает. Раньше он давал UNKNOWN, а UNKNOWN в isValid фатален —
+        // валидная подпись объявлялась недействительной, хотя первый
+        // респондер мог ответить ACTIVE.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val issuer = ks.certificate
+        val client = mockk<HttpClient>().apply {
+            every {
+                send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>())
+            } returns httpResponse(ocspErrorResponse(3))
+        }
+        val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
+
+        val statuses = service.verify(ks.certificate, issuer)
+        statuses shouldHaveSize 1
+        statuses[0].result shouldBe OcspResult.UNAVAILABLE
+        statuses[0].message!! shouldContain "tryLater"
+    }
+
+    test("verify() falls through to the next responder while answers stay UNAVAILABLE") {
+        // Два адреса (в профилях НУЦ это ocsp + ocsp1) — зеркала одного
+        // сервиса. Пока ответа нет, обходим их все: недоступность первого не
+        // должна лишать нас второго.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val issuer = ks.certificate
+        val twoResponders = OcspConfiguration().apply {
+            url = "http://ocsp.example.kz/ http://ocsp1.example.kz/"
+            isStrict = true  // игнорируем AIA сертификата, берём оба адреса из конфига
+        }
+        val client = mockk<HttpClient>().apply {
+            // answers, а не returns: тело мока — один поток, и второй
+            // респондер получил бы уже вычитанный.
+            every {
+                send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>())
+            } answers { httpResponse(ocspErrorResponse(3)) }
+        }
+        val service = OcspService(kalkanProvider, twoResponders, client, httpConfig)
+
+        val statuses = service.verify(ks.certificate, issuer)
+        statuses shouldHaveSize 2
+        statuses.map { it.result }.toSet() shouldBe setOf(OcspResult.UNAVAILABLE)
+        verify(exactly = 2) { client.send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>()) }
+    }
+
+    test("verify() stops at the first authoritative answer and leaves the mirror alone") {
+        // Ответ пришёл и он авторитетный (пусть и плохой — разбор не удался,
+        // это UNKNOWN, fail-closed). Опрашивать зеркало незачем: второй запрос
+        // только удвоил бы нагрузку на респондера НУЦ.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val issuer = ks.certificate
+        val twoResponders = OcspConfiguration().apply {
+            url = "http://ocsp.example.kz/ http://ocsp1.example.kz/"
+            isStrict = true
+        }
+        val client = mockk<HttpClient>().apply {
+            every {
+                send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>())
+            } returns httpResponse(ocspSuccessfulWithGarbage())
+        }
+        val service = OcspService(kalkanProvider, twoResponders, client, httpConfig)
+
+        val statuses = service.verify(ks.certificate, issuer)
+        statuses shouldHaveSize 1
+        statuses[0].result shouldBe OcspResult.UNKNOWN
+        verify(exactly = 1) { client.send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>()) }
+    }
+
+    test("verify() returns UNAVAILABLE when the responder body is empty") {
+        // HTTP 200 с пустым телом (прокси-заглушка, оборванный ответ):
+        // разбор такого «ответа» падал NPE мимо всех наших catch — то есть
+        // весь verify отдавал 500 вместо вердикта по сертификату.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"),
+            null, TestResources.P12_PASSWORD,
+        )
+        val issuer = ks.certificate
+        val client = mockk<HttpClient>().apply {
+            every {
+                send(any<HttpRequest>(), any<HttpResponse.BodyHandler<InputStream>>())
+            } answers { httpResponse(ByteArray(0)) }
+        }
+        val service = OcspService(kalkanProvider, ocspConfig, client, httpConfig)
+
+        val statuses = service.verify(ks.certificate, issuer)
+        statuses shouldHaveSize 1
+        statuses[0].result shouldBe OcspResult.UNAVAILABLE
+        statuses[0].message!! shouldContain "empty body"
     }
 })

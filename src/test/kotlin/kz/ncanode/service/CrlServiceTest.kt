@@ -18,7 +18,17 @@ import kz.ncanode.configuration.crl.CrlConfiguration
 import kz.ncanode.crl.CrlIndex
 import kz.ncanode.crl.RevokedEntry
 import kz.ncanode.dto.crl.CrlResult
+import kz.ncanode.wrapper.CertificateWrapper
 import kz.ncanode.wrapper.KalkanWrapper
+import org.bouncycastle.asn1.x509.CRLDistPoint
+import org.bouncycastle.asn1.x509.DistributionPoint
+import org.bouncycastle.asn1.x509.DistributionPointName
+import org.bouncycastle.asn1.x509.Extension
+import org.bouncycastle.asn1.x509.GeneralName
+import org.bouncycastle.asn1.x509.GeneralNames
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.io.File
 import java.math.BigInteger
 import java.nio.file.Files
@@ -114,8 +124,8 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             val arg = firstArg<String>()
             when {
-                arg.contains("delta") -> listOf(deltaFile)
-                arg.contains("full") -> listOf(fullFile)
+                arg.endsWith("/delta") -> listOf(deltaFile)
+                arg.endsWith("/full") -> listOf(fullFile)
                 else -> emptyList()
             }
         }
@@ -172,7 +182,12 @@ class CrlServiceTest : FunSpec({
             null, TestResources.P12_PASSWORD,
         )
         val status = buildService().verify(ks.certificate)
-        status.result shouldBe CrlResult.ACTIVE
+        // Fixture'ы в репозитории давно вышли из своего периода действия
+        // (nextUpdate — октябрь 2025), поэтому положительным вердикт быть не
+        // может: серийника в списке нет, но и свидетельствовать о «сейчас» он
+        // не вправе. ACTIVE на живых списках проверяется интеграционными
+        // тестами, а на mock'ах — кейсами delta ниже.
+        status.result shouldBe CrlResult.EXPIRED
     }
 
     test("verify() ignores CRL issued by a different CA") {
@@ -286,28 +301,31 @@ class CrlServiceTest : FunSpec({
         status.fresh shouldBe true
     }
 
-    test("verify() marks ACTIVE as stale when CRL nextUpdate has passed") {
-        // Протухший CRL остаётся детектором отзыва в AND-режиме, но его
-        // ACTIVE не может единолично реабилитировать cert при упавшем OCSP.
+    test("verify() reports EXPIRED when CRL nextUpdate has passed") {
+        // п. 18 приказа №500/НҚ: истёкший период действия CRL — отрицательный
+        // результат его проверки. Протухший список остаётся детектором отзыва,
+        // но отсутствие серийника в нём ничего не доказывает: всё, что издатель
+        // опубликовал после nextUpdate, туда физически не попало.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
         val status = serviceWithSingleCrl(ks.certificate, Date(System.currentTimeMillis() - 86_400_000L))
             .verify(ks.certificate)
-        status.result shouldBe CrlResult.ACTIVE
+        status.result shouldBe CrlResult.EXPIRED
         status.fresh shouldBe false
     }
 
-    test("verify() marks ACTIVE as stale when CRL has no nextUpdate (nonconforming)") {
+    test("verify() reports EXPIRED when CRL has no nextUpdate (nonconforming)") {
         // RFC 5280 §5.1.2.5 требует nextUpdate; его отсутствие трактуем
-        // консервативно — CRL непригоден как fallback-основание.
+        // консервативно — период действия не подтверждён, значит по п. 18
+        // приказа №500/НҚ результат проверки такого списка отрицательный.
         val ks = kalkanWrapper.read(
             TestResources.loadAsBase64("p12/individual_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
         val status = serviceWithSingleCrl(ks.certificate, null).verify(ks.certificate)
-        status.result shouldBe CrlResult.ACTIVE
+        status.result shouldBe CrlResult.EXPIRED
         status.fresh shouldBe false
     }
 
@@ -371,8 +389,8 @@ class CrlServiceTest : FunSpec({
         every { service.getCrlFiles(any()) } answers {
             val arg = firstArg<String>()
             when {
-                arg.contains("delta") -> if (deltaCrl != null) listOf(deltaFile) else emptyList()
-                arg.contains("full") -> if (baseCrl != null) listOf(baseFile) else emptyList()
+                arg.endsWith("/delta") -> if (deltaCrl != null) listOf(deltaFile) else emptyList()
+                arg.endsWith("/full") -> if (baseCrl != null) listOf(baseFile) else emptyList()
                 else -> emptyList()
             }
         }
@@ -553,7 +571,9 @@ class CrlServiceTest : FunSpec({
             TestResources.loadAsBase64("p12/legal_ceo_valid.p12"),
             null, TestResources.P12_PASSWORD,
         )
-        buildService().verify(ks.certificate).result shouldBe CrlResult.ACTIVE
+        // Тот же fixture, тот же истёкший период — вердикт EXPIRED, а не
+        // падение: важно, что чужой CRL просто не участвует.
+        buildService().verify(ks.certificate).result shouldBe CrlResult.EXPIRED
     }
 
     // ---- повторы при плановой загрузке ----
@@ -681,5 +701,228 @@ class CrlServiceTest : FunSpec({
         } finally {
             Thread.interrupted()
         }
+    }
+
+    // ---- профили приказа МИИ РК №522/НҚ (в силе с 11.09.2026) ----
+
+    test("verify() keeps a delta whose freshestCRL extension is critical") {
+        // Приложение 3, структуры 13 и 14: разностный СОС НУЦ маркируется
+        // расширением `freshestCRL` (2.5.29.46) с пометкой critical. Раньше
+        // такой список отбрасывался целиком («критичное расширение, которого
+        // мы не понимаем»), то есть delta не участвовала бы в проверке и
+        // досрочные отзывы остались бы невидимы.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(issuer, crlNum = 1346, nextUpd = future, revoked = null)
+        val delta = mockDeltaCrl(
+            issuer, crlNum = 57725, baseCrlNum = 1346, nextUpd = future,
+            revoked = crlEntry(CRLReason.KEY_COMPROMISE),
+        ).apply { every { criticalExtensionOids } returns setOf("2.5.29.27", "2.5.29.46") }
+
+        val status = serviceWith(base, delta).verify(cert)
+        status.result shouldBe CrlResult.REVOKED
+        status.file shouldBe "delta_x.crl"
+    }
+
+    test("verify() keeps a base CRL whose freshestCRL extension is critical") {
+        // То же расширение может оказаться critical и на полном списке —
+        // указатель на delta не сужает охват СОС, поэтому дисквалифицировать
+        // из-за него нечего.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(
+            issuer, crlNum = 1346, nextUpd = future, revoked = crlEntry(CRLReason.KEY_COMPROMISE),
+        ).apply { every { criticalExtensionOids } returns setOf("2.5.29.46") }
+
+        serviceWith(base, null).verify(cert).result shouldBe CrlResult.REVOKED
+    }
+
+    test("verify() never promotes a delta-endpoint list without deltaCRLIndicator to base") {
+        // Если НУЦ выпустит разностный СОС строго по букве профиля — с
+        // `freshestCRL` вместо `deltaCRLIndicator`, — разбор не опознает его
+        // как delta. Отбор base идёт по максимальному CRLNumber, а у delta он
+        // на порядки больше (на бою 57 725 против 1 346), так что она выиграла
+        // бы отбор, и вердикт считался бы по ней одной: всё, что отозвано
+        // только в полном списке, вернулось бы как ACTIVE. Провенанс файла
+        // (скачан с delta-эндпоинта) это предотвращает.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(
+            issuer, crlNum = 1346, nextUpd = future, revoked = crlEntry(CRLReason.KEY_COMPROMISE),
+        )
+        // Delta без deltaCRLIndicator: baseCrlNumber отсутствует, зато
+        // CRLNumber огромный, и про наш серийник она ничего не знает.
+        val unmarkedDelta = mockCrlIndex(issuer).apply {
+            every { criticalExtensionOids } returns setOf("2.5.29.46")
+            every { nextUpdate } returns future
+            every { crlNumber } returns BigInteger.valueOf(57725)
+            every { find(any()) } returns null
+        }
+
+        val status = serviceWith(base, unmarkedDelta).verify(cert)
+        status.result shouldBe CrlResult.REVOKED
+        status.file shouldBe "base.crl"
+    }
+
+    // ---- on-demand загрузка по расширениям сертификата ----
+
+    /**
+     * Сертификат с заданными точками распространения. Ключ и подпись здесь не
+     * важны — проверяется только разбор расширений, поэтому RSA и JDK-провайдер.
+     */
+    fun certWithDistributionPoints(crlUris: List<List<String>>, freshestUris: List<List<String>>): CertificateWrapper {
+        fun distPoints(groups: List<List<String>>) = CRLDistPoint(
+            groups.map { uris ->
+                DistributionPoint(
+                    DistributionPointName(
+                        GeneralNames(uris.map { GeneralName(GeneralName.uniformResourceIdentifier, it) }.toTypedArray())
+                    ),
+                    null, null,
+                )
+            }.toTypedArray()
+        )
+
+        val keyPair = java.security.KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val name = org.bouncycastle.asn1.x500.X500Name("CN=dp-test")
+        val now = System.currentTimeMillis()
+        val builder = JcaX509v3CertificateBuilder(
+            name, BigInteger.ONE, Date(now - 86_400_000L), Date(now + 86_400_000L), name, keyPair.public,
+        )
+        if (crlUris.isNotEmpty()) {
+            builder.addExtension(Extension.cRLDistributionPoints, false, distPoints(crlUris))
+        }
+        if (freshestUris.isNotEmpty()) {
+            builder.addExtension(Extension.freshestCRL, false, distPoints(freshestUris))
+        }
+        val holder = builder.build(JcaContentSignerBuilder("SHA256withRSA").build(keyPair.private))
+        return CertificateWrapper(JcaX509CertificateConverter().getCertificate(holder))
+    }
+
+    /**
+     * Сервис, у которого подменена только сама загрузка: остальной путь
+     * on-demand (фильтры, дедуп, TTL) работает по-настоящему.
+     */
+    fun serviceRecordingDownloads(downloaded: MutableList<String>): CrlService {
+        val cacheDir = Files.createTempDirectory("ncanode-ondemand-test").toFile().apply { deleteOnExit() }
+        val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
+            every { isEnabled } returns true
+            every { isCacheEnabled } returns false
+            every { isStrict } returns false
+            every { ttl } returns 60
+            every { urlList } returns emptyMap()
+            every { delta } returns null
+        }
+        val directoryService = mockk<DirectoryService>(relaxed = true).apply {
+            every { getCachePathFor(any()) } returns cacheDir
+        }
+        val service = spyk(
+            CrlService(
+                directoryService, crlConfig, mockk(relaxed = true),
+                HttpClientConfiguration(), mockk(relaxed = true), "test",
+            )
+        )
+        every { service.getCrlFiles(any()) } returns emptyList()
+        every { service.downloadCrlOrThrow(any(), any()) } answers {
+            downloaded.add(firstArg<String>() + " <- " + secondArg<java.net.URL>().toString())
+        }
+        return service
+    }
+
+    test("on-demand fetch takes one mirror per distribution point") {
+        // Профили из приказа №522/НҚ объявляют пару crl.pki.gov.kz +
+        // crl1.pki.gov.kz внутри ОДНОЙ точки распространения. По RFC 5280
+        // §4.2.1.13 это адреса одного и того же списка, поэтому качаем по
+        // первому сработавшему — иначе в кэше оказались бы два экземпляра
+        // одного 20-МБ СОС, и оба пришлось бы индексировать.
+        val downloaded = mutableListOf<String>()
+        val cert = certWithDistributionPoints(
+            crlUris = listOf(listOf("http://192.0.2.1/full.crl", "http://192.0.2.2/full.crl")),
+            freshestUris = emptyList(),
+        )
+        serviceRecordingDownloads(downloaded).verify(cert)
+
+        downloaded shouldBe listOf("crl/test/ondemand <- http://192.0.2.1/full.crl")
+    }
+
+    test("on-demand fetch follows the freshestCRL extension for the delta list") {
+        // Адрес разностного СОС НУЦ публикует в freshestCRL (2.5.29.46), а не
+        // в cRLDistributionPoints — это видно и на сертификатах тестового
+        // контура. Пока расширение не читалось, для издателя вне конфигурации
+        // мы работали на одном полном списке, то есть не видели досрочных
+        // отзывов, ради которых delta и публикуется.
+        val downloaded = mutableListOf<String>()
+        val cert = certWithDistributionPoints(
+            crlUris = listOf(listOf("http://192.0.2.1/full.crl")),
+            freshestUris = listOf(listOf("http://192.0.2.3/delta.crl")),
+        )
+        serviceRecordingDownloads(downloaded).verify(cert)
+
+        // Разностный список уходит в СВОЙ каталог: каталог — единственный
+        // носитель провенанса, на котором держится защита отбора base.
+        downloaded shouldBe listOf(
+            "crl/test/ondemand <- http://192.0.2.1/full.crl",
+            "crl/test/ondemand-delta <- http://192.0.2.3/delta.crl",
+        )
+    }
+
+    test("verify() never promotes an on-demand freshestCRL list without deltaCRLIndicator to base") {
+        // Тот же риск, что и для конфигурационного delta-каталога, но через
+        // freshestCRL: список, скачанный по адресу из сертификата, приходит в
+        // ondemand-delta. Без провенанса он попал бы в кандидаты на base и
+        // выиграл бы по CRLNumber — всё, отозванное только в полном списке,
+        // вернулось бы как ACTIVE.
+        val ks = kalkanWrapper.read(
+            TestResources.loadAsBase64("p12/individual_valid.p12"), null, TestResources.P12_PASSWORD,
+        )
+        val cert = ks.certificate
+        val issuer = cert.x509Certificate.issuerX500Principal
+        val base = mockBaseCrl(
+            issuer, crlNum = 1346, nextUpd = future, revoked = crlEntry(CRLReason.KEY_COMPROMISE),
+        )
+        val unmarkedDelta = mockCrlIndex(issuer).apply {
+            every { criticalExtensionOids } returns setOf("2.5.29.46")
+            every { nextUpdate } returns future
+            every { crlNumber } returns BigInteger.valueOf(57725)
+            every { find(any()) } returns null
+        }
+
+        val baseFile = mockCrlFile("base")
+        val onDemandDeltaFile = mockCrlFile("ondemand_delta")
+        val crlConfig = mockk<CrlConfiguration>(relaxed = true).apply {
+            every { isEnabled } returns true
+            every { isCacheEnabled } returns false
+            every { ttl } returns null
+            every { urlList } returns emptyMap()
+            every { delta } returns null
+        }
+        val service = spyk(
+            CrlService(
+                mockk(relaxed = true), crlConfig, mockk(relaxed = true),
+                HttpClientConfiguration(), mockk(relaxed = true), "test",
+            )
+        )
+        every { service.getCrlFiles(any()) } answers {
+            val arg = firstArg<String>()
+            when {
+                arg.endsWith("/ondemand-delta") -> listOf(onDemandDeltaFile)
+                arg.endsWith("/full") -> listOf(baseFile)
+                else -> emptyList()
+            }
+        }
+        every { service.loadIndex(baseFile) } returns base
+        every { service.loadIndex(onDemandDeltaFile) } returns unmarkedDelta
+
+        val status = service.verify(cert)
+        status.result shouldBe CrlResult.REVOKED
+        status.file shouldBe "base.crl"
     }
 })

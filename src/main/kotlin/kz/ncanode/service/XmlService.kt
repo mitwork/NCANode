@@ -93,6 +93,8 @@ class XmlService(
 
         val signers = xmlSignRequest.signers
         kalkanWrapper.read(signers).forEachIndexed { i, keyStore ->
+            // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+            certificateService.ensureSignerCertificateUsable(keyStore.certificate)
             document.createXmlSignature(keyStore.certificate, signers[i].referenceUri)
                 .sign(keyStore.privateKey)
         }
@@ -191,7 +193,7 @@ class XmlService(
             }
             val signatureValid = xmlSignature.check() &&
                 coversWhole &&
-                cert.isValid(currentDate, checkOcsp, checkCrl)
+                cert.isValid(currentDate, checkOcsp, checkCrl, requireSigningKeyUsage = true)
             if (!signatureValid) {
                 valid = false
             }

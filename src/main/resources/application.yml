@@ -31,8 +31,17 @@ ncanode:
       url: ${NCANODE_PROXY_URL:}
       username: ${NCANODE_PROXY_USERNAME:}
       password: ${NCANODE_PROXY_PASSWORD:}
+  sign:
+    # Проверять сертификат подписанта перед подписанием (п. 4 Правил
+    # формирования и проверки подлинности ЭЦП, приказ МИИ РК №500/НҚ):
+    # срок действия, цепочка, отзыв (OCSP → CRL) и назначение ключа.
+    # Включение меняет поведение всех sign-эндпойнтов и добавляет
+    # OCSP-запрос на каждое подписание, поэтому по умолчанию выключено.
+    certificateCheck: ${NCANODE_SIGN_CERT_CHECK:false}
   ocsp:
-    url: ${NCANODE_OCSP_URL:http://ocsp.pki.gov.kz/}
+    # Два адреса — как в профилях сертификатов НУЦ (приказ МИИ РК №522/НҚ):
+    # ocsp1 — зеркало. Опрашиваются по очереди до первого авторитетного ответа.
+    url: ${NCANODE_OCSP_URL:http://ocsp.pki.gov.kz/ http://ocsp1.pki.gov.kz/}
     parallelEnabled: ${NCANODE_OCSP_PARALLEL:true}
     strict: ${NCANODE_OCSP_STRICT:false}
   ca:
@@ -46,7 +55,10 @@ ncanode:
       retries: ${NCANODE_CRL_RETRIES:3}
       maxSizeMb: ${NCANODE_CRL_MAX_SIZE_MB:64}
       onDemandMaxEntries: ${NCANODE_CRL_ONDEMAND_MAX:64}
-      ttl: ${NCANODE_CA_CRL_TTL:1440}
+      # КУЦ РК обновляет свой СОС не реже раза в 24 часа (приказ №522/НҚ,
+      # приложение 1, п. 15). TTL в те же 24 часа означал бы худший случай
+      # «весь цикл на устаревшем списке», поэтому опрашиваем вдвое чаще.
+      ttl: ${NCANODE_CA_CRL_TTL:720}
       url: ${NCANODE_CA_CRL_URL:http://crl.root.gov.kz/gost.crl http://crl.root.gov.kz/rsa.crl http://crl.root.gov.kz/gost2015_2022.crl http://crl.root.gov.kz/rsa2020.crl}
       delta:
         enabled: false

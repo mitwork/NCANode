@@ -38,7 +38,10 @@ import java.util.Base64
  * Сервис отвечает за всё что связано с JWT.
  */
 @Service
-class JwtService(private val kalkanWrapper: KalkanWrapper) {
+class JwtService(
+    private val kalkanWrapper: KalkanWrapper,
+    private val certificateService: CertificateService,
+) {
 
     /**
      * Формирование и подписание JWT.
@@ -51,6 +54,8 @@ class JwtService(private val kalkanWrapper: KalkanWrapper) {
                 jwtEncodeRequest.password,
             )
             val cert = keystore.certificate
+            // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+            certificateService.ensureSignerCertificateUsable(cert)
 
             val builder = JWT.create()
             for ((claimKey, claimValue) in jwtEncodeRequest.jwt.payload.claims) {

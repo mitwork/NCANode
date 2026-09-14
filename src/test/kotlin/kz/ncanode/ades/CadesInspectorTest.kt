@@ -152,4 +152,39 @@ class CadesInspectorTest : FunSpec({
 
         CadesInspector.inspect(cms.encoded, provider)[0].signingCertificateMatches shouldBe false
     }
+
+    test("signingCertificateMatches rejects a different certificate") {
+        // Атрибут лежит под подписью и намертво привязывает её к одному
+        // сертификату (RFC 5035). Тот же контейнер, сверенный с чужим
+        // сертификатом, привязку не подтверждает — на этом же вызове стоит
+        // /cms/verify, где атрибут обязателен для CAdES (п. 8 приказа №500/НҚ).
+        val signed = sign()
+        val signer = signed.signerInfos.signers.first() as SignerInformation
+        val otherCertificate = keyStore("legal_ceo_valid.p12").certificate.x509Certificate
+
+        CadesInspector.signingCertificateMatches(signer, signerCertificate, provider) shouldBe true
+        CadesInspector.signingCertificateMatches(signer, otherCertificate, provider) shouldBe false
+    }
+
+    test("signingCertificateMatches passes a signature without the attribute") {
+        // Обычный PKCS#7 без signingCertificateV2 проверять не на что —
+        // отсутствие атрибута не должно означать отказ.
+        val generator = CMSSignedDataGenerator()
+        generator.addSigner(
+            signerKeyStore.privateKey,
+            signerCertificate,
+            getDigestAlgorithmOidBYSignAlgorithmOid(signerCertificate.sigAlgOID),
+        )
+        generator.addCertificatesAndCRLs(
+            CertStore.getInstance(
+                "Collection", CollectionCertStoreParameters(listOf(signerCertificate)), KalkanProvider.PROVIDER_NAME,
+            )
+        )
+        val plain = generator.generate(
+            CMSProcessableByteArray("plain".toByteArray()), true, KalkanProvider.PROVIDER_NAME,
+        )
+        val signer = plain.signerInfos.signers.first() as SignerInformation
+
+        CadesInspector.signingCertificateMatches(signer, signerCertificate, provider) shouldBe true
+    }
 })

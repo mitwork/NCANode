@@ -74,6 +74,7 @@ class PadesService(
     private val tspService: TspService,
     private val pdfService: PdfService,
     private val validationDataService: ValidationDataService,
+    private val certificateService: CertificateService,
 ) {
 
     fun sign(request: PadesSignRequest): PadesResponse {
@@ -84,6 +85,8 @@ class PadesService(
                 val keyStore = kalkanWrapper.read(
                     listOf(signer.signer ?: throw ClientException("signer must be specified")),
                 )[0]
+                // п. 4 Правил №500/НҚ, если проверка включена конфигурацией.
+                certificateService.ensureSignerCertificateUsable(keyStore.certificate)
                 signerCertificates.add(keyStore.certificate.x509Certificate)
                 pdf = embedSignature(pdf, signer, keyStore, request.level, request.tsaPolicy)
             }

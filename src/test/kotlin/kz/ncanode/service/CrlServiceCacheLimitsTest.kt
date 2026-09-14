@@ -211,8 +211,11 @@ class CrlServiceCacheLimitsTest : FunSpec({
         ).certificate
 
         // Сертификат выпущен тем же CA, что и used.crl — CRL пригождается,
-        // мусорные файлы отбрасываются как нечитаемые.
-        crlService.verify(certificate).result shouldBe CrlResult.ACTIVE
+        // мусорные файлы отбрасываются как нечитаемые. Вердикт EXPIRED, а не
+        // ACTIVE: fixture давно вне своего периода действия (п. 18 приказа
+        // №500/НҚ). Для этого теста важно другое — что список пригодился и
+        // потому отмечен как использованный.
+        crlService.verify(certificate).result shouldBe CrlResult.EXPIRED
 
         crlService.enforceOnDemandLimit()
 
@@ -220,6 +223,29 @@ class CrlServiceCacheLimitsTest : FunSpec({
         // Вытеснен самый давний из непригодившихся.
         idleOne.exists() shouldBe false
         idleTwo.isFile shouldBe true
+    }
+
+    test("counts both on-demand caches against a single limit") {
+        // Списки, скачанные по freshestCRL, лежат в отдельном каталоге — иначе
+        // delta без deltaCRLIndicator выглядела бы обычным списком при отборе
+        // base. Но кэш это один, и потолок у него общий: иначе разностные
+        // копились бы мимо ограничения.
+        val cacheDir = tempCacheDir("two-dirs")
+        val now = System.currentTimeMillis()
+        val oldestFull = putOnDemand(cacheDir, "full-old.crl", "filler".toByteArray(), now - 3 * 60_000)
+        val newerFull = putOnDemand(cacheDir, "full-new.crl", "filler".toByteArray(), now - 60_000)
+        val deltaDirFile = File(cacheDir, "crl/$serviceType/ondemand-delta").apply { mkdirs() }
+        val delta = File(deltaDirFile, "delta.crl").apply {
+            writeBytes("filler".toByteArray())
+            setLastModified(now)
+        }
+
+        service(cacheDir, onDemandLimit = 2).enforceOnDemandLimit()
+
+        // Три файла на два места: уходит самый давний, независимо от каталога.
+        oldestFull.exists() shouldBe false
+        newerFull.isFile shouldBe true
+        delta.isFile shouldBe true
     }
 
     test("leaves the on-demand cache alone when the limit is not positive") {
