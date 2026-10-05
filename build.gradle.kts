@@ -68,7 +68,7 @@ dependencies {
     // SOAP/WSSE — jakarta-ery.
     // wss4j 4.0 тащит OpenSAML из Shibboleth-репо для SAML-token support;
     // NCANode только X.509 WSSE подписывает/проверяет, без SAML — exclude.
-    implementation("org.apache.wss4j:wss4j-ws-security-dom:4.0.1") {
+    implementation("org.apache.wss4j:wss4j-ws-security-dom:4.0.2") {
         exclude(group = "org.opensaml")
     }
     // SAAJ runtime — даёт jakarta.xml.soap.MessageFactory, который использует
