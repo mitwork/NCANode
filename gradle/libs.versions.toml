@@ -1,8 +1,8 @@
 [versions]
-kotlin = "2.4.20"
+kotlin = "2.4.21"
 springBoot = "4.1.1"
 springDependencyManagement = "1.1.7"
-kotest = "6.2.5"
+kotest = "6.2.6"
 mockk = "1.14.11"
 
 [libraries]
